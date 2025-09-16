@@ -1,0 +1,24 @@
+name: macOS Build → Verify (→ Notarize on tags)
+
+on:
+  push:
+    branches: [ main ]
+    tags: [ "v*" ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  build-verify-macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build
+        run: |
+          chmod +x scripts/build.sh
+          ./scripts/build.sh
+
+      - name: Verify DMG
+        run: |
+          chmod +x scripts/verify_macos.sh
+          ./scripts/verify_macos.sh dist/YourApp.dmg
