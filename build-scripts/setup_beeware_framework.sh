@@ -1,0 +1,234 @@
+#!/bin/bash
+#
+# Downloads and embeds BeeWare Python.framework for MarcutApp
+# This replaces the custom python bundle with the official BeeWare framework
+# designed for App Store distribution with proper codesigning
+#
+set -euo pipefail
+
+# Parse command line arguments
+PURGE_CACHE=false
+FORCE_REBUILD=false
+for arg in "$@"; do
+    case $arg in
+        --purge-cache)
+            PURGE_CACHE=true
+            shift
+            ;;
+        --force)
+            FORCE_REBUILD=true
+            shift
+            ;;
+    esac
+done
+
+# Configuration - Using Python 3.11 for better compatibility
+PYTHON_VERSION="3.11"
+BEEWARE_VERSION="3.11-b7"
+# Paths relative to build-scripts/ directory
+FRAMEWORK_DIR="../src/swift/MarcutApp/Sources/MarcutApp/Frameworks"
+RESOURCES_DIR="../src/swift/MarcutApp/Sources/MarcutApp/Resources"
+TEMP_DIR="temp_beeware"
+
+# Colors
+GREEN='\033[0;32m'
+BLUE='\033[0;34m'
+YELLOW='\033[1;33m'
+RED='\033[0;31m'
+NC='\033[0m'
+
+echo -e "${BLUE}Setting up BeeWare Python Framework for MarcutApp${NC}"
+echo "=============================================="
+echo "Python version: ${PYTHON_VERSION}"
+echo "BeeWare version: ${BEEWARE_VERSION}"
+echo "Framework dir: ${FRAMEWORK_DIR}"
+echo ""
+
+# Clean any existing setup
+if [ -d "$FRAMEWORK_DIR" ]; then
+    echo -e "${YELLOW}Removing existing framework directory...${NC}"
+    rm -rf "$FRAMEWORK_DIR"
+fi
+
+if [ -d "$TEMP_DIR" ]; then
+    rm -rf "$TEMP_DIR"
+fi
+
+# Create directories
+mkdir -p "$FRAMEWORK_DIR"
+mkdir -p "$RESOURCES_DIR"
+mkdir -p "$TEMP_DIR"
+
+echo -e "${BLUE}Downloading BeeWare Python framework...${NC}"
+
+# Download the BeeWare Python framework for macOS (universal2)
+FRAMEWORK_URL="https://github.com/beeware/Python-Apple-support/releases/download/3.11-b7/Python-3.11-macOS-support.b7.tar.gz"
+
+echo "Downloading from: $FRAMEWORK_URL"
+curl -L -o "$TEMP_DIR/python-framework.tar.gz" "$FRAMEWORK_URL"
+
+if [ ! -f "$TEMP_DIR/python-framework.tar.gz" ]; then
+    echo -e "${RED}❌ Failed to download BeeWare framework${NC}"
+    exit 1
+fi
+
+echo -e "${GREEN}✅ Framework downloaded ($(du -sh "$TEMP_DIR/python-framework.tar.gz" | cut -f1))${NC}"
+
+# Extract the framework
+echo -e "${BLUE}Extracting framework...${NC}"
+cd "$TEMP_DIR"
+tar -xzf python-framework.tar.gz
+cd ..
+
+EXTRACTED_FRAMEWORK_PATH=$(find "$TEMP_DIR" -name "Python.framework" -type d | head -1)
+
+if [ -z "$EXTRACTED_FRAMEWORK_PATH" ] || [ ! -d "$EXTRACTED_FRAMEWORK_PATH" ]; then
+    echo -e "${RED}❌ Could not find Python.framework in extracted files${NC}"
+    exit 1
+fi
+
+echo -e "${GREEN}✅ Found framework at: $EXTRACTED_FRAMEWORK_PATH${NC}"
+
+# Move framework to the correct location
+mv "$EXTRACTED_FRAMEWORK_PATH" "$FRAMEWORK_DIR/"
+
+# Create python_site directory for our packages
+PYTHON_SITE="$RESOURCES_DIR/python_site"
+echo -e "${BLUE}Setting up python_site directory...${NC}"
+rm -rf "$PYTHON_SITE"
+mkdir -p "$PYTHON_SITE"
+
+# Find a compatible system Python (strictly 3.11.x) to act as a build tool for running pip.
+echo -e "${BLUE}Finding a build-time Python 3.11 interpreter...${NC}"
+SYSTEM_PYTHON=""
+for python_candidate in \
+    /opt/homebrew/bin/python3.11 \
+    /usr/local/bin/python3.11 \
+    /usr/bin/python3.11 \
+    python3.11 \
+    python3 \
+    /usr/bin/python3; do
+
+    if [[ "$python_candidate" == /* ]]; then
+        if [ -x "$python_candidate" ]; then
+            PY_CMD="$python_candidate"
+        else
+            continue
+        fi
+    else
+        if command -v "$python_candidate" &> /dev/null; then
+            PY_CMD=$(command -v "$python_candidate")
+        else
+            continue
+        fi
+    fi
+
+    PYTHON_VERSION_CHECK=$("$PY_CMD" -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')" 2>/dev/null || echo "")
+    if [[ "$PYTHON_VERSION_CHECK" == "3.11" ]]; then
+        SYSTEM_PYTHON="$PY_CMD"
+        echo -e "${GREEN}✅ Found compatible system Python for build tasks: $SYSTEM_PYTHON (version $PYTHON_VERSION_CHECK)${NC}"
+        break
+    fi
+done
+
+if [ -z "$SYSTEM_PYTHON" ]; then
+    echo -e "${RED}❌ Could not find Python 3.11 on this machine to run pip for package staging.${NC}"
+    echo "Install it with 'brew install python@3.11' and rerun this script."
+    exit 1
+fi
+
+cat > "$TEMP_DIR/requirements.txt" <<'REQS'
+python-docx>=1.1.0
+rapidfuzz>=3.6.1
+pydantic>=2.6.4
+requests>=2.31.0
+dateparser>=1.2.0
+tqdm>=4.66.0
+lxml>=5.0.0
+numpy>=1.24.0
+regex>=2023.0.0
+REQS
+
+# --- Compile Dependencies from Source ---
+echo -e "${BLUE}Compiling Python dependencies from source against the BeeWare framework...${NC}"
+
+# Set compiler and linker flags to target the bundled framework
+export MACOSX_DEPLOYMENT_TARGET="14.0"
+export ARCHFLAGS="-arch arm64"
+
+FRAMEWORK_ROOT_DIR=$(cd "$FRAMEWORK_DIR"; pwd)
+FRAMEWORK_PY_DIR="$FRAMEWORK_ROOT_DIR/Python.framework"
+FRAMEWORK_HEADERS="$FRAMEWORK_PY_DIR/Versions/Current/include/python3.11"
+FRAMEWORK_LIB_DIR="$FRAMEWORK_PY_DIR/Versions/Current/lib"
+
+# Only purge cache if explicitly requested
+if [ "$PURGE_CACHE" = true ]; then
+    echo -e "${YELLOW}Purging pip cache as requested...${NC}"
+    "$SYSTEM_PYTHON" -m pip cache purge
+fi
+
+export CC=$(xcrun --find clang)
+SDK_PATH=$(xcrun --show-sdk-path)
+export CFLAGS="-isysroot $SDK_PATH -I$FRAMEWORK_HEADERS $ARCHFLAGS"
+export LDFLAGS="-isysroot $SDK_PATH -L$FRAMEWORK_LIB_DIR -F$FRAMEWORK_ROOT_DIR $ARCHFLAGS"
+
+# Use pip to compile and install packages from source
+"$SYSTEM_PYTHON" -m pip install \
+    --target "$PYTHON_SITE" \
+    --no-binary :all: \
+    --compile \
+    -r "$TEMP_DIR/requirements.txt"
+
+if [ $? -ne 0 ]; then
+    echo -e "${RED}❌ Failed to compile Python dependencies.${NC}"
+    exit 1
+fi
+
+echo -e "${GREEN}✅ Successfully compiled and installed all dependencies.${NC}"
+
+# Ensure lxml (and friends) were built for CPython 3.11 to avoid embedding older wheels.
+if ! find "$PYTHON_SITE/lxml" -maxdepth 1 -name "*cpython-311*.so" | grep -q .; then
+    echo -e "${RED}❌ lxml was not built for CPython 3.11 (missing *cpython-311*.so).${NC}"
+    echo "Make sure /opt/homebrew/bin/python3.11 is first in PATH and rerun this script."
+    exit 1
+fi
+
+# --- Post-Install Relinking ---
+echo -e "${BLUE}Relinking native extensions to use @rpath...${NC}"
+FRAMEWORK_PY_RPATH="@rpath/Python.framework/Versions/Current/Python"
+
+find "$PYTHON_SITE" \( -name "*.so" -o -name "*.dylib" \) | while read -r file; do
+    # Find the absolute path to the Python library that pip just linked against
+    OLD_PATH=$(otool -L "$file" | grep "$FRAMEWORK_PY_DIR" | awk '{print $1}' | head -n 1 || true)
+
+    if [ -n "${OLD_PATH}" ]; then
+        echo "Relinking $(basename "$file")"
+        echo "  from: $OLD_PATH"
+        echo "    to: $FRAMEWORK_PY_RPATH"
+        install_name_tool -change "$OLD_PATH" "$FRAMEWORK_PY_RPATH" "$file"
+    fi
+done
+echo -e "${GREEN}✅ Relinking complete.${NC}"
+
+# Install marcut module
+echo -e "${BLUE}Installing marcut module...${NC}"
+MARCUT_SRC="../src/python/marcut"
+if [ -d "$MARCUT_SRC" ]; then
+    cp -R "$MARCUT_SRC" "$PYTHON_SITE/"
+    echo -e "${GREEN}✅ Marcut module installed${NC}"
+else
+    echo -e "${RED}❌ Marcut module directory not found at $MARCUT_SRC${NC}"
+    exit 1
+fi
+
+# Clean up build artifacts from site-packages
+find "$PYTHON_SITE" -name "*.a" -delete
+find "$PYTHON_SITE" -name "*.c" -delete
+find "$PYTHON_SITE" -name "*.h" -delete
+
+# Clean up temp directory
+rm -rf "$TEMP_DIR"
+
+echo -e "${GREEN}✅ BeeWare Python framework setup complete!${NC}"
+echo "Framework size: $(du -sh "$FRAMEWORK_DIR" | cut -f1)"
+echo "Site packages size: $(du -sh "$PYTHON_SITE" | cut -f1)"

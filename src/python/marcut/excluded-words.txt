@@ -1,0 +1,4 @@
+
+# Generic locations
+Delaware
+# Add other common state names or generic terms here if needed

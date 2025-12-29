@@ -1,0 +1,12 @@
+<svg width="100" height="120" viewBox="0 0 100 120" fill="none" xmlns="http://www.w3.org/2000/svg">
+<path d="M10 0H70L100 30V110C100 115.523 95.5228 120 90 120H10C4.47715 120 0 115.523 0 110V10C0 4.47715 4.47715 0 10 0Z" fill="#4A90E2"/>
+<path d="M70 0V30H100L70 0Z" fill="#357ABD"/>
+<rect x="15" y="25" width="60" height="4" fill="white" fill-opacity="0.7"/>
+<rect x="15" y="35" width="70" height="4" fill="white" fill-opacity="0.7"/>
+<rect x="15" y="45" width="65" height="4" fill="white" fill-opacity="0.7"/>
+<rect x="15" y="55" width="70" height="4" fill="white" fill-opacity="0.7"/>
+<rect x="15" y="65" width="50" height="4" fill="white" fill-opacity="0.7"/>
+<rect x="15" y="75" width="30" height="4" fill="white" fill-opacity="0.7"/>
+<rect x="48" y="85" width="47" height="25" rx="4" fill="#357ABD"/>
+<text x="71.5" y="103" fill="white" font-family="Arial, sans-serif" font-weight="bold" font-size="16" text-anchor="middle">DOCX</text>
+</svg>

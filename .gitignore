@@ -1,0 +1,127 @@
+# ============================================================
+# MARCUT GITIGNORE - Clean for GitHub publication
+# ============================================================
+
+# ==== IGNORED RESOURCES (local test files, scripts, binaries) ====
+ignored-resources/
+
+# ==== Python ====
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+.pytest_cache/
+.marcut_build_cache/
+.mypy_cache/
+.tox/
+.coverage
+htmlcov/
+*.egg-info/
+dist/
+
+# ==== Editor and OS ====
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# ==== Output artifacts ====
+runs/
+*output*/
+*.docx~
+temp/
+temp_deps/
+old-and-cold/
+sample-files/
+
+# ==== Logs ====
+*.log
+
+# ==== Model/data caches ====
+models/
+
+# ==== Swift / macOS build outputs ====
+.build/
+build/
+build_swift/
+build_test/
+build_cache/
+bundle_temp_env/
+build_swift_*/
+*.app
+*.xcarchive
+Archive/
+for_review/
+src/swift/MarcutApp\ */
+
+# ==== SwiftPM / Xcode metadata ====
+src/swift/MarcutApp/.build/
+src/swift/MarcutApp/.swiftpm/
+src/swift/MarcutApp/**/.build/
+src/swift/MarcutApp/**/.swiftpm/
+src/swift/MarcutApp/**/DerivedData/
+src/swift/MarcutApp/**/xcuserdata/
+DerivedData/
+
+# ==== Generated app bundles and caches ====
+src/swift/MarcutApp/build/
+src/swift/MarcutApp/build_test/
+src/swift/MarcutApp/build_final/
+src/swift/MarcutApp/archive/
+src/swift/MarcutApp/dmg_contents/
+src/swift/MarcutApp/python_bundle/
+src/swift/MarcutApp/temp_framework/
+src/swift/MarcutApp/Contents/
+src/swift/MarcutApp/Resources/
+src/swift/MarcutApp/MarcutApp.app/
+**/Frameworks/Python.framework/
+
+# ==== Bundled runtimes and large vendor payloads (keep in release artifacts only) ====
+.home/
+src/swift/MarcutApp/Python.framework/
+src/swift/MarcutApp/Sources/MarcutApp/Resources/python_site/
+src/swift/MarcutApp/Sources/MarcutApp/Resources/python_stdlib/
+src/swift/MarcutApp/Sources/MarcutApp/Resources/ollama_runners/
+src/swift/MarcutApp/Sources/MarcutApp/python_site/
+
+# ==== Synced Python (canonical is src/python/marcut/, this is a copy) ====
+src/swift/MarcutApp/Sources/MarcutApp/python_site/marcut/excluded-words.txt
+
+# ==== Secrets & Certificates (NEVER COMMIT THESE!) ====
+*.cer
+*.certSigningRequest
+*.provisionprofile
+*.p8
+AuthKey_*.p8
+notarize.env
+.notarize.env
+**/notarize.env
+**/.notarize.env
+profile.plist
+ExportOptions.plist
+
+# ==== Binaries & Build artifacts ====
+*.dmg
+*.zip
+*.dSYM/
+*.pkg
+libggml-*.dylib
+libggml-*.so
+ollama_binary
+ollama_src/
+ollama_test*
+Exported/
+
+# ==== Keep upload/ if it contains release artifacts ====
+# upload/
+build-scripts/config.json
+
+# ==== Local Test Files ====
+test_input.docx
+test_output_rules.docx
+test_report_rules.json
+test_report_rules_scrub_report.json
+reproduce_rules_redaction.py

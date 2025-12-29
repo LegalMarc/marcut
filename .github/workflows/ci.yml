@@ -1,0 +1,95 @@
+name: CI
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+
+jobs:
+  build-test:
+    runs-on: macos-14
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Python dependencies
+        run: |
+          python -m pip install -U pip
+          pip install -e .
+          pip install pytest
+
+      - name: Python unit tests
+        run: pytest -q
+
+      - name: Swift build
+        run: |
+          cd MarcutApp
+          swift build
+
+      - name: Headless smoke (mock backend)
+        run: |
+          bash scripts/smoke_redaction.sh
+
+      - name: Artifact verify (app bundle if present)
+        run: |
+          if [ -d build_swift/MarcutApp.app ]; then
+            bash scripts/verify_bundle.sh build_swift/MarcutApp.app || true
+          else
+            echo "No packaged app bundle in CI run; skipping bundle verify"
+          fi
+
+      - name: Prepare stub Ollama for packaging
+        run: |
+          cat > ollama_binary <<'SH'
+          #!/usr/bin/env bash
+          echo "ollama stub: $@"
+          exit 0
+          SH
+          chmod +x ollama_binary
+
+      - name: Build embedded python bundle
+        run: |
+          chmod +x create_python_bundle.sh
+          ./create_python_bundle.sh
+
+      - name: Build Debug DMG (Swift-only)
+        run: |
+          chmod +x build_swift_only.sh
+          ./build_swift_only.sh
+
+      - name: Verify DMG and run embedded spawn + mock redaction
+        run: |
+          bash scripts/verify_bundle.sh MarcutApp-Swift-*.dmg || true
+
+      - name: Mount DMG and produce redacted artifacts (mock backend)
+        run: |
+          DMG=$(ls -1 MarcutApp-Swift-*.dmg | tail -1)
+          echo "Using DMG: $DMG"
+          MNT=$(hdiutil attach -nobrowse "$DMG" | awk '{print $3}' | tail -1)
+          echo "Mounted at: $MNT"
+          APP="$MNT/MarcutApp.app"
+          PYB="$APP/Contents/Resources/python_bundle"
+          ARTDIR="$GITHUB_WORKSPACE/artifacts"
+          mkdir -p "$ARTDIR"
+          INP="$ARTDIR/ci_input.docx"; OUTDOC="$ARTDIR/ci_out.docx"; OUTJSON="$ARTDIR/ci_report.json"
+          /bin/bash "$PYB/test_bundle.sh" - "$INP" <<'PY'
+from docx import Document
+from pathlib import Path
+import sys
+p=Path(sys.argv[1]); d=Document(); d.add_paragraph('Email: ci@example.com URL: https://ci.example')
+d.save(p); print('ok')
+PY
+          /bin/bash "$PYB/test_bundle.sh" -m marcut.cli redact --in "$INP" --out "$OUTDOC" --report "$OUTJSON" --backend mock --model none
+          test -f "$OUTDOC" && test -f "$OUTJSON"
+          hdiutil detach "$MNT"
+
+      - name: Upload redacted artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: redaction-artifacts
+          path: artifacts/*
