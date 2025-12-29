@@ -584,6 +584,82 @@ def prompt_text(question: str, default: str = "") -> str:
     return response or default
 
 
+def git_capture(args: Sequence[str], check: bool = True) -> str:
+    try:
+        result = subprocess.run(
+            ["git", *args],
+            cwd=str(REPO_ROOT),
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except FileNotFoundError as exc:
+        raise StepError("git is not available on PATH.") from exc
+
+    if check and result.returncode != 0:
+        message = result.stderr.strip() or result.stdout.strip() or "Unknown git error."
+        raise StepError(f"git {' '.join(args)} failed: {message}")
+
+    return result.stdout.strip()
+
+
+def get_release_tag() -> str:
+    version = str(CONFIG.get("version", "")).strip()
+    if not version:
+        version = str(CONFIG.get("build_number", "")).strip()
+    if not version:
+        raise StepError("No version found in config.json (version/build_number).")
+    if version.lower().startswith("v"):
+        return version
+    return f"v{version}"
+
+
+def git_push_release() -> None:
+    print()
+    tag = get_release_tag()
+
+    status = git_capture(["status", "--porcelain"], check=True)
+    if status:
+        print(colorize("⚠️  Working tree has uncommitted changes:", "33"))
+        print(status)
+        default_message = f"Release {tag}"
+        commit_message = prompt_text("Commit message", default_message).strip()
+        if not commit_message:
+            print("Commit message required; aborting.")
+            return
+        run_with_live_output("Stage changes", ["git", "add", "-A"])
+        run_with_live_output("Commit changes", ["git", "commit", "-m", commit_message])
+
+    remotes = [line for line in git_capture(["remote"], check=True).splitlines() if line.strip()]
+    if not remotes:
+        remote_url = prompt_text("No git remote found. Enter remote URL", "")
+        if not remote_url:
+            print("No remote specified; aborting.")
+            return
+        git_capture(["remote", "add", "origin", remote_url], check=True)
+        remotes = ["origin"]
+
+    default_remote = "origin" if "origin" in remotes else remotes[0]
+    remote = prompt_text("Remote to push", default_remote)
+
+    existing_tag = git_capture(["tag", "-l", tag], check=True)
+    if existing_tag:
+        head = git_capture(["rev-parse", "HEAD"], check=True)
+        tag_commit = git_capture(["rev-parse", tag], check=True)
+        if tag_commit != head:
+            print(colorize(f"⚠️  Tag {tag} points to {tag_commit[:7]}, not HEAD {head[:7]}.", "33"))
+        if prompt_yes_no(f"Update tag {tag} to point at HEAD?", default=False):
+            run_with_live_output(f"Update tag {tag}", ["git", "tag", "-f", tag])
+    else:
+        run_with_live_output(f"Create tag {tag}", ["git", "tag", tag])
+
+    run_with_live_output("Push commits", ["git", "push", remote, "HEAD"])
+    run_with_live_output(f"Push tag {tag}", ["git", "push", remote, tag])
+
+    print(colorize(f"✅ Pushed HEAD and tag {tag} to {remote}.", "32"))
+    input("\nPress Enter to continue...")
+
+
 def advanced_menu() -> None:
     print()
     print(
@@ -1665,6 +1741,10 @@ def run_pkg_no_upload() -> None:
 def distribution_menu() -> None:
     options = [
         (
+            "git_push_release",
+            "Git Push (Tagged Release)\nPushes HEAD and a v<version> tag from config.json.",
+        ),
+        (
             "appstore_release",
             "App Store Archive (Script)\nRuns build_appstore_release.sh to create Archive/MarcutApp.xcarchive.",
         ),
@@ -1695,7 +1775,9 @@ def distribution_menu() -> None:
             return
 
         try:
-            if selection == "appstore_release":
+            if selection == "git_push_release":
+                git_push_release()
+            elif selection == "appstore_release":
                 print(colorize("Using build_appstore_release.sh (recommended)", "32"))
                 run_appstore_release()
             elif selection == "appstore_xcode":
