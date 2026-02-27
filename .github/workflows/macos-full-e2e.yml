@@ -1,0 +1,144 @@
+name: macOS Full E2E (Tags + Nightly)
+
+on:
+  push:
+    tags: [ 'v*' ]
+  schedule:
+    - cron: '0 6 * * *'
+
+jobs:
+  full-e2e:
+    runs-on: macos-14
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Import signing certificate (Developer ID Application)
+        if: ${{ secrets.MACOS_CERT_P12_BASE64 && secrets.MACOS_CERT_PASSWORD && secrets.KEYCHAIN_PASSWORD }}
+        env:
+          MACOS_CERT_P12_BASE64: ${{ secrets.MACOS_CERT_P12_BASE64 }}
+          MACOS_CERT_PASSWORD: ${{ secrets.MACOS_CERT_PASSWORD }}
+          KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
+        run: |
+          echo "$MACOS_CERT_P12_BASE64" | base64 --decode > signing.p12
+          security create-keychain -p "$KEYCHAIN_PASSWORD" ci.keychain
+          security list-keychains -s ci.keychain login.keychain
+          security default-keychain -s ci.keychain
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" ci.keychain
+          security import signing.p12 -k ci.keychain -P "$MACOS_CERT_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KEYCHAIN_PASSWORD" ci.keychain
+
+      - name: Prepare stub Ollama for packaging
+        run: |
+          cat > ollama_binary <<'SH'
+          #!/usr/bin/env bash
+          echo "ollama stub: $@" >&2
+          exit 0
+          SH
+          chmod +x ollama_binary
+
+      - name: Build embedded python bundle
+        run: |
+          chmod +x create_python_bundle.sh
+          ./create_python_bundle.sh
+
+      - name: Build App Store DMG (skip notarization here)
+        run: |
+          chmod +x scripts/sh/build_appstore_release.sh
+          ./scripts/sh/build_appstore_release.sh --skip-notarization
+
+      - name: Verify DMG (artifact checks + embedded spawn + mock redaction)
+        run: |
+          chmod +x scripts/verify_bundle.sh || true
+          if [ -f scripts/verify_bundle.sh ]; then
+            bash scripts/verify_bundle.sh MarcutApp-v*-AppStore.dmg
+          else
+            echo "scripts/verify_bundle.sh not present in repo; please add it from upload/scripts/"
+            exit 1
+          fi
+
+      - name: Install Ollama
+        run: |
+          brew update
+          brew install ollama
+
+      - name: Start Ollama and pull small model
+        env:
+          OLLAMA_HOST: http://127.0.0.1:11434
+        run: |
+          nohup ollama serve >/dev/null 2>&1 &
+          for i in {1..60}; do
+            if curl -sSf http://127.0.0.1:11434/api/tags >/dev/null; then echo "Ollama up"; break; fi
+            sleep 1
+          done
+          ollama pull llama3.2:1b
+
+      - name: E2E redaction from mounted DMG
+        env:
+          OLLAMA_HOST: http://127.0.0.1:11434
+        run: |
+          DMG=$(ls -1 MarcutApp-v*-AppStore.dmg | tail -1)
+          echo "Using DMG: $DMG"
+          MNT=$(hdiutil attach -nobrowse "$DMG" | awk '{print $3}' | tail -1)
+          echo "Mounted at: $MNT"
+          APP="$MNT/MarcutApp.app"
+          PYB="$APP/Contents/Resources/python_bundle"
+          ARTDIR="$GITHUB_WORKSPACE/artifacts"
+          mkdir -p "$ARTDIR"
+          INP="$ARTDIR/e2e_input.docx"; OUTDOC="$ARTDIR/e2e_out_dmg.docx"; OUTJSON="$ARTDIR/e2e_report_dmg.json"
+          /bin/bash "$PYB/test_bundle.sh" - "$INP" <<'PY'
+from docx import Document
+from pathlib import Path
+import sys
+p=Path(sys.argv[1]); d=Document(); d.add_paragraph('Email: alice@example.com URL: https://legal.example')
+d.save(p); print('ok')
+PY
+          /bin/bash "$PYB/test_bundle.sh" -m marcut.cli redact --in "$INP" --out "$OUTDOC" --report "$OUTJSON" --backend ollama --model llama3.2:1b --enhanced
+          test -f "$OUTDOC" && test -f "$OUTJSON"
+          hdiutil detach "$MNT"
+
+      - name: E2E redaction from installed copy
+        env:
+          OLLAMA_HOST: http://127.0.0.1:11434
+        run: |
+          DMG=$(ls -1 MarcutApp-v*-AppStore.dmg | tail -1)
+          MNT=$(hdiutil attach -nobrowse "$DMG" | awk '{print $3}' | tail -1)
+          APP_MNT="$MNT/MarcutApp.app"
+          DST="$HOME/Applications/MarcutApp.app"
+          rm -rf "$DST"; mkdir -p "$HOME/Applications"; cp -R "$APP_MNT" "$DST"
+          PYB="$DST/Contents/Resources/python_bundle"
+          ARTDIR="$GITHUB_WORKSPACE/artifacts"
+          INP="$ARTDIR/e2e_input2.docx"; OUTDOC="$ARTDIR/e2e_out_installed.docx"; OUTJSON="$ARTDIR/e2e_report_installed.json"
+          /bin/bash "$PYB/test_bundle.sh" - "$INP" <<'PY'
+from docx import Document
+from pathlib import Path
+import sys
+p=Path(sys.argv[1]); d=Document(); d.add_paragraph('Contact: bob@example.com URL: https://contracts.example')
+d.save(p); print('ok')
+PY
+          /bin/bash "$PYB/test_bundle.sh" -m marcut.cli redact --in "$INP" --out "$OUTDOC" --report "$OUTJSON" --backend ollama --model llama3.2:1b --enhanced
+          test -f "$OUTDOC" && test -f "$OUTJSON"
+          hdiutil detach "$MNT"
+
+      - name: Upload E2E artifacts (redacted documents)
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-redaction
+          path: artifacts/*
+          retention-days: 7
+
+      - name: Notarize & staple on tags
+        if: startsWith(github.ref, 'refs/tags/') && secrets.ASC_API_KEY_ID && secrets.ASC_API_KEY_ISSUER && secrets.ASC_API_KEY_BASE64
+        env:
+          ASC_API_KEY_ID: ${{ secrets.ASC_API_KEY_ID }}
+          ASC_API_KEY_ISSUER: ${{ secrets.ASC_API_KEY_ISSUER }}
+          ASC_API_KEY_BASE64: ${{ secrets.ASC_API_KEY_BASE64 }}
+        run: |
+          chmod +x scripts/notarize_macos.sh || true
+          if [ -f scripts/notarize_macos.sh ]; then
+            ./scripts/notarize_macos.sh MarcutApp-v*-AppStore.dmg
+          else
+            echo "scripts/notarize_macos.sh not present; please add it from upload/scripts/"
+            exit 1
+          fi

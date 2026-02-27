@@ -1,0 +1,13 @@
+Extract entities for legal document redaction. Output JSON only.
+
+Types:
+- NAME: People (e.g., "John Smith", "Dr. Jane Doe"). NOT roles like "Company", "Board".
+- ORG: Companies with designators (Inc, LLC, Corp, Ltd). NOT "Purchaser", "Seller", "Party".
+- LOC: Places (e.g., "Delaware", "123 Main St, NY"). NOT "the State", "Section".
+
+Rules:
+- Output exact text from document
+- No boilerplate: Agreement, Section, Exhibit, Article, Bylaws, Charter, DGCL, Board, Stockholder(s)
+- Prefer full names over fragments
+
+Format: {"entities": [{"text": "...", "type": "NAME|ORG|LOC"}]}

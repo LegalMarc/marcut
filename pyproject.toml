@@ -1,0 +1,47 @@
+
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src/python"]
+include = ["marcut*"]
+exclude = ["runs*", "packaging*", "enhanced_batch_output*", "demo-output*", "hybrid-output*", "improved-output*"]
+
+[project]
+name = "marcut"
+version = "0.2.2"
+description = "Local-first DOCX redaction"
+requires-python = ">=3.9"
+dependencies = [
+  "python-docx>=1.1.0",
+  "lxml>=5.0.0",
+  "rapidfuzz>=3.6.1",
+  "regex>=2024.4.16",
+  "tqdm>=4.66.0",
+  "pydantic>=2.6.4",
+  "dateparser>=1.2.0",
+  "requests>=2.31.0",
+  "numpy>=1.25.0"
+]
+
+[project.optional-dependencies]
+llama = ["llama-cpp-python>=0.2.0"]
+
+[project.scripts]
+marcut = "marcut.cli:main"
+
+[tool.ruff]
+line-length = 88
+target-version = "py39"
+select = ["E", "F", "B"]
+ignore = ["E501"]
+
+[tool.black]
+line-length = 88
+target-version = ['py39']
+
+[tool.isort]
+profile = "black"
+line_length = 88
+

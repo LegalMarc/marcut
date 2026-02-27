@@ -1,0 +1,785 @@
+{\rtf1\ansi\ansicpg1252\cocoartf2867
+\cocoatextscaling0\cocoaplatform0{\fonttbl\f0\fnil\fcharset0 HelveticaNeue-Bold;\f1\fnil\fcharset0 HelveticaNeue;\f2\fmodern\fcharset0 Courier;
+\f3\fnil\fcharset0 HelveticaNeue-Italic;\f4\froman\fcharset0 Times-Roman;\f5\froman\fcharset0 Times-Bold;
+\f6\froman\fcharset0 Times-Italic;}
+{\colortbl;\red255\green255\blue255;\red220\green220\blue220;\red16\green16\blue16;\red183\green187\blue184;
+\red30\green31\blue33;\red0\green0\blue0;\red21\green21\blue21;\red23\green24\blue24;}
+{\*\expandedcolortbl;;\cssrgb\c89020\c89020\c89020;\cssrgb\c7451\c7451\c7843;\cssrgb\c76863\c78039\c77255;
+\cssrgb\c15686\c16471\c17255;\cssrgb\c0\c0\c0;\cssrgb\c10588\c10588\c10588;\cssrgb\c11765\c12157\c12549;}
+{\*\listtable{\list\listtemplateid1\listhybrid{\listlevel\levelnfc23\levelnfcn23\leveljc0\leveljcn0\levelfollow0\levelstartat0\levelspace360\levelindent0{\*\levelmarker \{disc\}}{\leveltext\leveltemplateid1\'01\uc0\u8226 ;}{\levelnumbers;}\fi-360\li720\lin720 }{\listname ;}\listid1}
+{\list\listtemplateid2\listhybrid{\listlevel\levelnfc23\levelnfcn23\leveljc0\leveljcn0\levelfollow0\levelstartat0\levelspace360\levelindent0{\*\levelmarker \{disc\}}{\leveltext\leveltemplateid101\'01\uc0\u8226 ;}{\levelnumbers;}\fi-360\li720\lin720 }{\listname ;}\listid2}
+{\list\listtemplateid3\listhybrid{\listlevel\levelnfc0\levelnfcn0\leveljc0\leveljcn0\levelfollow0\levelstartat1\levelspace360\levelindent0{\*\levelmarker \{decimal\}}{\leveltext\leveltemplateid201\'01\'00;}{\levelnumbers\'01;}\fi-360\li720\lin720 }{\listname ;}\listid3}
+{\list\listtemplateid4\listhybrid{\listlevel\levelnfc23\levelnfcn23\leveljc0\leveljcn0\levelfollow0\levelstartat0\levelspace360\levelindent0{\*\levelmarker \{disc\}}{\leveltext\leveltemplateid301\'01\uc0\u8226 ;}{\levelnumbers;}\fi-360\li720\lin720 }{\listname ;}\listid4}
+{\list\listtemplateid5\listhybrid{\listlevel\levelnfc23\levelnfcn23\leveljc0\leveljcn0\levelfollow0\levelstartat0\levelspace360\levelindent0{\*\levelmarker \{disc\}}{\leveltext\leveltemplateid401\'01\uc0\u8226 ;}{\levelnumbers;}\fi-360\li720\lin720 }{\listname ;}\listid5}
+{\list\listtemplateid6\listhybrid{\listlevel\levelnfc23\levelnfcn23\leveljc0\leveljcn0\levelfollow0\levelstartat0\levelspace360\levelindent0{\*\levelmarker \{disc\}}{\leveltext\leveltemplateid501\'01\uc0\u8226 ;}{\levelnumbers;}\fi-360\li720\lin720 }{\listname ;}\listid6}
+{\list\listtemplateid7\listhybrid{\listlevel\levelnfc23\levelnfcn23\leveljc0\leveljcn0\levelfollow0\levelstartat0\levelspace360\levelindent0{\*\levelmarker \{disc\}}{\leveltext\leveltemplateid601\'01\uc0\u8226 ;}{\levelnumbers;}\fi-360\li720\lin720 }{\listname ;}\listid7}
+{\list\listtemplateid8\listhybrid{\listlevel\levelnfc23\levelnfcn23\leveljc0\leveljcn0\levelfollow0\levelstartat0\levelspace360\levelindent0{\*\levelmarker \{disc\}}{\leveltext\leveltemplateid701\'01\uc0\u8226 ;}{\levelnumbers;}\fi-360\li720\lin720 }{\listname ;}\listid8}}
+{\*\listoverridetable{\listoverride\listid1\listoverridecount0\ls1}{\listoverride\listid2\listoverridecount0\ls2}{\listoverride\listid3\listoverridecount0\ls3}{\listoverride\listid4\listoverridecount0\ls4}{\listoverride\listid5\listoverridecount0\ls5}{\listoverride\listid6\listoverridecount0\ls6}{\listoverride\listid7\listoverridecount0\ls7}{\listoverride\listid8\listoverridecount0\ls8}}
+\margl1440\margr1440\vieww26960\viewh19900\viewkind1
+\deftab720
+\pard\pardeftab720\sa160\partightenfactor0
+
+\f0\b\fs44 \cf2 \cb3 \expnd0\expndtw0\kerning0
+\outl0\strokewidth0 \strokec2 The Digital Paper Trail: A Forensic Guide to.docx Metadata\cb1 \
+\pard\pardeftab720\sa320\partightenfactor0
+
+\f1\b0\fs32 \cf2 \cb3 The evolution of document processing from binary structures to the Office Open XML (OOXML) standard has fundamentally transformed the landscape of digital forensics and legal discovery. For the junior forensic analyst or the litigation specialist using Marcut, it is essential to recognize that a modern\'a0
+\f2\fs28 \cf4 \cb5 \strokec4 .docx
+\f1\fs32 \cf2 \cb3 \strokec2 \'a0file is not a singular, monolithic entity. Instead, it represents a highly structured, modular ecosystem of data, governed by the Open Packaging Conventions (OPC) and the ECMA-376 standard.\'a0To the naked eye, a document is a collection of words and images; to the forensic investigator, it is a complex ZIP archive\'97a container that encapsulates a network of XML files, relationship maps, and binary assets that collectively document the document's entire lifecycle.\'a0\'a0\'a0\cb1 \
+\cb3 While the visible narrative provides the "what" of a case, the metadata\'97the data about data\'97provides the "who, when, where, and how." This forensic guide serves as a comprehensive introduction to navigating the layers of information hidden within the OOXML standard. By mastering the extraction and interpretation of these digital fingerprints, analysts can establish immutable timelines, attribute authorship to specific workstations, and uncover the environmental context where a document was born, edited, or intentionally manipulated.\'a0\'a0\'a0\cb1 \
+\pard\pardeftab720\sa160\partightenfactor0
+
+\f0\b\fs40 \cf2 \cb3 The Anatomy and Architecture of the OOXML Container\cb1 \
+\pard\pardeftab720\sa320\partightenfactor0
+
+\f1\b0\fs32 \cf2 \cb3 The transition from the legacy\'a0
+\f2\fs28 \cf4 \cb5 \strokec4 .doc
+\f1\fs32 \cf2 \cb3 \strokec2 \'a0binary format to the XML-based\'a0
+\f2\fs28 \cf4 \cb5 \strokec4 .docx
+\f1\fs32 \cf2 \cb3 \strokec2 \'a0format was driven by the need for interoperability, transparency, and data recovery. The OOXML architecture relies on the Open Packaging Conventions, which utilize the ZIP compression format to bundle disparate components into a single file package.\'a0This modularity allows applications like Marcut to target specific "parts" of a document without the need to parse the entire file, but it also creates numerous hiding places for "ghost" data and steganographic content.\'a0\'a0\'a0\cb1 \
+\pard\pardeftab720\sa160\partightenfactor0
+
+\f0\b \cf2 \cb3 The Package Root and Master Index\cb1 \
+\pard\pardeftab720\sa320\partightenfactor0
+
+\f1\b0 \cf2 \cb3 Every\'a0
+\f2\fs28 \cf4 \cb5 \strokec4 .docx
+\f1\fs32 \cf2 \cb3 \strokec2 \'a0package contains a root directory that serves as the foundation for its internal file system. The most critical component at this level is the\'a0
+\f2\fs28 \cf4 \cb5 \strokec4 .xml
+\f1\fs32 \cf2 \cb3 \strokec2 \'a0file. This file acts as the master index, defining the MIME types for every other part within the package. From a forensic standpoint, this index is a primary validation tool. Any file present in the ZIP container that is not declared in\'a0
+\f2\fs28 \cf4 \cb5 \strokec4 .xml
+\f1\fs32 \cf2 \cb3 \strokec2 \'a0is an immediate red flag, often indicating the presence of hidden malware, steganographic payloads, or manual tampering that bypassed the Word application.\'a0\'a0\'a0\cb1 \
+\pard\pardeftab720\sa160\partightenfactor0
+
+\f0\b \cf2 \cb3 The Relationship Model and.rels Files\cb1 \
+\pard\pardeftab720\sa320\partightenfactor0
+
+\f1\b0 \cf2 \cb3 Relationships are the "connective tissue" of an OOXML document. They are stored in\'a0
+\f2\fs28 \cf4 \cb5 \strokec4 _rels
+\f1\fs32 \cf2 \cb3 \strokec2 \'a0folders as XML files that define how one part of the package relates to another, or to external resources. The primary relationship file, located at\'a0
+\f2\fs28 \cf4 \cb5 \strokec4 /_rels/.rels
+\f1\fs32 \cf2 \cb3 \strokec2 , identifies the main document part, while the\'a0
+\f2\fs28 \cf4 \cb5 \strokec4 word/_rels/document.xml.rels
+\f1\fs32 \cf2 \cb3 \strokec2 \'a0file maps the internal assets of the document, such as images, headers, and hyperlinks.\'a0\'a0\'a0\cb1 \
+
+\itap1\trowd \taflags0 \trgaph108\trleft-108 \trcbpat8 \trbrdrt\brdrnil \trbrdrl\brdrnil \trbrdrr\brdrnil 
+\clvertalt \clcbpat7 \clwWidth3120\clftsWidth3 \clmart10 \clmarl10 \clmarb10 \clmarr10 \clbrdrt\brdrnil \clbrdrl\brdrnil \clbrdrb\brdrnil \clbrdrr\brdrnil \clpadt160 \clpadl240 \clpadb160 \clpadr240 \gaph\cellx2880
+\clvertalt \clcbpat7 \clwWidth1932\clftsWidth3 \clmart10 \clmarl10 \clmarb10 \clmarr10 \clbrdrt\brdrnil \clbrdrl\brdrnil \clbrdrb\brdrnil \clbrdrr\brdrnil \clpadt160 \clpadl240 \clpadb160 \clpadr240 \gaph\cellx5760
+\clvertalt \clcbpat7 \clwWidth7414\clftsWidth3 \clmart10 \clmarl10 \clmarb10 \clmarr10 \clbrdrt\brdrnil \clbrdrl\brdrnil \clbrdrb\brdrnil \clbrdrr\brdrnil \clpadt160 \clpadl240 \clpadb160 \clpadr240 \gaph\cellx8640
+\pard\intbl\itap1\pardeftab720\partightenfactor0
+
+\fs28 \cf2 \cb3 \strokec6 Relationship Component\cf0 \cb1 \cell 
+\pard\intbl\itap1\pardeftab720\partightenfactor0
+\cf2 \cb3 XML Attribute\cf0 \cb1 \cell 
+\pard\intbl\itap1\pardeftab720\partightenfactor0
+\cf2 \cb3 Forensic Significance\cf0 \cb1 \cell \row
+
+\itap1\trowd \taflags0 \trgaph108\trleft-108 \trcbpat8 \trbrdrl\brdrnil \trbrdrr\brdrnil 
+\clvertalt \clcbpat7 \clwWidth3120\clftsWidth3 \clmart10 \clmarl10 \clmarb10 \clmarr10 \clbrdrt\brdrnil \clbrdrl\brdrnil \clbrdrb\brdrnil \clbrdrr\brdrnil \clpadt160 \clpadl240 \clpadb160 \clpadr240 \gaph\cellx2880
+\clvertalt \clcbpat7 \clwWidth1932\clftsWidth3 \clmart10 \clmarl10 \clmarb10 \clmarr10 \clbrdrt\brdrnil \clbrdrl\brdrnil \clbrdrb\brdrnil \clbrdrr\brdrnil \clpadt160 \clpadl240 \clpadb160 \clpadr240 \gaph\cellx5760
+\clvertalt \clcbpat7 \clwWidth7414\clftsWidth3 \clmart10 \clmarl10 \clmarb10 \clmarr10 \clbrdrt\brdrnil \clbrdrl\brdrnil \clbrdrb\brdrnil \clbrdrr\brdrnil \clpadt160 \clpadl240 \clpadb160 \clpadr240 \gaph\cellx8640
+\pard\intbl\itap1\pardeftab720\partightenfactor0
+\cf2 \cb3 Relationship ID\cf0 \cb1 \cell 
+\pard\intbl\itap1\pardeftab720\partightenfactor0
+
+\f2 \cf4 \cb5 \strokec4 Id
+\f1 \cf0 \cb1 \strokec6 \cell 
+\pard\intbl\itap1\pardeftab720\partightenfactor0
+\cf2 \cb3 A unique identifier (e.g.,\'a0
+\f2 \cf4 \cb5 \strokec4 rId1
+\f1 \cf2 \cb3 \strokec6 ) used to link text to assets.\cf0 \cb1 \cell \row
+
+\itap1\trowd \taflags0 \trgaph108\trleft-108 \trcbpat8 \trbrdrl\brdrnil \trbrdrr\brdrnil 
+\clvertalt \clcbpat7 \clwWidth3120\clftsWidth3 \clmart10 \clmarl10 \clmarb10 \clmarr10 \clbrdrt\brdrnil \clbrdrl\brdrnil \clbrdrb\brdrnil \clbrdrr\brdrnil \clpadt160 \clpadl240 \clpadb160 \clpadr240 \gaph\cellx2880
+\clvertalt \clcbpat7 \clwWidth1932\clftsWidth3 \clmart10 \clmarl10 \clmarb10 \clmarr10 \clbrdrt\brdrnil \clbrdrl\brdrnil \clbrdrb\brdrnil \clbrdrr\brdrnil \clpadt160 \clpadl240 \clpadb160 \clpadr240 \gaph\cellx5760
+\clvertalt \clcbpat7 \clwWidth7414\clftsWidth3 \clmart10 \clmarl10 \clmarb10 \clmarr10 \clbrdrt\brdrnil \clbrdrl\brdrnil \clbrdrb\brdrnil \clbrdrr\brdrnil \clpadt160 \clpadl240 \clpadb160 \clpadr240 \gaph\cellx8640
+\pard\intbl\itap1\pardeftab720\partightenfactor0
+\cf2 \cb3 Target\cf0 \cb1 \cell 
+\pard\intbl\itap1\pardeftab720\partightenfactor0
+
+\f2 \cf4 \cb5 \strokec4 Target
+\f1 \cf0 \cb1 \strokec6 \cell 
+\pard\intbl\itap1\pardeftab720\partightenfactor0
+\cf2 \cb3 The path to the internal or external resource.\cf0 \cb1 \cell \row
+
+\itap1\trowd \taflags0 \trgaph108\trleft-108 \trcbpat8 \trbrdrl\brdrnil \trbrdrr\brdrnil 
+\clvertalt \clcbpat7 \clwWidth3120\clftsWidth3 \clmart10 \clmarl10 \clmarb10 \clmarr10 \clbrdrt\brdrnil \clbrdrl\brdrnil \clbrdrb\brdrnil \clbrdrr\brdrnil \clpadt160 \clpadl240 \clpadb160 \clpadr240 \gaph\cellx2880
+\clvertalt \clcbpat7 \clwWidth1932\clftsWidth3 \clmart10 \clmarl10 \clmarb10 \clmarr10 \clbrdrt\brdrnil \clbrdrl\brdrnil \clbrdrb\brdrnil \clbrdrr\brdrnil \clpadt160 \clpadl240 \clpadb160 \clpadr240 \gaph\cellx5760
+\clvertalt \clcbpat7 \clwWidth7414\clftsWidth3 \clmart10 \clmarl10 \clmarb10 \clmarr10 \clbrdrt\brdrnil \clbrdrl\brdrnil \clbrdrb\brdrnil \clbrdrr\brdrnil \clpadt160 \clpadl240 \clpadb160 \clpadr240 \gaph\cellx8640
+\pard\intbl\itap1\pardeftab720\partightenfactor0
+\cf2 \cb3 Target Mode\cf0 \cb1 \cell 
+\pard\intbl\itap1\pardeftab720\partightenfactor0
+
+\f2 \cf4 \cb5 \strokec4 TargetMode
+\f1 \cf0 \cb1 \strokec6 \cell 
+\pard\intbl\itap1\pardeftab720\partightenfactor0
+\cf2 \cb3 Defines if the resource is "Internal" or "External."\cf0 \cb1 \cell \row
+
+\itap1\trowd \taflags0 \trgaph108\trleft-108 \trcbpat8 \trbrdrl\brdrnil \trbrdrt\brdrnil \trbrdrr\brdrnil 
+\clvertalt \clcbpat7 \clwWidth3120\clftsWidth3 \clmart10 \clmarl10 \clmarb10 \clmarr10 \clbrdrt\brdrnil \clbrdrl\brdrnil \clbrdrb\brdrnil \clbrdrr\brdrnil \clpadt160 \clpadl240 \clpadb160 \clpadr240 \gaph\cellx2880
+\clvertalt \clcbpat7 \clwWidth1932\clftsWidth3 \clmart10 \clmarl10 \clmarb10 \clmarr10 \clbrdrt\brdrnil \clbrdrl\brdrnil \clbrdrb\brdrnil \clbrdrr\brdrnil \clpadt160 \clpadl240 \clpadb160 \clpadr240 \gaph\cellx5760
+\clvertalt \clcbpat7 \clwWidth7414\clftsWidth3 \clmart10 \clmarl10 \clmarb10 \clmarr10 \clbrdrt\brdrnil \clbrdrl\brdrnil \clbrdrb\brdrnil \clbrdrr\brdrnil \clpadt160 \clpadl240 \clpadb160 \clpadr240 \gaph\cellx8640
+\pard\intbl\itap1\pardeftab720\partightenfactor0
+\cf2 \cb3 Type\cf0 \cb1 \cell 
+\pard\intbl\itap1\pardeftab720\partightenfactor0
+
+\f2 \cf4 \cb5 \strokec4 Type
+\f1 \cf0 \cb1 \strokec6 \cell 
+\pard\intbl\itap1\pardeftab720\partightenfactor0
+\cf2 \cb3 The schema definition (e.g., image, hyperlink, or template).\cf0 \cb1 \cell \lastrow\row
+\pard\pardeftab720\sa320\partightenfactor0
+
+\fs32 \cf2 \cb3 \strokec2 Analysing the\'a0
+\f2\fs28 \cf4 \cb5 \strokec4 Target
+\f1\fs32 \cf2 \cb3 \strokec2 \'a0attribute is a high-value forensic activity. For instance, a relationship target pointing to a local file path like\'a0
+\f2\fs28 \cf4 \cb5 \strokec4 C:\\Users\\JohnDoe\\Documents\\Confidential\\evidence.jpg
+\f1\fs32 \cf2 \cb3 \strokec2 \'a0provides a direct link to the creator's local directory structure, even if the image itself has been deleted or moved.\'a0Furthermore, external targets pointing to remote URLs can indicate "Remote Template Injection" attacks, where a document is configured to fetch a malicious template from an attacker-controlled server upon opening.\'a0\'a0\'a0\cb1 \
+\pard\pardeftab720\sa160\partightenfactor0
+
+\f0\b\fs40 \cf2 \cb3 Core and Extended Property Metadata\cb1 \
+\pard\pardeftab720\sa320\partightenfactor0
+
+\f1\b0\fs32 \cf2 \cb3 Metadata in the OOXML standard is categorized primarily into core properties, which follow the Dublin Core Metadata Initiative (DCMI), and extended or custom properties, which provide application-specific statistics and user-defined governance labels.\'a0\'a0\'a0\cb1 \
+\pard\pardeftab720\sa160\partightenfactor0
+
+\f0\b \cf2 \cb3 Core Properties (docProps/core.xml)\cb1 \
+\pard\pardeftab720\sa320\partightenfactor0
+
+\f1\b0 \cf2 \cb3 The\'a0
+\f2\fs28 \cf4 \cb5 \strokec4 core.xml
+\f1\fs32 \cf2 \cb3 \strokec2 \'a0file is the "digital ID card" of the document. It contains the standard timestamps and authorship fields that are most frequently introduced as evidence in legal proceedings.\'a0\'a0\'a0\cb1 \
+
+\itap1\trowd \taflags0 \trgaph108\trleft-108 \trcbpat8 \trbrdrt\brdrnil \trbrdrl\brdrnil \trbrdrr\brdrnil 
+\clvertalt \clcbpat7 \clwWidth2147\clftsWidth3 \clmart10 \clmarl10 \clmarb10 \clmarr10 \clbrdrt\brdrnil \clbrdrl\brdrnil \clbrdrb\brdrnil \clbrdrr\brdrnil \clpadt160 \clpadl240 \clpadb160 \clpadr240 \gaph\cellx2880
+\clvertalt \clcbpat7 \clwWidth3139\clftsWidth3 \clmart10 \clmarl10 \clmarb10 \clmarr10 \clbrdrt\brdrnil \clbrdrl\brdrnil \clbrdrb\brdrnil \clbrdrr\brdrnil \clpadt160 \clpadl240 \clpadb160 \clpadr240 \gaph\cellx5760
+\clvertalt \clcbpat7 \clwWidth7096\clftsWidth3 \clmart10 \clmarl10 \clmarb10 \clmarr10 \clbrdrt\brdrnil \clbrdrl\brdrnil \clbrdrb\brdrnil \clbrdrr\brdrnil \clpadt160 \clpadl240 \clpadb160 \clpadr240 \gaph\cellx8640
+\pard\intbl\itap1\pardeftab720\partightenfactor0
+
+\fs28 \cf2 \cb3 \strokec6 Property\cf0 \cb1 \cell 
+\pard\intbl\itap1\pardeftab720\partightenfactor0
+\cf2 \cb3 XML Element\cf0 \cb1 \cell 
+\pard\intbl\itap1\pardeftab720\partightenfactor0
+\cf2 \cb3 Forensic Interpretation\cf0 \cb1 \cell \row
+
+\itap1\trowd \taflags0 \trgaph108\trleft-108 \trcbpat8 \trbrdrl\brdrnil \trbrdrr\brdrnil 
+\clvertalt \clcbpat7 \clwWidth2147\clftsWidth3 \clmart10 \clmarl10 \clmarb10 \clmarr10 \clbrdrt\brdrnil \clbrdrl\brdrnil \clbrdrb\brdrnil \clbrdrr\brdrnil \clpadt160 \clpadl240 \clpadb160 \clpadr240 \gaph\cellx2880
+\clvertalt \clcbpat7 \clwWidth3139\clftsWidth3 \clmart10 \clmarl10 \clmarb10 \clmarr10 \clbrdrt\brdrnil \clbrdrl\brdrnil \clbrdrb\brdrnil \clbrdrr\brdrnil \clpadt160 \clpadl240 \clpadb160 \clpadr240 \gaph\cellx5760
+\clvertalt \clcbpat7 \clwWidth7096\clftsWidth3 \clmart10 \clmarl10 \clmarb10 \clmarr10 \clbrdrt\brdrnil \clbrdrl\brdrnil \clbrdrb\brdrnil \clbrdrr\brdrnil \clpadt160 \clpadl240 \clpadb160 \clpadr240 \gaph\cellx8640
+\pard\intbl\itap1\pardeftab720\partightenfactor0
+\cf2 \cb3 Creator\cf0 \cb1 \cell 
+\pard\intbl\itap1\pardeftab720\partightenfactor0
+
+\f2 \cf4 \cb5 \strokec4 dc:creator
+\f1 \cf0 \cb1 \strokec6 \cell 
+\pard\intbl\itap1\pardeftab720\partightenfactor0
+\cf2 \cb3 The user profile that initially created the document.\cf0 \cb1 \cell \row
+
+\itap1\trowd \taflags0 \trgaph108\trleft-108 \trcbpat8 \trbrdrl\brdrnil \trbrdrr\brdrnil 
+\clvertalt \clcbpat7 \clwWidth2147\clftsWidth3 \clmart10 \clmarl10 \clmarb10 \clmarr10 \clbrdrt\brdrnil \clbrdrl\brdrnil \clbrdrb\brdrnil \clbrdrr\brdrnil \clpadt160 \clpadl240 \clpadb160 \clpadr240 \gaph\cellx2880
+\clvertalt \clcbpat7 \clwWidth3139\clftsWidth3 \clmart10 \clmarl10 \clmarb10 \clmarr10 \clbrdrt\brdrnil \clbrdrl\brdrnil \clbrdrb\brdrnil \clbrdrr\brdrnil \clpadt160 \clpadl240 \clpadb160 \clpadr240 \gaph\cellx5760
+\clvertalt \clcbpat7 \clwWidth7096\clftsWidth3 \clmart10 \clmarl10 \clmarb10 \clmarr10 \clbrdrt\brdrnil \clbrdrl\brdrnil \clbrdrb\brdrnil \clbrdrr\brdrnil \clpadt160 \clpadl240 \clpadb160 \clpadr240 \gaph\cellx8640
+\pard\intbl\itap1\pardeftab720\partightenfactor0
+\cf2 \cb3 Last Modified By\cf0 \cb1 \cell 
+\pard\intbl\itap1\pardeftab720\partightenfactor0
+
+\f2 \cf4 \cb5 \strokec4 cp:lastModifiedBy
+\f1 \cf0 \cb1 \strokec6 \cell 
+\pard\intbl\itap1\pardeftab720\partightenfactor0
+\cf2 \cb3 The user profile that performed the last save operation.\cf0 \cb1 \cell \row
+
+\itap1\trowd \taflags0 \trgaph108\trleft-108 \trcbpat8 \trbrdrl\brdrnil \trbrdrr\brdrnil 
+\clvertalt \clcbpat7 \clwWidth2147\clftsWidth3 \clmart10 \clmarl10 \clmarb10 \clmarr10 \clbrdrt\brdrnil \clbrdrl\brdrnil \clbrdrb\brdrnil \clbrdrr\brdrnil \clpadt160 \clpadl240 \clpadb160 \clpadr240 \gaph\cellx2880
+\clvertalt \clcbpat7 \clwWidth3139\clftsWidth3 \clmart10 \clmarl10 \clmarb10 \clmarr10 \clbrdrt\brdrnil \clbrdrl\brdrnil \clbrdrb\brdrnil \clbrdrr\brdrnil \clpadt160 \clpadl240 \clpadb160 \clpadr240 \gaph\cellx5760
+\clvertalt \clcbpat7 \clwWidth7096\clftsWidth3 \clmart10 \clmarl10 \clmarb10 \clmarr10 \clbrdrt\brdrnil \clbrdrl\brdrnil \clbrdrb\brdrnil \clbrdrr\brdrnil \clpadt160 \clpadl240 \clpadb160 \clpadr240 \gaph\cellx8640
+\pard\intbl\itap1\pardeftab720\partightenfactor0
+\cf2 \cb3 Created Date\cf0 \cb1 \cell 
+\pard\intbl\itap1\pardeftab720\partightenfactor0
+
+\f2 \cf4 \cb5 \strokec4 dcterms:created
+\f1 \cf0 \cb1 \strokec6 \cell 
+\pard\intbl\itap1\pardeftab720\partightenfactor0
+\cf2 \cb3 Initial creation timestamp in UTC format.\cf0 \cb1 \cell \row
+
+\itap1\trowd \taflags0 \trgaph108\trleft-108 \trcbpat8 \trbrdrl\brdrnil \trbrdrr\brdrnil 
+\clvertalt \clcbpat7 \clwWidth2147\clftsWidth3 \clmart10 \clmarl10 \clmarb10 \clmarr10 \clbrdrt\brdrnil \clbrdrl\brdrnil \clbrdrb\brdrnil \clbrdrr\brdrnil \clpadt160 \clpadl240 \clpadb160 \clpadr240 \gaph\cellx2880
+\clvertalt \clcbpat7 \clwWidth3139\clftsWidth3 \clmart10 \clmarl10 \clmarb10 \clmarr10 \clbrdrt\brdrnil \clbrdrl\brdrnil \clbrdrb\brdrnil \clbrdrr\brdrnil \clpadt160 \clpadl240 \clpadb160 \clpadr240 \gaph\cellx5760
+\clvertalt \clcbpat7 \clwWidth7096\clftsWidth3 \clmart10 \clmarl10 \clmarb10 \clmarr10 \clbrdrt\brdrnil \clbrdrl\brdrnil \clbrdrb\brdrnil \clbrdrr\brdrnil \clpadt160 \clpadl240 \clpadb160 \clpadr240 \gaph\cellx8640
+\pard\intbl\itap1\pardeftab720\partightenfactor0
+\cf2 \cb3 Modified Date\cf0 \cb1 \cell 
+\pard\intbl\itap1\pardeftab720\partightenfactor0
+
+\f2 \cf4 \cb5 \strokec4 dcterms:modified
+\f1 \cf0 \cb1 \strokec6 \cell 
+\pard\intbl\itap1\pardeftab720\partightenfactor0
+\cf2 \cb3 Last modification timestamp in UTC format.\cf0 \cb1 \cell \row
+
+\itap1\trowd \taflags0 \trgaph108\trleft-108 \trcbpat8 \trbrdrl\brdrnil \trbrdrt\brdrnil \trbrdrr\brdrnil 
+\clvertalt \clcbpat7 \clwWidth2147\clftsWidth3 \clmart10 \clmarl10 \clmarb10 \clmarr10 \clbrdrt\brdrnil \clbrdrl\brdrnil \clbrdrb\brdrnil \clbrdrr\brdrnil \clpadt160 \clpadl240 \clpadb160 \clpadr240 \gaph\cellx2880
+\clvertalt \clcbpat7 \clwWidth3139\clftsWidth3 \clmart10 \clmarl10 \clmarb10 \clmarr10 \clbrdrt\brdrnil \clbrdrl\brdrnil \clbrdrb\brdrnil \clbrdrr\brdrnil \clpadt160 \clpadl240 \clpadb160 \clpadr240 \gaph\cellx5760
+\clvertalt \clcbpat7 \clwWidth7096\clftsWidth3 \clmart10 \clmarl10 \clmarb10 \clmarr10 \clbrdrt\brdrnil \clbrdrl\brdrnil \clbrdrb\brdrnil \clbrdrr\brdrnil \clpadt160 \clpadl240 \clpadb160 \clpadr240 \gaph\cellx8640
+\pard\intbl\itap1\pardeftab720\partightenfactor0
+\cf2 \cb3 Revision\cf0 \cb1 \cell 
+\pard\intbl\itap1\pardeftab720\partightenfactor0
+
+\f2 \cf4 \cb5 \strokec4 cp:revision
+\f1 \cf0 \cb1 \strokec6 \cell 
+\pard\intbl\itap1\pardeftab720\partightenfactor0
+\cf2 \cb3 An integer representing the total number of save events.\cf0 \cb1 \cell \lastrow\row
+\pard\pardeftab720\sa320\partightenfactor0
+
+\fs32 \cf2 \cb3 \strokec2 A common forensic insight involves comparing the\'a0
+\f2\fs28 \cf4 \cb5 \strokec4 Creator
+\f1\fs32 \cf2 \cb3 \strokec2 \'a0and\'a0
+\f2\fs28 \cf4 \cb5 \strokec4 Last Modified By
+\f1\fs32 \cf2 \cb3 \strokec2 \'a0fields. In procurement fraud cases, investigators have identified collusion when multiple bid documents, supposedly from competing firms, all shared the same\'a0
+\f2\fs28 \cf4 \cb5 \strokec4 Creator
+\f1\fs32 \cf2 \cb3 \strokec2 \'a0metadata, indicating they originated from a single source within the organization.\'a0Similarly, a high revision count coupled with a very short duration between the creation and modification dates suggests a document that was heavily edited elsewhere and then "pasted" into a new file to hide its true history.\'a0\'a0\'a0\cb1 \
+\pard\pardeftab720\sa160\partightenfactor0
+
+\f0\b \cf2 \cb3 Extended Properties (docProps/app.xml)\cb1 \
+\pard\pardeftab720\sa320\partightenfactor0
+
+\f1\b0 \cf2 \cb3 The\'a0
+\f2\fs28 \cf4 \cb5 \strokec4 app.xml
+\f1\fs32 \cf2 \cb3 \strokec2 \'a0file houses statistical metadata generated by the Microsoft Word application. While core properties provide a timeline, extended properties provide an audit of the document's production process.\'a0\'a0\'a0\cb1 \
+\cb3 One of the most valuable fields in\'a0
+\f2\fs28 \cf4 \cb5 \strokec4 app.xml
+\f1\fs32 \cf2 \cb3 \strokec2 \'a0is the\'a0
+\f2\fs28 \cf4 \cb5 \strokec4 TotalTime
+\f1\fs32 \cf2 \cb3 \strokec2 \'a0element, which tracks the cumulative number of minutes the document has been active for editing. A "0" or unusually low value in a lengthy or complex document is a classic indicator of metadata scrubbing or content transplantation.\'a0Additionally, the\'a0
+\f2\fs28 \cf4 \cb5 \strokec4 Template
+\f1\fs32 \cf2 \cb3 \strokec2 \'a0field records the name of the base template used. Forensic analysis of this field can reveal the use of proprietary organizational templates or specific versions of\'a0
+\f2\fs28 \cf4 \cb5 \strokec4 Normal.dotm
+\f1\fs32 \cf2 \cb3 \strokec2 , which can then be cross-referenced with the subject's computer to confirm the document's origin.\'a0\'a0\'a0\cb1 \
+\pard\pardeftab720\sa160\partightenfactor0
+
+\f0\b \cf2 \cb3 Custom Properties and Sensitivity Labels (custom.xml)\cb1 \
+\pard\pardeftab720\sa320\partightenfactor0
+
+\f1\b0 \cf2 \cb3 The\'a0
+\f2\fs28 \cf4 \cb5 \strokec4 custom.xml
+\f1\fs32 \cf2 \cb3 \strokec2 \'a0file allows for user-defined metadata. In high-stakes legal and corporate environments, this file is often used to store Microsoft Information Protection (MIP) sensitivity labels.\'a0These labels are critical for forensic investigators tracking the mishandling of sensitive data.\'a0\'a0\'a0\cb1 \
+
+\itap1\trowd \taflags0 \trgaph108\trleft-108 \trcbpat8 \trbrdrt\brdrnil \trbrdrl\brdrnil \trbrdrr\brdrnil 
+\clvertalt \clcbpat7 \clwWidth4104\clftsWidth3 \clmart10 \clmarl10 \clmarb10 \clmarr10 \clbrdrt\brdrnil \clbrdrl\brdrnil \clbrdrb\brdrnil \clbrdrr\brdrnil \clpadt160 \clpadl240 \clpadb160 \clpadr240 \gaph\cellx2880
+\clvertalt \clcbpat7 \clwWidth2438\clftsWidth3 \clmart10 \clmarl10 \clmarb10 \clmarr10 \clbrdrt\brdrnil \clbrdrl\brdrnil \clbrdrb\brdrnil \clbrdrr\brdrnil \clpadt160 \clpadl240 \clpadb160 \clpadr240 \gaph\cellx5760
+\clvertalt \clcbpat7 \clwWidth5923\clftsWidth3 \clmart10 \clmarl10 \clmarb10 \clmarr10 \clbrdrt\brdrnil \clbrdrl\brdrnil \clbrdrb\brdrnil \clbrdrr\brdrnil \clpadt160 \clpadl240 \clpadb160 \clpadr240 \gaph\cellx8640
+\pard\intbl\itap1\pardeftab720\partightenfactor0
+
+\fs28 \cf2 \cb3 \strokec6 MIP Attribute\cf0 \cb1 \cell 
+\pard\intbl\itap1\pardeftab720\partightenfactor0
+\cf2 \cb3 Value Format\cf0 \cb1 \cell 
+\pard\intbl\itap1\pardeftab720\partightenfactor0
+\cf2 \cb3 Forensic Value\cf0 \cb1 \cell \row
+
+\itap1\trowd \taflags0 \trgaph108\trleft-108 \trcbpat8 \trbrdrl\brdrnil \trbrdrr\brdrnil 
+\clvertalt \clcbpat7 \clwWidth4104\clftsWidth3 \clmart10 \clmarl10 \clmarb10 \clmarr10 \clbrdrt\brdrnil \clbrdrl\brdrnil \clbrdrb\brdrnil \clbrdrr\brdrnil \clpadt160 \clpadl240 \clpadb160 \clpadr240 \gaph\cellx2880
+\clvertalt \clcbpat7 \clwWidth2438\clftsWidth3 \clmart10 \clmarl10 \clmarb10 \clmarr10 \clbrdrt\brdrnil \clbrdrl\brdrnil \clbrdrb\brdrnil \clbrdrr\brdrnil \clpadt160 \clpadl240 \clpadb160 \clpadr240 \gaph\cellx5760
+\clvertalt \clcbpat7 \clwWidth5923\clftsWidth3 \clmart10 \clmarl10 \clmarb10 \clmarr10 \clbrdrt\brdrnil \clbrdrl\brdrnil \clbrdrb\brdrnil \clbrdrr\brdrnil \clpadt160 \clpadl240 \clpadb160 \clpadr240 \gaph\cellx8640
+\pard\intbl\itap1\pardeftab720\partightenfactor0
+
+\f2 \cf4 \cb5 \strokec4 MSIP_Label_GUID_Enabled
+\f1 \cf0 \cb1 \strokec6 \cell 
+\pard\intbl\itap1\pardeftab720\partightenfactor0
+\cf2 \cb3 Boolean\cf0 \cb1 \cell 
+\pard\intbl\itap1\pardeftab720\partightenfactor0
+\cf2 \cb3 Confirms if a sensitivity policy was active.\cf0 \cb1 \cell \row
+
+\itap1\trowd \taflags0 \trgaph108\trleft-108 \trcbpat8 \trbrdrl\brdrnil \trbrdrr\brdrnil 
+\clvertalt \clcbpat7 \clwWidth4104\clftsWidth3 \clmart10 \clmarl10 \clmarb10 \clmarr10 \clbrdrt\brdrnil \clbrdrl\brdrnil \clbrdrb\brdrnil \clbrdrr\brdrnil \clpadt160 \clpadl240 \clpadb160 \clpadr240 \gaph\cellx2880
+\clvertalt \clcbpat7 \clwWidth2438\clftsWidth3 \clmart10 \clmarl10 \clmarb10 \clmarr10 \clbrdrt\brdrnil \clbrdrl\brdrnil \clbrdrb\brdrnil \clbrdrr\brdrnil \clpadt160 \clpadl240 \clpadb160 \clpadr240 \gaph\cellx5760
+\clvertalt \clcbpat7 \clwWidth5923\clftsWidth3 \clmart10 \clmarl10 \clmarb10 \clmarr10 \clbrdrt\brdrnil \clbrdrl\brdrnil \clbrdrb\brdrnil \clbrdrr\brdrnil \clpadt160 \clpadl240 \clpadb160 \clpadr240 \gaph\cellx8640
+\pard\intbl\itap1\pardeftab720\partightenfactor0
+
+\f2 \cf4 \cb5 \strokec4 MSIP_Label_GUID_SetDate
+\f1 \cf0 \cb1 \strokec6 \cell 
+\pard\intbl\itap1\pardeftab720\partightenfactor0
+\cf2 \cb3 ISO 8601 Timestamp\cf0 \cb1 \cell 
+\pard\intbl\itap1\pardeftab720\partightenfactor0
+\cf2 \cb3 Precise time when the classification was applied.\cf0 \cb1 \cell \row
+
+\itap1\trowd \taflags0 \trgaph108\trleft-108 \trcbpat8 \trbrdrl\brdrnil \trbrdrr\brdrnil 
+\clvertalt \clcbpat7 \clwWidth4104\clftsWidth3 \clmart10 \clmarl10 \clmarb10 \clmarr10 \clbrdrt\brdrnil \clbrdrl\brdrnil \clbrdrb\brdrnil \clbrdrr\brdrnil \clpadt160 \clpadl240 \clpadb160 \clpadr240 \gaph\cellx2880
+\clvertalt \clcbpat7 \clwWidth2438\clftsWidth3 \clmart10 \clmarl10 \clmarb10 \clmarr10 \clbrdrt\brdrnil \clbrdrl\brdrnil \clbrdrb\brdrnil \clbrdrr\brdrnil \clpadt160 \clpadl240 \clpadb160 \clpadr240 \gaph\cellx5760
+\clvertalt \clcbpat7 \clwWidth5923\clftsWidth3 \clmart10 \clmarl10 \clmarb10 \clmarr10 \clbrdrt\brdrnil \clbrdrl\brdrnil \clbrdrb\brdrnil \clbrdrr\brdrnil \clpadt160 \clpadl240 \clpadb160 \clpadr240 \gaph\cellx8640
+\pard\intbl\itap1\pardeftab720\partightenfactor0
+
+\f2 \cf4 \cb5 \strokec4 MSIP_Label_GUID_Method
+\f1 \cf0 \cb1 \strokec6 \cell 
+\pard\intbl\itap1\pardeftab720\partightenfactor0
+\cf2 \cb3 "Standard" or "Privileged"\cf0 \cb1 \cell 
+\pard\intbl\itap1\pardeftab720\partightenfactor0
+\cf2 \cb3 Distinguishes between automatic and manual labeling.\cf0 \cb1 \cell \row
+
+\itap1\trowd \taflags0 \trgaph108\trleft-108 \trcbpat8 \trbrdrl\brdrnil \trbrdrt\brdrnil \trbrdrr\brdrnil 
+\clvertalt \clcbpat7 \clwWidth4104\clftsWidth3 \clmart10 \clmarl10 \clmarb10 \clmarr10 \clbrdrt\brdrnil \clbrdrl\brdrnil \clbrdrb\brdrnil \clbrdrr\brdrnil \clpadt160 \clpadl240 \clpadb160 \clpadr240 \gaph\cellx2880
+\clvertalt \clcbpat7 \clwWidth2438\clftsWidth3 \clmart10 \clmarl10 \clmarb10 \clmarr10 \clbrdrt\brdrnil \clbrdrl\brdrnil \clbrdrb\brdrnil \clbrdrr\brdrnil \clpadt160 \clpadl240 \clpadb160 \clpadr240 \gaph\cellx5760
+\clvertalt \clcbpat7 \clwWidth5923\clftsWidth3 \clmart10 \clmarl10 \clmarb10 \clmarr10 \clbrdrt\brdrnil \clbrdrl\brdrnil \clbrdrb\brdrnil \clbrdrr\brdrnil \clpadt160 \clpadl240 \clpadb160 \clpadr240 \gaph\cellx8640
+\pard\intbl\itap1\pardeftab720\partightenfactor0
+
+\f2 \cf4 \cb5 \strokec4 MSIP_Label_GUID_SiteId
+\f1 \cf0 \cb1 \strokec6 \cell 
+\pard\intbl\itap1\pardeftab720\partightenfactor0
+\cf2 \cb3 GUID\cf0 \cb1 \cell 
+\pard\intbl\itap1\pardeftab720\partightenfactor0
+\cf2 \cb3 Identifies the specific Microsoft Entra tenant (Organization ID).\cf0 \cb1 \cell \lastrow\row
+\pard\pardeftab720\sa320\partightenfactor0
+
+\fs32 \cf2 \cb3 \strokec2 The presence of the\'a0
+\f2\fs28 \cf4 \cb5 \strokec4 Privileged
+\f1\fs32 \cf2 \cb3 \strokec2 \'a0method indicates a user manually selected the label, which can be used to prove intent in data exfiltration cases. If a user downgrades a label from "Highly Confidential" to "Public" before emailing a file, the\'a0
+\f2\fs28 \cf4 \cb5 \strokec4 custom.xml
+\f1\fs32 \cf2 \cb3 \strokec2 \'a0(or\'a0
+\f2\fs28 \cf4 \cb5 \strokec4 \\docMetadata\\
+\f1\fs32 \cf2 \cb3 \strokec2 ) audit trail will reflect this change, providing evidence of policy evasion.\'a0\'a0\'a0\cb1 \
+\pard\pardeftab720\sa160\partightenfactor0
+
+\f0\b\fs40 \cf2 \cb3 Revision Session Identifiers (RSIDs): The Forensic Heartbeat\cb1 \
+\pard\pardeftab720\sa320\partightenfactor0
+
+\f1\b0\fs32 \cf2 \cb3 Perhaps the most powerful and technically nuanced artifact in the\'a0
+\f2\fs28 \cf4 \cb5 \strokec4 .docx
+\f1\fs32 \cf2 \cb3 \strokec2 \'a0format is the Revision Session Identifier (RSID). RSIDs are four-digit hexadecimal numbers (e.g.,\'a0
+\f2\fs28 \cf4 \cb5 \strokec4 00BE2C6C
+\f1\fs32 \cf2 \cb3 \strokec2 ) assigned by Microsoft Word to track individual editing sessions.\'a0An editing session is defined as the period between two save actions.\'a0\'a0\'a0\cb1 \
+\pard\pardeftab720\sa160\partightenfactor0
+
+\f0\b \cf2 \cb3 The Mechanism of RSID Propagation\cb1 \
+\pard\pardeftab720\sa320\partightenfactor0
+
+\f1\b0 \cf2 \cb3 When a document is edited and saved, Word generates a new RSID and uses it to tag every insertion, deletion, and formatting change made during that session. These IDs are stored in a summary table called the\'a0
+\f2\fs28 \cf4 \cb5 \strokec4 rsidtbl
+\f1\fs32 \cf2 \cb3 \strokec2 \'a0within\'a0
+\f2\fs28 \cf4 \cb5 \strokec4 word/settings.xml
+\f1\fs32 \cf2 \cb3 \strokec2 . The\'a0
+\f2\fs28 \cf4 \cb5 \strokec4 rsidRoot
+\f1\fs32 \cf2 \cb3 \strokec2 \'a0represents the initial ID assigned when the document was first created.\'a0\'a0\'a0\cb1 \
+\cb3 The retention of RSIDs is what enables "document genealogy." If two documents have entirely different text but share an identical\'a0
+\f2\fs28 \cf4 \cb5 \strokec4 rsidRoot
+\f1\fs32 \cf2 \cb3 \strokec2 \'a0and a majority of the same IDs in their\'a0
+\f2\fs28 \cf4 \cb5 \strokec4 rsidtbl
+\f1\fs32 \cf2 \cb3 \strokec2 , they are undeniably related by a common ancestor.\'a0This technique is used extensively to detect academic plagiarism and contract cheating. Research has shown that RSIDs are highly unique; a study detected only a 2% false positive rate where unrelated documents shared identifiers, making them a robust tool for establishing the source of intellectual property.\'a0\'a0\'a0\cb1 \
+\pard\pardeftab720\sa160\partightenfactor0
+
+\f0\b \cf2 \cb3 Tracing Authorship through Template Signatures\cb1 \
+\pard\pardeftab720\sa320\partightenfactor0
+
+\f1\b0 \cf2 \cb3 RSIDs also serve as machine signatures. When Microsoft Word is first installed on a computer, it generates "legacy RSIDs" in the\'a0
+\f2\fs28 \cf4 \cb5 \strokec4 normal.dotm
+\f1\fs32 \cf2 \cb3 \strokec2 \'a0template. Every new document created on that machine will inherit these specific RSIDs as part of its baseline metadata.\'a0This allows forensic analysts to link a document back to a specific installation of Word, providing a "fingerprint" of the workstation used even if the author's name has been changed in the core properties.\'a0\'a0\'a0\cb1 \
+\pard\pardeftab720\sa160\partightenfactor0
+
+\f0\b\fs40 \cf2 \cb3 Structural Metadata and the Digital Environment\cb1 \
+\pard\pardeftab720\sa320\partightenfactor0
+
+\f1\b0\fs32 \cf2 \cb3 Structural metadata reveals the "blueprint" of the document and its relationship to the external digital world. This information is primarily housed in\'a0
+\f2\fs28 \cf4 \cb5 \strokec4 settings.xml
+\f1\fs32 \cf2 \cb3 \strokec2 \'a0and the various\'a0
+\f2\fs28 \cf4 \cb5 \strokec4 _rels
+\f1\fs32 \cf2 \cb3 \strokec2 \'a0files.\cb1 \
+\pard\pardeftab720\sa160\partightenfactor0
+
+\f0\b \cf2 \cb3 Attached Templates and Network Paths\cb1 \
+\pard\pardeftab720\sa320\partightenfactor0
+
+\f1\b0 \cf2 \cb3 The\'a0
+\f2\fs28 \cf4 \cb5 \strokec4 word/settings.xml
+\f1\fs32 \cf2 \cb3 \strokec2 \'a0file often contains the\'a0
+\f2\fs28 \cf4 \cb5 \strokec4 attachedTemplate
+\f1\fs32 \cf2 \cb3 \strokec2 \'a0element, which stores the full local or network path of the template used to generate the document. This path is a frequent source of "leaked" information, often containing the local Windows username (e.g.,\'a0
+\f2\fs28 \cf4 \cb5 \strokec4 C:\\Users\\JohnDoe\\AppData\\Roaming\\Microsoft\\Templates\\Normal.dotm
+\f1\fs32 \cf2 \cb3 \strokec2 ) or internal server names.\'a0In cases of anonymous harassment or leaked corporate memos, this path can provide the critical link to a specific employee\'92s account.\'a0\'a0\'a0\cb1 \
+\pard\pardeftab720\sa160\partightenfactor0
+
+\f0\b \cf2 \cb3 Printer Settings and Hardware Attribution\cb1 \
+\pard\pardeftab720\sa320\partightenfactor0
+
+\f1\b0 \cf2 \cb3 Another often-overlooked artifact in\'a0
+\f2\fs28 \cf4 \cb5 \strokec4 settings.xml
+\f1\fs32 \cf2 \cb3 \strokec2 \'a0is the reference to printer settings. Word documents may contain binary parts (e.g.,\'a0
+\f2\fs28 \cf4 \cb5 \strokec4 printerSettings1.bin
+\f1\fs32 \cf2 \cb3 \strokec2 ) that store the configuration of the last printer used. This can include the printer's network name, model, and even the paper tray configurations. For an investigator, this data can be used to correlate a digital file with physical hardware found at a suspect's location, establishing that the document was not only created on a certain computer but also printed on a certain device.\'a0\'a0\'a0\cb1 \
+\pard\pardeftab720\sa160\partightenfactor0
+
+\f0\b\fs40 \cf2 \cb3 The "Hidden Cargo": Media, OLE Objects, and Thumbnails\cb1 \
+\pard\pardeftab720\sa320\partightenfactor0
+
+\f1\b0\fs32 \cf2 \cb3 The\'a0
+\f2\fs28 \cf4 \cb5 \strokec4 .docx
+\f1\fs32 \cf2 \cb3 \strokec2 \'a0container is frequently used to transport other files, and the way these assets are handled by the OOXML standard creates significant forensic opportunities.\cb1 \
+\pard\pardeftab720\sa160\partightenfactor0
+
+\f0\b \cf2 \cb3 Embedded Image EXIF Data\cb1 \
+\pard\pardeftab720\sa160\partightenfactor0
+
+\f1\b0 \cf2 \cb3 When a user inserts a photo into a Word document, the application stores a copy of that image in the\'a0
+\f2\fs28 \cf4 \cb5 \strokec4 word/media/
+\f1\fs32 \cf2 \cb3 \strokec2 \'a0folder. Word does not automatically strip the metadata from these files. Consequently, a JPEG embedded in a document may still contain its original Exchangeable Image File Format (EXIF) data, including:\cb1 \
+\pard\tx220\tx720\pardeftab720\li720\fi-720\sa160\partightenfactor0
+\ls1\ilvl0
+\f0\b \cf2 \cb3 \kerning1\expnd0\expndtw0 \outl0\strokewidth0 {\listtext	\uc0\u8226 	}\expnd0\expndtw0\kerning0
+\outl0\strokewidth0 \strokec2 GPS Coordinates
+\f1\b0 : The exact location where the photo was taken.\'a0\'a0\'a0\cb1 \
+\ls1\ilvl0
+\f0\b \cb3 \kerning1\expnd0\expndtw0 \outl0\strokewidth0 {\listtext	\uc0\u8226 	}\expnd0\expndtw0\kerning0
+\outl0\strokewidth0 \strokec2 Device Information
+\f1\b0 : The serial number and model of the camera or smartphone used.\'a0\'a0\'a0\cb1 \
+\ls1\ilvl0
+\f0\b \cb3 \kerning1\expnd0\expndtw0 \outl0\strokewidth0 {\listtext	\uc0\u8226 	}\expnd0\expndtw0\kerning0
+\outl0\strokewidth0 \strokec2 Original Timestamps
+\f1\b0 : Which may differ significantly from the document's creation date, revealing the actual timeline of evidence gathering.\'a0\'a0\'a0\cb1 \
+\pard\pardeftab720\sa160\partightenfactor0
+
+\f0\b \cf2 \cb3 The Forensic Significance of Thumbnails\cb1 \
+\pard\pardeftab720\sa320\partightenfactor0
+
+\f1\b0 \cf2 \cb3 The\'a0
+\f2\fs28 \cf4 \cb5 \strokec4 docProps/thumbnail.jpeg
+\f1\fs32 \cf2 \cb3 \strokec2 \'a0file provides a low-resolution preview of the document's first page. A critical forensic anomaly occurs when a document is modified but the thumbnail is not updated. If the thumbnail displays content that is no longer present in the\'a0
+\f2\fs28 \cf4 \cb5 \strokec4 document.xml
+\f1\fs32 \cf2 \cb3 \strokec2 \'a0file, it provides proof that the document was altered after its initial creation.\'a0Furthermore, Windows creates a "thumbcache" on the local disk that persists even after a document is deleted. Analysts can use these cached thumbnails to reconstruct user activity and identify files that have been "wiped" from the system.\'a0\'a0\'a0\cb1 \
+\pard\pardeftab720\sa160\partightenfactor0
+
+\f0\b \cf2 \cb3 OLE Objects and Recursive Analysis\cb1 \
+\pard\pardeftab720\sa320\partightenfactor0
+
+\f1\b0 \cf2 \cb3 Microsoft Word allows for the embedding of "Object Linking and Embedding" (OLE) items, such as Excel spreadsheets or other Word documents. These are stored as binary files (e.g.,\'a0
+\f2\fs28 \cf4 \cb5 \strokec4 embeddings/oleObject1.bin
+\f1\fs32 \cf2 \cb3 \strokec2 ) within the archive. These objects contain their own independent metadata streams and revision histories. A thorough forensic examination must be recursive, treating every embedded object as a separate "sub-document" with its own provenance.\'a0\'a0\'a0\cb1 \
+\pard\pardeftab720\sa160\partightenfactor0
+
+\f0\b\fs40 \cf2 \cb3 Understanding "Ghost" Data and Content Persistence\cb1 \
+\pard\pardeftab720\sa320\partightenfactor0
+
+\f1\b0\fs32 \cf2 \cb3 Forensic analysis often involves finding what was meant to be hidden. The OOXML format is surprisingly "noisy," retaining data that users believe they have deleted.\cb1 \
+\pard\pardeftab720\sa160\partightenfactor0
+
+\f0\b \cf2 \cb3 Track Changes and Comments\cb1 \
+\pard\pardeftab720\sa320\partightenfactor0
+
+\f1\b0 \cf2 \cb3 Even if the "Track Changes" feature is hidden in the Word user interface, the underlying XML in\'a0
+\f2\fs28 \cf4 \cb5 \strokec4 document.xml
+\f1\fs32 \cf2 \cb3 \strokec2 \'a0and\'a0
+\f2\fs28 \cf4 \cb5 \strokec4 comments.xml
+\f1\fs32 \cf2 \cb3 \strokec2 \'a0retains the full history of deletions and insertions. Every change is tagged with the author's name and a timestamp. These "ghost" versions of the text can be extracted to reveal discarded arguments, retracted statements, or the involvement of unauthorized collaborators.\'a0\'a0\'a0\cb1 \
+\pard\pardeftab720\sa160\partightenfactor0
+
+\f0\b \cf2 \cb3 External Relationships and Link Paths\cb1 \
+\pard\pardeftab720\sa320\partightenfactor0
+
+\f1\b0 \cf2 \cb3 The\'a0
+\f2\fs28 \cf4 \cb5 \strokec4 .rels
+\f1\fs32 \cf2 \cb3 \strokec2 \'a0files can expose links to files on the creator\'92s hard drive or private network drives that are no longer accessible. For example, if a document was created by merging data from a spreadsheet, the relationship file may still contain the path\'a0
+\f2\fs28 \cf4 \cb5 \strokec4 D:\\Confidential\\Project_X\\Financials.xlsx
+\f1\fs32 \cf2 \cb3 \strokec2 . Even if the spreadsheet was not included in the final package, its former location and name provide insight into the creator's file organization and the scope of the project.\'a0\'a0\'a0\cb1 \
+\pard\pardeftab720\sa160\partightenfactor0
+
+\f0\b\fs40 \cf2 \cb3 The Temporal Dimension: Correlating Internal and File System Metadata\cb1 \
+\pard\pardeftab720\sa320\partightenfactor0
+
+\f1\b0\fs32 \cf2 \cb3 One of the most complex tasks for a forensic analyst is the synchronization of time. A\'a0
+\f2\fs28 \cf4 \cb5 \strokec4 .docx
+\f1\fs32 \cf2 \cb3 \strokec2 \'a0file has two distinct sets of timestamps that must be cross-referenced to ensure authenticity.\cb1 \
+\pard\pardeftab720\sa160\partightenfactor0
+
+\f0\b \cf2 \cb3 File System Metadata (NTFS MACB Times)\cb1 \
+\pard\pardeftab720\sa320\partightenfactor0
+
+\f1\b0 \cf2 \cb3 The operating system records "MACB" times (Modified, Accessed, Changed, Birth) for every file on a disk. These are derived from the system clock and are stored in the Master File Table (MFT).\'a0\'a0\'a0\cb1 \
+
+\itap1\trowd \taflags0 \trgaph108\trleft-108 \trcbpat8 \trbrdrt\brdrnil \trbrdrl\brdrnil \trbrdrr\brdrnil 
+\clvertalt \clcbpat7 \clwWidth1600\clftsWidth3 \clmart10 \clmarl10 \clmarb10 \clmarr10 \clbrdrt\brdrnil \clbrdrl\brdrnil \clbrdrb\brdrnil \clbrdrr\brdrnil \clpadt160 \clpadl240 \clpadb160 \clpadr240 \gaph\cellx2880
+\clvertalt \clcbpat7 \clwWidth3906\clftsWidth3 \clmart10 \clmarl10 \clmarb10 \clmarr10 \clbrdrt\brdrnil \clbrdrl\brdrnil \clbrdrb\brdrnil \clbrdrr\brdrnil \clpadt160 \clpadl240 \clpadb160 \clpadr240 \gaph\cellx5760
+\clvertalt \clcbpat7 \clwWidth6960\clftsWidth3 \clmart10 \clmarl10 \clmarb10 \clmarr10 \clbrdrt\brdrnil \clbrdrl\brdrnil \clbrdrb\brdrnil \clbrdrr\brdrnil \clpadt160 \clpadl240 \clpadb160 \clpadr240 \gaph\cellx8640
+\pard\intbl\itap1\pardeftab720\partightenfactor0
+
+\fs28 \cf2 \cb3 \strokec6 Timestamp\cf0 \cb1 \cell 
+\pard\intbl\itap1\pardeftab720\partightenfactor0
+\cf2 \cb3 Description\cf0 \cb1 \cell 
+\pard\intbl\itap1\pardeftab720\partightenfactor0
+\cf2 \cb3 Forensic Context\cf0 \cb1 \cell \row
+
+\itap1\trowd \taflags0 \trgaph108\trleft-108 \trcbpat8 \trbrdrl\brdrnil \trbrdrr\brdrnil 
+\clvertalt \clcbpat7 \clwWidth1600\clftsWidth3 \clmart10 \clmarl10 \clmarb10 \clmarr10 \clbrdrt\brdrnil \clbrdrl\brdrnil \clbrdrb\brdrnil \clbrdrr\brdrnil \clpadt160 \clpadl240 \clpadb160 \clpadr240 \gaph\cellx2880
+\clvertalt \clcbpat7 \clwWidth3906\clftsWidth3 \clmart10 \clmarl10 \clmarb10 \clmarr10 \clbrdrt\brdrnil \clbrdrl\brdrnil \clbrdrb\brdrnil \clbrdrr\brdrnil \clpadt160 \clpadl240 \clpadb160 \clpadr240 \gaph\cellx5760
+\clvertalt \clcbpat7 \clwWidth6960\clftsWidth3 \clmart10 \clmarl10 \clmarb10 \clmarr10 \clbrdrt\brdrnil \clbrdrl\brdrnil \clbrdrb\brdrnil \clbrdrr\brdrnil \clpadt160 \clpadl240 \clpadb160 \clpadr240 \gaph\cellx8640
+\pard\intbl\itap1\pardeftab720\partightenfactor0
+
+\f0\b \cf2 \cb3 M
+\f1\b0 odified\cf0 \cb1 \cell 
+\pard\intbl\itap1\pardeftab720\partightenfactor0
+\cf2 \cb3 Content of the file changed.\cf0 \cb1 \cell 
+\pard\intbl\itap1\pardeftab720\partightenfactor0
+\cf2 \cb3 Updates only when the ZIP container is resaved.\cf0 \cb1 \cell \row
+
+\itap1\trowd \taflags0 \trgaph108\trleft-108 \trcbpat8 \trbrdrl\brdrnil \trbrdrr\brdrnil 
+\clvertalt \clcbpat7 \clwWidth1600\clftsWidth3 \clmart10 \clmarl10 \clmarb10 \clmarr10 \clbrdrt\brdrnil \clbrdrl\brdrnil \clbrdrb\brdrnil \clbrdrr\brdrnil \clpadt160 \clpadl240 \clpadb160 \clpadr240 \gaph\cellx2880
+\clvertalt \clcbpat7 \clwWidth3906\clftsWidth3 \clmart10 \clmarl10 \clmarb10 \clmarr10 \clbrdrt\brdrnil \clbrdrl\brdrnil \clbrdrb\brdrnil \clbrdrr\brdrnil \clpadt160 \clpadl240 \clpadb160 \clpadr240 \gaph\cellx5760
+\clvertalt \clcbpat7 \clwWidth6960\clftsWidth3 \clmart10 \clmarl10 \clmarb10 \clmarr10 \clbrdrt\brdrnil \clbrdrl\brdrnil \clbrdrb\brdrnil \clbrdrr\brdrnil \clpadt160 \clpadl240 \clpadb160 \clpadr240 \gaph\cellx8640
+\pard\intbl\itap1\pardeftab720\partightenfactor0
+
+\f0\b \cf2 \cb3 A
+\f1\b0 ccessed\cf0 \cb1 \cell 
+\pard\intbl\itap1\pardeftab720\partightenfactor0
+\cf2 \cb3 File was read or executed.\cf0 \cb1 \cell 
+\pard\intbl\itap1\pardeftab720\sa320\partightenfactor0
+\cf2 \cb3 Can be updated by antivirus scans or backups.\cf0 \cb1 \cell \row
+
+\itap1\trowd \taflags0 \trgaph108\trleft-108 \trcbpat8 \trbrdrl\brdrnil \trbrdrr\brdrnil 
+\clvertalt \clcbpat7 \clwWidth1600\clftsWidth3 \clmart10 \clmarl10 \clmarb10 \clmarr10 \clbrdrt\brdrnil \clbrdrl\brdrnil \clbrdrb\brdrnil \clbrdrr\brdrnil \clpadt160 \clpadl240 \clpadb160 \clpadr240 \gaph\cellx2880
+\clvertalt \clcbpat7 \clwWidth3906\clftsWidth3 \clmart10 \clmarl10 \clmarb10 \clmarr10 \clbrdrt\brdrnil \clbrdrl\brdrnil \clbrdrb\brdrnil \clbrdrr\brdrnil \clpadt160 \clpadl240 \clpadb160 \clpadr240 \gaph\cellx5760
+\clvertalt \clcbpat7 \clwWidth6960\clftsWidth3 \clmart10 \clmarl10 \clmarb10 \clmarr10 \clbrdrt\brdrnil \clbrdrl\brdrnil \clbrdrb\brdrnil \clbrdrr\brdrnil \clpadt160 \clpadl240 \clpadb160 \clpadr240 \gaph\cellx8640
+\pard\intbl\itap1\pardeftab720\partightenfactor0
+
+\f0\b \cf2 \cb3 C
+\f1\b0 hanged\cf0 \cb1 \cell 
+\pard\intbl\itap1\pardeftab720\partightenfactor0
+\cf2 \cb3 MFT metadata was altered.\cf0 \cb1 \cell 
+\pard\intbl\itap1\pardeftab720\partightenfactor0
+\cf2 \cb3 Includes permission changes or renaming.\cf0 \cb1 \cell \row
+
+\itap1\trowd \taflags0 \trgaph108\trleft-108 \trcbpat8 \trbrdrl\brdrnil \trbrdrt\brdrnil \trbrdrr\brdrnil 
+\clvertalt \clcbpat7 \clwWidth1600\clftsWidth3 \clmart10 \clmarl10 \clmarb10 \clmarr10 \clbrdrt\brdrnil \clbrdrl\brdrnil \clbrdrb\brdrnil \clbrdrr\brdrnil \clpadt160 \clpadl240 \clpadb160 \clpadr240 \gaph\cellx2880
+\clvertalt \clcbpat7 \clwWidth3906\clftsWidth3 \clmart10 \clmarl10 \clmarb10 \clmarr10 \clbrdrt\brdrnil \clbrdrl\brdrnil \clbrdrb\brdrnil \clbrdrr\brdrnil \clpadt160 \clpadl240 \clpadb160 \clpadr240 \gaph\cellx5760
+\clvertalt \clcbpat7 \clwWidth6960\clftsWidth3 \clmart10 \clmarl10 \clmarb10 \clmarr10 \clbrdrt\brdrnil \clbrdrl\brdrnil \clbrdrb\brdrnil \clbrdrr\brdrnil \clpadt160 \clpadl240 \clpadb160 \clpadr240 \gaph\cellx8640
+\pard\intbl\itap1\pardeftab720\partightenfactor0
+
+\f0\b \cf2 \cb3 B
+\f1\b0 irth\cf0 \cb1 \cell 
+\pard\intbl\itap1\pardeftab720\partightenfactor0
+\cf2 \cb3 File creation on the volume.\cf0 \cb1 \cell 
+\pard\intbl\itap1\pardeftab720\sa320\partightenfactor0
+\cf2 \cb3 In copy operations, "Birth" is the time of the copy.\cf0 \cb1 \cell \lastrow\row
+\pard\pardeftab720\partightenfactor0
+
+\fs32 \cf2 \cb3 \strokec2 \'a0\'a0
+\f0\b \cb1 \
+\pard\pardeftab720\sa160\partightenfactor0
+\cf2 \cb3 Internal XML Metadata (Application Times)\cb1 \
+\pard\pardeftab720\sa320\partightenfactor0
+
+\f1\b0 \cf2 \cb3 The\'a0
+\f2\fs28 \cf4 \cb5 \strokec4 core.xml
+\f1\fs32 \cf2 \cb3 \strokec2 \'a0file contains timestamps generated by the Word application itself. A critical forensic insight is that if a document is copied from a USB drive to a Desktop, the NTFS "Birth" time will reflect the moment of the copy, but the internal\'a0
+\f2\fs28 \cf4 \cb5 \strokec4 dcterms:created
+\f1\fs32 \cf2 \cb3 \strokec2 \'a0time will still reflect the original creation date. If the internal "Modified" date is\'a0
+\f3\i older
+\f1\i0 \'a0than the NTFS "Created" date, the file was almost certainly copied from another source.\'a0\'a0\'a0\cb1 \
+\pard\pardeftab720\sa160\partightenfactor0
+
+\f0\b \cf2 \cb3 Detecting "Time-Stomping"\cb1 \
+\pard\pardeftab720\sa320\partightenfactor0
+
+\f1\b0 \cf2 \cb3 "Time-stomping" is an anti-forensic technique where a user intentionally modifies system timestamps to align them with a false narrative. Analysts detect this by looking for inconsistencies between the\'a0
+\f2\fs28 \cf4 \cb5 \strokec4 $STANDARD_INFORMATION
+\f1\fs32 \cf2 \cb3 \strokec2 \'a0and\'a0
+\f2\fs28 \cf4 \cb5 \strokec4 $FILE_NAME
+\f1\fs32 \cf2 \cb3 \strokec2 \'a0attributes in the NTFS MFT. While many tools can "stomp" the former, the latter is only updated by the kernel and can reveal the original, true timestamps.\'a0Furthermore, dynamic time analysis involves comparing file timestamps to independent, external sources of time, such as internal document text that references a news event that occurred\'a0
+\f3\i after
+\f1\i0 \'a0the supposed creation date.\'a0\'a0\'a0\cb1 \
+\pard\pardeftab720\sa160\partightenfactor0
+
+\f0\b\fs40 \cf2 \cb3 Legal Admissibility and the Forensic Workflow\cb1 \
+\pard\pardeftab720\sa320\partightenfactor0
+
+\f1\b0\fs32 \cf2 \cb3 In modern jurisprudence, metadata is no longer considered "secondary" evidence. It is a cornerstone of evidence management and courtroom strategy.\'a0\'a0\'a0\cb1 \
+\pard\pardeftab720\sa160\partightenfactor0
+
+\f0\b \cf2 \cb3 Metadata as Evidence (FRE 901 and 902)\cb1 \
+\pard\pardeftab720\sa160\partightenfactor0
+
+\f1\b0 \cf2 \cb3 Under the Federal Rules of Evidence (FRE), metadata plays a critical role in authentication.\cb1 \
+\pard\tx220\tx720\pardeftab720\li720\fi-720\sa160\partightenfactor0
+\ls2\ilvl0
+\f0\b \cf2 \cb3 \kerning1\expnd0\expndtw0 \outl0\strokewidth0 {\listtext	\uc0\u8226 	}\expnd0\expndtw0\kerning0
+\outl0\strokewidth0 \strokec2 FRE 901
+\f1\b0 : Metadata serves as circumstantial evidence of authenticity by documenting the history and origin of a file.\'a0\'a0\'a0\cb1 \
+\ls2\ilvl0
+\f0\b \cb3 \kerning1\expnd0\expndtw0 \outl0\strokewidth0 {\listtext	\uc0\u8226 	}\expnd0\expndtw0\kerning0
+\outl0\strokewidth0 \strokec2 FRE 902(13) & (14)
+\f1\b0 : These rules allow for the self-authentication of electronic records if they are accompanied by a certification from a qualified person and have a verified digital hash.\'a0\'a0\'a0\cb1 \
+\ls2\ilvl0
+\f0\b \cb3 \kerning1\expnd0\expndtw0 \outl0\strokewidth0 {\listtext	\uc0\u8226 	}\expnd0\expndtw0\kerning0
+\outl0\strokewidth0 \strokec2 Non-Hearsay
+\f1\b0 : Because metadata is machine-generated rather than created by a human witness, it often qualifies as a non-hearsay form of evidence, simplifying its admissibility.\'a0\'a0\'a0\cb1 \
+\pard\pardeftab720\sa160\partightenfactor0
+
+\f0\b \cf2 \cb3 The Danger of Improper Redaction\cb1 \
+\pard\pardeftab720\sa320\partightenfactor0
+
+\f1\b0 \cf2 \cb3 A frequent "metadata trap" in legal settings involves the failure to properly sanitize documents before production. Simply highlighting text in black or deleting a paragraph in Word does not remove the underlying XML metadata or the revision history. In one high-profile case, a law firm shared a "sanitized" PDF, but the metadata revealed that the document was originally authored by a different law firm, exposing a hidden collaboration that sabotaged their strategy.\'a0To avoid this, legal professionals must use forensic-grade tools to "flatten" or sanitize files, ensuring that only the intended information is shared.\'a0\'a0\'a0\cb1 \
+\pard\pardeftab720\sa160\partightenfactor0
+
+\f0\b\fs40 \cf2 \cb3 Advanced Forensics: Steganography and Data Hiding\cb1 \
+\pard\pardeftab720\sa320\partightenfactor0
+
+\f1\b0\fs32 \cf2 \cb3 The modularity of the OOXML format makes it an ideal environment for steganography\'97the practice of concealing information within a seemingly innocuous file.\cb1 \
+\pard\pardeftab720\sa160\partightenfactor0
+
+\f0\b \cf2 \cb3 Technical Steganographic Methods\cb1 \
+\pard\pardeftab720\sa160\partightenfactor0
+
+\f1\b0 \cf2 \cb3 Malicious actors can exploit the OOXML structure in several ways:\cb1 \
+\pard\tx220\tx720\pardeftab720\li720\fi-720\sa160\partightenfactor0
+\ls3\ilvl0
+\f0\b \cf2 \cb3 \kerning1\expnd0\expndtw0 \outl0\strokewidth0 {\listtext	1	}\expnd0\expndtw0\kerning0
+\outl0\strokewidth0 \strokec2 Attribute Overloading
+\f1\b0 : Adding hidden data into existing XML attributes that the Word application ignores but that can be read by a custom decoder.\'a0\'a0\'a0\cb1 \
+\ls3\ilvl0
+\f0\b \cb3 \kerning1\expnd0\expndtw0 \outl0\strokewidth0 {\listtext	2	}\expnd0\expndtw0\kerning0
+\outl0\strokewidth0 \strokec2 Part Injection
+\f1\b0 : Adding entirely new XML parts or media files into the ZIP archive that are not referenced in any relationship file. These files will not appear when the document is opened in Word but are easily recovered by forensic tools.\'a0\'a0\'a0\cb1 \
+\ls3\ilvl0
+\f0\b \cb3 \kerning1\expnd0\expndtw0 \outl0\strokewidth0 {\listtext	3	}\expnd0\expndtw0\kerning0
+\outl0\strokewidth0 \strokec2 RSID Substitution
+\f1\b0 : Manually altering RSID values to encode secret text or watermarks into the document's revision table.\'a0\'a0\'a0\cb1 \
+\pard\pardeftab720\sa320\partightenfactor0
+\cf2 \cb3 Detecting these hidden elements requires a "black box" approach, where an analyst compares the actual files present in the ZIP container against the official schema and relationship maps. Any discrepancy\'97such as a file named\'a0
+\f2\fs28 \cf4 \cb5 \strokec4 secret.txt
+\f1\fs32 \cf2 \cb3 \strokec2 \'a0in the\'a0
+\f2\fs28 \cf4 \cb5 \strokec4 word/
+\f1\fs32 \cf2 \cb3 \strokec2 \'a0folder that has no relationship ID\'97is an immediate indicator of steganographic use.\'a0\'a0\'a0\cb1 \
+\pard\pardeftab720\sa160\partightenfactor0
+
+\f0\b\fs40 \cf2 \cb3 Practical Recommendations for Marcut Users\cb1 \
+\pard\pardeftab720\sa320\partightenfactor0
+
+\f1\b0\fs32 \cf2 \cb3 When beginning a forensic extraction with Marcut, analysts should follow a standardized workflow to ensure the integrity and comprehensiveness of their findings.\cb1 \
+\pard\pardeftab720\sa160\partightenfactor0
+
+\f0\b \cf2 \cb3 1. Verification of Integrity\cb1 \
+\pard\pardeftab720\sa320\partightenfactor0
+
+\f1\b0 \cf2 \cb3 Always begin by calculating the cryptographic hash (MD5, SHA-1, or SHA-256) of the original file. Any subsequent analysis must be performed on a forensic copy to prevent the accidental modification of system metadata. If the Marcut analysis reveals a revision count that does not match the file's modification history, investigate the possibility that the document was edited in a non-Word application or that metadata was scrubbed.\'a0\'a0\'a0\cb1 \
+\pard\pardeftab720\sa160\partightenfactor0
+
+\f0\b \cf2 \cb3 2. Cross-Referencing Timelines\cb1 \
+\pard\pardeftab720\sa160\partightenfactor0
+
+\f1\b0 \cf2 \cb3 Never rely on a single timestamp. Build a multi-layered timeline that includes:\cb1 \
+\pard\tx220\tx720\pardeftab720\li720\fi-720\sa160\partightenfactor0
+\ls4\ilvl0\cf2 \cb3 \kerning1\expnd0\expndtw0 \outl0\strokewidth0 {\listtext	\uc0\u8226 	}\expnd0\expndtw0\kerning0
+\outl0\strokewidth0 \strokec2 Internal XML creation and modification dates.\cb1 \
+\ls4\ilvl0\cb3 \kerning1\expnd0\expndtw0 \outl0\strokewidth0 {\listtext	\uc0\u8226 	}\expnd0\expndtw0\kerning0
+\outl0\strokewidth0 \strokec2 File system MACB times.\cb1 \
+\ls4\ilvl0\cb3 \kerning1\expnd0\expndtw0 \outl0\strokewidth0 {\listtext	\uc0\u8226 	}\expnd0\expndtw0\kerning0
+\outl0\strokewidth0 \strokec2 Revision session (RSID) timestamps (if available through version comparison).\cb1 \
+\ls4\ilvl0\cb3 \kerning1\expnd0\expndtw0 \outl0\strokewidth0 {\listtext	\uc0\u8226 	}\expnd0\expndtw0\kerning0
+\outl0\strokewidth0 \strokec2 Timestamps from embedded assets (EXIF data and OLE objects).\cb1 \
+\pard\pardeftab720\sa320\partightenfactor0
+\cf2 \cb3 Inconsistencies between these sources are where the most valuable forensic "truth" is often hidden.\'a0\'a0\'a0\cb1 \
+\pard\pardeftab720\sa160\partightenfactor0
+
+\f0\b \cf2 \cb3 3. Structural and Relationship Analysis\cb1 \
+\pard\pardeftab720\sa320\partightenfactor0
+
+\f1\b0 \cf2 \cb3 Scrutinize the\'a0
+\f2\fs28 \cf4 \cb5 \strokec4 _rels
+\f1\fs32 \cf2 \cb3 \strokec2 \'a0files for external targets. A document that "calls home" to a remote server for a template or a style sheet is a major security and forensic concern. Additionally, check for orphaned media files or XML parts that are present in the ZIP container but are not declared in the relationship maps; these are prime candidates for steganographic data or malware.\'a0\'a0\'a0\cb1 \
+\pard\pardeftab720\sa160\partightenfactor0
+
+\f0\b \cf2 \cb3 4. Qualitative Narrative over Quantitative Lists\cb1 \
+\pard\pardeftab720\sa320\partightenfactor0
+
+\f1\b0 \cf2 \cb3 When presenting findings to a court or a client, it is essential to weave the technical metadata into a human narrative. A list of RSIDs is meaningless to a jury; an explanation that "these identical session IDs prove that Document A was the source for the plagiarized sections of Document B" is a compelling piece of evidence. Use Marcut to extract the data, but use forensic intuition to explain its implications for the case at hand.\'a0\'a0\'a0\cb1 \
+\pard\pardeftab720\sa160\partightenfactor0
+
+\f0\b\fs40 \cf2 \cb3 Final Synthesis: Metadata as the Digital Witness\cb1 \
+\pard\pardeftab720\sa320\partightenfactor0
+
+\f1\b0\fs32 \cf2 \cb3 The journey through the\'a0
+\f2\fs28 \cf4 \cb5 \strokec4 .docx
+\f1\fs32 \cf2 \cb3 \strokec2 \'a0container reveals a simple truth: in the digital age, every action leaves a trace. Metadata is the digital equivalent of body language\'97subtle, often subconscious, and frequently more revealing than the written word.\'a0For junior forensic analysts and lawyers, the mastery of OOXML forensics is no longer an optional skill; it is a fundamental requirement for the modern practice of law and investigation.\'a0\'a0\'a0\cb1 \
+\cb3 As you use Marcut to explore the digital paper trail, remember that metadata never forgets. It is a secret diary kept by the file itself, documenting its origins, its collaborators, and its modifications.\'a0Whether you are verifying the authenticity of a contract, uncovering an insider threat, or tracing the genealogy of a leaked document, the metadata is your most reliable witness. By understanding the technical architecture of the OOXML standard and the forensic significance of its many parts, you can uncover the truth that lies beneath the surface of every document.\'a0\'a0\'a0\cb1 \
+\pard\pardeftab720\sa240\partightenfactor0
+
+\f4\fs24 \cf0 \strokec6 Here is a list of the primary technical standards, research papers, and professional guides used to compile the forensic guide, organized by topic:\
+\pard\pardeftab720\sa280\partightenfactor0
+
+\f5\b\fs28 \cf0 Technical Standards & Specifications\
+\pard\tx220\tx720\pardeftab720\li720\fi-720\sa240\partightenfactor0
+\ls5\ilvl0
+\fs24 \cf0 \kerning1\expnd0\expndtw0 \outl0\strokewidth0 {\listtext	\uc0\u8226 	}\expnd0\expndtw0\kerning0
+\outl0\strokewidth0 \strokec6 ECMA-376 / ISO/IEC 29500: Office Open XML File Formats
+\f4\b0  Official technical specifications for the structure of 
+\f2\fs26 .docx
+\f4\fs24 , 
+\f2\fs26 .xlsx
+\f4\fs24 , and 
+\f2\fs26 .pptx
+\f4\fs24  containers. \uc0\u8232 \u8232 \u8232 \u8232 \
+\ls5\ilvl0
+\f5\b \kerning1\expnd0\expndtw0 \outl0\strokewidth0 {\listtext	\uc0\u8226 	}\expnd0\expndtw0\kerning0
+\outl0\strokewidth0 \strokec6 Microsoft Purview Information Protection: LabelInfo Stream Schema
+\f4\b0  Technical documentation for the storage and XML schema of sensitivity labels (MIP) within OOXML files. \uc0\u8232 \u8232 \
+\ls5\ilvl0
+\f5\b \kerning1\expnd0\expndtw0 \outl0\strokewidth0 {\listtext	\uc0\u8226 	}\expnd0\expndtw0\kerning0
+\outl0\strokewidth0 \strokec6 Microsoft Word Internal Settings & XML Schema
+\f4\b0  Developer references for 
+\f2\fs26 settings.xml
+\f4\fs24 , 
+\f2\fs26 app.xml
+\f4\fs24 , and the relationship model (
+\f2\fs26 _rels
+\f4\fs24 ). \uc0\u8232 \u8232 \u8232 \u8232 \
+\pard\pardeftab720\sa280\partightenfactor0
+
+\f5\b\fs28 \cf0 \strokec6 Academic Research on Document Genealogy & RSIDs\
+\pard\tx220\tx720\pardeftab720\li720\fi-720\sa240\partightenfactor0
+\ls6\ilvl0
+\fs24 \cf0 \kerning1\expnd0\expndtw0 \outl0\strokewidth0 {\listtext	\uc0\u8226 	}\expnd0\expndtw0\kerning0
+\outl0\strokewidth0 \strokec6 Spennemann, D. H. R. & Spennemann, R. J. (2023)
+\f4\b0  "Establishing Genealogies of Born Digital Content: The Suitability of Revision Identifier (RSID) Numbers in MS Word for Forensic Enquiry." 
+\f6\i Publications, MDPI
+\f4\i0 .\
+\ls6\ilvl0
+\f5\b \kerning1\expnd0\expndtw0 \outl0\strokewidth0 {\listtext	\uc0\u8226 	}\expnd0\expndtw0\kerning0
+\outl0\strokewidth0 \strokec6 Spennemann, D. H. R. & Singh, C. L. (2024)
+\f4\b0  "The Generation of Revision Identifier (rsid) Numbers in MS Word: Implications for Document Analysis." 
+\f6\i International Journal of Digital Curation
+\f4\i0 . \uc0\u8232 \u8232 \u8232 \
+\ls6\ilvl0
+\f5\b \kerning1\expnd0\expndtw0 \outl0\strokewidth0 {\listtext	\uc0\u8226 	}\expnd0\expndtw0\kerning0
+\outl0\strokewidth0 \strokec6 Garfinkel, S. L. (2009/2012)
+\f4\b0  "Digital Forensics XML and the DFXML Toolset" and research on XML metadata vulnerabilities.\
+\pard\pardeftab720\sa280\partightenfactor0
+
+\f5\b\fs28 \cf0 \strokec6 Forensic Methods & Temporal Analysis\
+\pard\tx220\tx720\pardeftab720\li720\fi-720\sa240\partightenfactor0
+\ls7\ilvl0
+\fs24 \cf0 \kerning1\expnd0\expndtw0 \outl0\strokewidth0 {\listtext	\uc0\u8226 	}\expnd0\expndtw0\kerning0
+\outl0\strokewidth0 \strokec6 GIAC / SANS Institute (2023)
+\f4\b0  "Filesystem Timestamps: What Makes Them Tick" \'96 Analysis of NTFS MACB behavior and timestomping detection. \uc0\u8232 \u8232 \
+\ls7\ilvl0
+\f5\b \kerning1\expnd0\expndtw0 \outl0\strokewidth0 {\listtext	\uc0\u8226 	}\expnd0\expndtw0\kerning0
+\outl0\strokewidth0 \strokec6 Utica College / Economic Crime Investigation Institute (2002)
+\f4\b0  "Dynamic Time and Date Stamp Analysis" \'96 Methodology for correlating internal application dates with system metadata. \uc0\u8232 \u8232 \
+\ls7\ilvl0
+\f5\b \kerning1\expnd0\expndtw0 \outl0\strokewidth0 {\listtext	\uc0\u8226 	}\expnd0\expndtw0\kerning0
+\outl0\strokewidth0 \strokec6 Pentest Partners (2023)
+\f4\b0  "Thumbnail Forensics: DFIR Techniques for Analysing Windows Thumbcache." \uc0\u8232 \u8232 \
+\ls7\ilvl0
+\f5\b \kerning1\expnd0\expndtw0 \outl0\strokewidth0 {\listtext	\uc0\u8226 	}\expnd0\expndtw0\kerning0
+\outl0\strokewidth0 \strokec6 Cyber Engage (2024)
+\f4\b0  "Understanding NTFS Timestamps for Timeline Analysis." \uc0\u8232 \u8232 \u8232 \
+\pard\pardeftab720\sa280\partightenfactor0
+
+\f5\b\fs28 \cf0 \strokec6 Legal Standards & Professional Case Studies\
+\pard\tx220\tx720\pardeftab720\li720\fi-720\sa240\partightenfactor0
+\ls8\ilvl0
+\fs24 \cf0 \kerning1\expnd0\expndtw0 \outl0\strokewidth0 {\listtext	\uc0\u8226 	}\expnd0\expndtw0\kerning0
+\outl0\strokewidth0 \strokec6 US Legal Support / Axon
+\f4\b0  "Admissibility Standards for Digital Evidence: Federal Rules of Evidence (FRE) 901, 902, and 803." \uc0\u8232 \u8232 \u8232 \
+\ls8\ilvl0
+\f5\b \kerning1\expnd0\expndtw0 \outl0\strokewidth0 {\listtext	\uc0\u8226 	}\expnd0\expndtw0\kerning0
+\outl0\strokewidth0 \strokec6 Summit Consulting Ltd / Forensic Institute (2025)
+\f4\b0  "Metadata Matters: What Your Files Reveal Without Saying a Word" \'96 Case studies on procurement fraud and legal document collaboration leaks. \uc0\u8232 \u8232 \
+\ls8\ilvl0
+\f5\b \kerning1\expnd0\expndtw0 \outl0\strokewidth0 {\listtext	\uc0\u8226 	}\expnd0\expndtw0\kerning0
+\outl0\strokewidth0 \strokec6 Maras, M. (2011)
+\f4\b0  "Computer Forensics: Cybercriminals, Laws, and Evidence" \'96 Documentation of the BTK killer investigation and the role of metadata in serial murder cases. \uc0\u8232 \u8232 \
+\ls8\ilvl0
+\f5\b \kerning1\expnd0\expndtw0 \outl0\strokewidth0 {\listtext	\uc0\u8226 	}\expnd0\expndtw0\kerning0
+\outl0\strokewidth0 \strokec6 LegalFuel / Florida Bar
+\f4\b0  "Seven Things Every Litigator Must Know About Metadata" \'96 System vs. Application metadata distinctions. \
+}

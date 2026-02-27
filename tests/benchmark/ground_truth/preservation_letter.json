@@ -1,0 +1,31 @@
+{
+  "document": "sample-files/Sample - Preservation Letter track changes.docx",
+  "model_used": "llama3.1:8b",
+  "notes": "Generated 2024-12-20 using llama3.1:8b. Manually verified.",
+  "expected_entities": [
+    {
+      "start": 46,
+      "end": 56,
+      "label": "NAME",
+      "text": "Sam Jacobs"
+    },
+    {
+      "start": 142,
+      "end": 157,
+      "label": "LOC",
+      "text": "Frozen, Montana"
+    },
+    {
+      "start": 1150,
+      "end": 1174,
+      "label": "NAME",
+      "text": "Deputy Frank Holderfield"
+    },
+    {
+      "start": 1233,
+      "end": 1243,
+      "label": "LOC",
+      "text": "Frozen, MT"
+    }
+  ]
+}
