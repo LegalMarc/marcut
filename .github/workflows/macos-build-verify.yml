@@ -26,6 +26,7 @@ jobs:
           pip install pytest
           python scripts/check_dependency_vulnerabilities.py requirements-pinned.txt
           python scripts/generate_python_sbom.py --check
+          python scripts/check_markdown_links.py
           pytest -q
 
       - name: Prepare stub Ollama for packaging

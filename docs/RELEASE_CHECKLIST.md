@@ -7,6 +7,7 @@ This checklist ensures a consistent, high-quality release process for Marcut.
 - [ ] **Tests Pass**: Verify all unit tests pass (`python3 -m pytest -q` and `swift test --package-path src/swift/MarcutApp`).
 - [ ] **Dependency Audit**: Run `python3 scripts/check_dependency_vulnerabilities.py requirements-pinned.txt`.
 - [ ] **SBOM Current**: Run `python3 scripts/generate_python_sbom.py --check`.
+- [ ] **Markdown Links**: Run `python3 scripts/check_markdown_links.py`.
 - [ ] **Integrity Guards**: Confirm build logs include:
     - [ ] `python_site source verified against repo`
     - [ ] `python_site marcut package verified`

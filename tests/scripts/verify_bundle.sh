@@ -26,17 +26,28 @@ check_app() {
   echo "Verifying app: $APP"
   local MACOS="$APP/Contents/MacOS/MarcutApp"
   local RES="$APP/Contents/Resources"
-  local OLLAMA="$APP/Contents/MacOS/ollama"
+  local OLLAMA=""
   local PYLIB="$APP/Contents/Frameworks/Python.framework/Python"
   local PY_SITE="$RES/python_site"
   local LAUNCHER=""
 
   req_exec "$MACOS"   "MarcutApp executable present" "Missing or not executable: $MACOS"
-  if [ -x "$OLLAMA" ]; then
+  local OLLAMA_CANDIDATES=(
+    "$APP/Contents/Resources/Ollama.app/Contents/MacOS/ollama"
+    "$APP/Contents/MacOS/ollama"
+    "$RES/ollama"
+  )
+  for candidate in "${OLLAMA_CANDIDATES[@]}"; do
+    if [ -x "$candidate" ]; then
+      OLLAMA="$candidate"
+      break
+    fi
+  done
+  if [ -n "$OLLAMA" ]; then
     req_exec "$OLLAMA"  "Ollama present and executable" "Missing or not executable: $OLLAMA"
   else
-    OLLAMA="$RES/ollama"
-    req_exec "$OLLAMA"  "Ollama present and executable" "Missing or not executable: $OLLAMA"
+    print_err "No executable Ollama runtime found in $APP"
+    fail_count=$((fail_count+1))
   fi
   req_exists "$PYLIB" "BeeWare Python.framework library present" "Missing: $PYLIB"
   req_exists "$PY_SITE" "python_site payload present" "Missing: $PY_SITE"

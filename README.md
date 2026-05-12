@@ -26,7 +26,7 @@ Marcut is a native macOS application for legal and professional document redacti
 *   **[User Guide](docs/USER_GUIDE.md)**: Installation, usage instructions, and troubleshooting.
 *   **[Developer Guide](docs/DEVELOPER_GUIDE.md)**: Deep dive into the Swift+PythonKit architecture, build system, and contribution workflow.
 *   **[Technical Architecture](docs/TECHNICAL_ARCHITECTURE.md)**: High-level system design and component interaction.
-*   **[Security Policy](SECURITY.md)**: Vulnerability reporting and security model.
+*   **[Security Policy](docs/SECURITY.md)**: Vulnerability reporting and security model.
 
 ## 🛠️ Quick Start (Development)
 
@@ -61,7 +61,7 @@ For detailed build instructions, see the [Developer Guide](docs/DEVELOPER_GUIDE.
 
 ## 🤝 Contributing
 
-We welcome contributions! Please see [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines on code style, testing, and the pull request process.
+We welcome contributions! Please see [CONTRIBUTING.md](docs/CONTRIBUTING.md) for guidelines on code style, testing, and the pull request process.
 
 ## 📄 License
 

@@ -69,7 +69,6 @@ int main(int argc, char *argv[]) {
     snprintf(program_name, sizeof(program_name), "%s/bin/python3", python_home);
 
     // Verify python_site exists
-    char python_site_path[PATH_MAX];
     snprintf(python_site_path, sizeof(python_site_path), "%s/Resources/python_site", contents_dir);
     if (access(python_site_path, R_OK) != 0) {
         fprintf(stderr, "python3_embed: python_site not found at %s\n", python_site_path);
