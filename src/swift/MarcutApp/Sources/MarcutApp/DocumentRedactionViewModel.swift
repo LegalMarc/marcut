@@ -616,10 +616,13 @@ final class DocumentRedactionViewModel: ObservableObject {
 
     private func resolveTemporaryReportDirectory() -> URL? {
         let fm = FileManager.default
-        let cacheDir = fm.urls(for: .cachesDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("MarcutReports", isDirectory: true)
+        guard let cacheDir = FileAccessCoordinator.shared.metadataReportCacheDirectory() else {
+            DebugLogger.shared.log("❌ Failed to resolve metadata report cache directory", component: "DocumentRedactionViewModel")
+            return nil
+        }
         do {
             try fm.createDirectory(at: cacheDir, withIntermediateDirectories: true)
+            try? fm.setAttributes([.posixPermissions: NSNumber(value: Int16(0o700))], ofItemAtPath: cacheDir.path)
             return cacheDir
         } catch {
             DebugLogger.shared.log("❌ Failed to create temporary report directory: \(error)", component: "DocumentRedactionViewModel")

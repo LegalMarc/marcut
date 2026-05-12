@@ -15,7 +15,7 @@ struct MarcutMain {
             || ProcessInfo.processInfo.environment["MARCUT_FORCE_DIAGNOSTIC_WINDOW"] == "1"
 
         LaunchDiagnostics.shared.configure(forceDiagnosticWindow: forceDiagnosticsWindow)
-        LaunchDiagnostics.shared.mark(.delegateLaunched, extra: "args=\(args)")
+        LaunchDiagnostics.shared.mark(.delegateLaunched, extra: "args=\(redactedLaunchArguments(args))")
 
         let cliFlags: Set<String> = [
             "--cli",

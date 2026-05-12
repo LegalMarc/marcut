@@ -76,7 +76,8 @@ def _log_app_event(message: str) -> None:
         pass
 
 def get_ollama_base_url() -> str:
-    return normalize_ollama_base_url(loopback_only=False)
+    allow_remote = os.getenv("MARCUT_ALLOW_REMOTE_OLLAMA") == "1"
+    return normalize_ollama_base_url(loopback_only=not allow_remote)
 
 
 def parse_llm_response(response_text: str) -> Dict[str, Any]:
@@ -591,6 +592,14 @@ def ollama_extract(
     Extract entities using Ollama with a single self-correction retry on malformed JSON.
     """
     base_url = get_ollama_base_url()
+    try:
+        request_timeout = max(1.0, float(os.getenv("MARCUT_OLLAMA_REQUEST_TIMEOUT", "300")))
+    except (TypeError, ValueError):
+        request_timeout = 300.0
+    try:
+        num_predict = max(128, int(os.getenv("MARCUT_OLLAMA_NUM_PREDICT", "2048")))
+    except (TypeError, ValueError):
+        num_predict = 2048
 
     def _request(prompt: str, format_value) -> str:
         resp = requests.post(
@@ -604,12 +613,11 @@ def ollama_extract(
                     "temperature": max(temperature, 0.1),
                     "seed": seed,
                     "num_ctx": 12288,
-                    "num_predict": 4096,
+                    "num_predict": num_predict,
                     "top_p": 0.9
                 },
                 },
-            # Increase timeout to 7200s (120min) to handle large docs and initial Metal shader compilation
-            timeout=7200
+            timeout=request_timeout
         )
         resp.raise_for_status()
         payload = resp.json()
@@ -669,8 +677,10 @@ def ollama_extract(
     try:
         parsed = parse_llm_response(response_text)
     except json.JSONDecodeError as first_error:
-        # Log the raw response for debugging - use _log_app_event so it appears in marcut.log
-        _log_app_event(f"JSON parsing failed. Response ({len(response_text)} chars): {response_text[:500]}{'...[truncated]' if len(response_text) > 500 else ''}")
+        _log_app_event(
+            "JSON parsing failed. "
+            f"Response length={len(response_text)} chars. Raw response omitted from logs."
+        )
         _log_app_event("Attempting self-correction...")
         correction_prompt = f"""You are a JSON correction assistant. The previous response you provided was not valid JSON.
 Original Task:
@@ -690,7 +700,10 @@ Please correct your response. Return ONLY the valid JSON object that adheres to 
         try:
             parsed = parse_llm_response(corrected_text)
         except json.JSONDecodeError as final_error:
-            debug_msg = f"LLM response was not valid JSON after self-correction. Raw response: {corrected_text[:500]}"
+            debug_msg = (
+                "LLM response was not valid JSON after self-correction. "
+                f"Corrected response length={len(corrected_text)} chars; raw response omitted."
+            )
             raise RuntimeError(debug_msg) from final_error
     entities = parsed.get("entities", [])
 

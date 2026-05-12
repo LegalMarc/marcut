@@ -12,6 +12,8 @@ Tests cover:
 """
 
 import pytest
+import stat
+from marcut.report import write_json_file
 from marcut.pipeline import (
     normalize_unicode,
     _rank,
@@ -22,6 +24,7 @@ from marcut.pipeline import (
     _trim_org_trailing_excluded_segments,
     _attach_defined_term_aliases,
     RedactionError,
+    _write_failure_report,
     safe_print,
     UNICODE_TO_ASCII,
 )
@@ -465,6 +468,33 @@ class TestRedactionError:
         with pytest.raises(RedactionError) as exc_info:
             raise RedactionError("test", "TEST_CODE")
         assert exc_info.value.error_code == "TEST_CODE"
+
+    def test_failure_report_redacts_output_path(self, tmp_path):
+        """Failure reports should not persist sensitive output paths or basenames."""
+        input_path = str(tmp_path / "input.docx")
+        output_path = str(tmp_path / "patient-jane-output.docx")
+        report_path = str(tmp_path / "report.json")
+        error = RedactionError(
+            "Output failed",
+            "OUTPUT_SAVE_FAILED",
+            technical_details=f"Output path: {output_path}, Error: cannot write patient-jane-output.docx",
+        )
+
+        _write_failure_report(report_path, input_path, error, output_path)
+        payload = (tmp_path / "report.json").read_text(encoding="utf-8")
+
+        assert output_path not in payload
+        assert "patient-jane-output.docx" not in payload
+        assert "<redacted-path>" in payload
+
+    def test_report_json_is_owner_only(self, tmp_path):
+        """App-managed JSON reports should not be group/world-readable."""
+        report_path = tmp_path / "report.json"
+
+        write_json_file(str(report_path), {"status": "ok"})
+
+        assert report_path.read_text(encoding="utf-8")
+        assert stat.S_IMODE(report_path.stat().st_mode) == 0o600
 
 
 class TestSafePrint:

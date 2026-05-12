@@ -51,6 +51,31 @@ final class MarcutAppTests: XCTestCase {
         // Put teardown code here. This method is called after the invocation of each test method in the class.
     }
 
+    // MARK: - Launch Diagnostics Tests
+
+    func testLaunchArgumentRedactionHidesPathValues() throws {
+        let args = [
+            "MarcutApp",
+            "--redact",
+            "--in",
+            "/Users/example/Client A/input.docx",
+            "--out=/Users/example/Client A/output.docx",
+            "--report",
+            "/Users/example/Client A/report.json",
+            "--mode",
+            "rules"
+        ]
+
+        let redacted = redactedLaunchArguments(args)
+
+        XCTAssertEqual(redacted[3], "<redacted>")
+        XCTAssertEqual(redacted[4], "--out=<redacted>")
+        XCTAssertEqual(redacted[6], "<redacted>")
+        XCTAssertFalse(redacted.joined(separator: " ").contains("Client A"))
+        XCTAssertTrue(redacted.contains("--mode"))
+        XCTAssertTrue(redacted.contains("rules"))
+    }
+
     // MARK: - Tooltip Tests (Task 1.2)
 
     func testTooltipButtonConfiguration() throws {

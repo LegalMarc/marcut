@@ -14,6 +14,11 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Python release gates
+        run: |
+          python3 scripts/check_dependency_vulnerabilities.py requirements-pinned.txt
+          python3 scripts/generate_python_sbom.py --check
+
       - name: Import signing certificate (Developer ID Application)
         if: ${{ secrets.MACOS_CERT_P12_BASE64 && secrets.MACOS_CERT_PASSWORD && secrets.KEYCHAIN_PASSWORD }}
         env:
@@ -42,6 +47,9 @@ jobs:
         run: |
           chmod +x create_python_bundle.sh
           ./create_python_bundle.sh
+
+      - name: Swift unit tests
+        run: swift test --package-path src/swift/MarcutApp
 
       - name: Build App Store DMG (skip notarization here)
         run: |

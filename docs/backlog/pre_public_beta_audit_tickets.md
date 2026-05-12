@@ -5,6 +5,7 @@ This backlog tracks the approved remediation scope for public beta. Marcut is tr
 ## T0 - Backlog And Review Workflow
 
 Severity: High
+Status: Completed with review-tool caveat
 
 Acceptance criteria:
 - This file exists before implementation work begins.
@@ -14,10 +15,12 @@ Acceptance criteria:
 Tests/review:
 - Confirm `git status --short --branch` shows the intended stacked branch.
 - Confirm all implementation tickets below have test coverage or an explicit rationale.
+- Opus was not available locally. Existing subagent threads were at capacity and returned no usable redirected diff-review text, so the implementation used manual local diff review plus full Python/Swift verification.
 
 ## T1 - Loopback-Only Inference
 
 Severity: High
+Status: Completed
 
 Acceptance criteria:
 - Python inference uses loopback Ollama hosts by default.
@@ -30,18 +33,20 @@ Tests/review:
 ## T2 - Generated Python Source Boundary
 
 Severity: High
+Status: Completed
 
 Acceptance criteria:
 - Swift subprocess/Python execution paths do not interpolate unescaped model or mode values into generated Python source.
 - Malicious quote-bearing model/mode values are represented as data, not executable source.
 
 Tests/review:
-- Add Swift or static tests around the argument/source construction boundary.
+- Added regression coverage for malicious model/mode validation and verified Swift no longer interpolates model/mode as executable Python source.
 - `swift test --package-path src/swift/MarcutApp`
 
 ## T3 - Review Artifact Language
 
 Severity: Medium
+Status: Completed
 
 Acceptance criteria:
 - Product/help/report language clearly says the default DOCX is a Track Changes review artifact.
@@ -55,6 +60,7 @@ Tests/review:
 ## T4 - Report Handling Hardening
 
 Severity: High
+Status: Completed
 
 Acceptance criteria:
 - Raw report text remains enabled by default.
@@ -69,6 +75,7 @@ Tests/review:
 ## T5 - Log And Launch-Argument Redaction
 
 Severity: Medium
+Status: Completed
 
 Acceptance criteria:
 - Raw LLM responses and document-derived strings are not logged by default.
@@ -82,6 +89,7 @@ Tests/review:
 ## T6 - Cancellation And Timeout Reliability
 
 Severity: High
+Status: Completed
 
 Acceptance criteria:
 - LLM requests use bounded, cooperative timeouts instead of one 120-minute non-streaming request.
@@ -95,6 +103,7 @@ Tests/review:
 ## T7 - Report Expansion Limits
 
 Severity: High
+Status: Completed
 
 Acceptance criteria:
 - Normal report generation does not unboundedly export all DOCX parts or inline large images.
@@ -107,6 +116,7 @@ Tests/review:
 ## T8 - Release And CI Gates
 
 Severity: High
+Status: Completed
 
 Acceptance criteria:
 - CI no longer calls missing packaging scripts.
@@ -119,4 +129,3 @@ Tests/review:
 - `python3 -m pytest -q`
 - `swift test --package-path src/swift/MarcutApp`
 - Run the release-gate scripts in dry-run/read-only modes where available.
-

@@ -9,6 +9,7 @@ Focuses on:
 
 import json
 import os
+import stat
 import tempfile
 import unittest
 import zipfile
@@ -208,6 +209,104 @@ class TestScrubReportPrePostValues(unittest.TestCase):
         )
         self.assertEqual(report["file_info"]["input"]["sha256"], "prehash")
         self.assertEqual(report["summary"]["input_sha256"], "prehash")
+
+    @unittest.skipUnless(IMPORTS_SUCCESS, "marcut.pipeline not available")
+    def test_forensic_exports_are_disabled_by_default(self):
+        settings = MetadataCleaningSettings.from_preset("none")
+        with tempfile.TemporaryDirectory() as tmpdir:
+            package_path = os.path.join(tmpdir, "input.docx")
+            with zipfile.ZipFile(package_path, "w") as zf:
+                zf.writestr("[Content_Types].xml", "<Types />")
+                zf.writestr("word/document.xml", "<w:document>Original text</w:document>")
+
+            before = {
+                "_binary_parts": [
+                    {
+                        "name": "word/media/image1.bin",
+                        "type": "image",
+                        "data": b"raw-binary",
+                        "size": 10,
+                        "extension": ".bin",
+                    }
+                ]
+            }
+            report = pipeline._build_scrub_report(  # pylint: disable=protected-access
+                before,
+                {},
+                settings,
+                file_path=package_path,
+                input_path=package_path,
+                report_dir=tmpdir,
+            )
+
+            self.assertNotIn("binary_exports", report)
+            self.assertNotIn("deep_explorer", report)
+            warning_codes = {warning["code"] for warning in report.get("warnings", [])}
+            self.assertIn("FORENSIC_BINARY_EXPORTS_DISABLED", warning_codes)
+            self.assertIn("DEEP_EXPLORER_DISABLED", warning_codes)
+            self.assertFalse(os.path.exists(os.path.join(tmpdir, "binaries")))
+            self.assertFalse(os.path.exists(os.path.join(tmpdir, "forensic_explorer")))
+
+    @unittest.skipUnless(IMPORTS_SUCCESS, "marcut.pipeline not available")
+    def test_forensic_exports_are_bounded_and_private_when_enabled(self):
+        settings = MetadataCleaningSettings.from_preset("none")
+        previous = {key: os.environ.get(key) for key in (
+            "MARCUT_ENABLE_FORENSIC_EXPORTS",
+            "MARCUT_REPORT_EXPORT_MAX_COUNT",
+            "MARCUT_DEEP_EXPLORER_MAX_TEXT_CHARS",
+        )}
+        os.environ["MARCUT_ENABLE_FORENSIC_EXPORTS"] = "1"
+        os.environ["MARCUT_REPORT_EXPORT_MAX_COUNT"] = "1"
+        os.environ["MARCUT_DEEP_EXPLORER_MAX_TEXT_CHARS"] = "8"
+        try:
+            with tempfile.TemporaryDirectory() as tmpdir:
+                package_path = os.path.join(tmpdir, "input.docx")
+                with zipfile.ZipFile(package_path, "w") as zf:
+                    zf.writestr("[Content_Types].xml", "<Types />")
+                    zf.writestr("word/document.xml", "<w:document>Original text</w:document>")
+
+                before = {
+                    "_binary_parts": [
+                        {
+                            "name": "word/media/image1.bin",
+                            "type": "image",
+                            "data": b"raw-binary",
+                            "size": 10,
+                            "extension": ".bin",
+                        },
+                        {
+                            "name": "word/media/image2.bin",
+                            "type": "image",
+                            "data": b"extra",
+                            "size": 5,
+                            "extension": ".bin",
+                        },
+                    ]
+                }
+                report = pipeline._build_scrub_report(  # pylint: disable=protected-access
+                    before,
+                    {},
+                    settings,
+                    file_path=package_path,
+                    input_path=package_path,
+                    report_dir=tmpdir,
+                )
+
+                self.assertEqual(len(report.get("binary_exports", [])), 1)
+                exported_path = os.path.join(tmpdir, report["binary_exports"][0]["path"])
+                self.assertTrue(os.path.exists(exported_path))
+                self.assertEqual(stat.S_IMODE(os.stat(exported_path).st_mode), 0o600)
+                warning_codes = {warning["code"] for warning in report.get("warnings", [])}
+                self.assertIn("FORENSIC_BINARY_EXPORT_COUNT_LIMIT", warning_codes)
+                self.assertIn("DEEP_EXPLORER_TEXT_TRUNCATED", warning_codes)
+                raw_text_path = os.path.join(tmpdir, report["deep_explorer"]["pre"]["raw_text_path"])
+                self.assertEqual(stat.S_IMODE(os.stat(raw_text_path).st_mode), 0o600)
+        finally:
+            for key, value in previous.items():
+                if value is None:
+                    os.environ.pop(key, None)
+                else:
+                    os.environ[key] = value
 
 class TestMetadataScrubReport(unittest.TestCase):
     """Integration tests that require python-docx."""

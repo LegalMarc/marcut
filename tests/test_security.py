@@ -1,7 +1,7 @@
 
 import pytest
 import os
-from marcut.unified_redactor import validate_model_name
+from marcut.unified_redactor import validate_model_name, validate_parameters
 from marcut.docx_io import _safe_fromstring
 
 def test_validate_model_name_safe():
@@ -23,6 +23,8 @@ def test_validate_model_name_unsafe():
     assert not validate_model_name("`ls`")
     assert not validate_model_name("model>output")
     assert not validate_model_name("model|pipe")
+    assert not validate_model_name("model'; __import__('os').system('id')")
+    assert not validate_model_name('model"; __import__("os").system("id")')
 
 def test_validate_model_name_paths():
     """Test that file paths are accepted but still sanitized."""
@@ -33,6 +35,23 @@ def test_validate_model_name_paths():
     
     # Paths with injection
     assert not validate_model_name("/path/to/model;rm -rf /")
+
+def test_validate_parameters_rejects_malicious_mode(tmp_path):
+    """Mode values are validated before reaching the pipeline."""
+    input_path = tmp_path / "input.docx"
+    output_path = tmp_path / "output.docx"
+    report_path = tmp_path / "report.json"
+    input_path.write_bytes(b"not a real docx")
+
+    with pytest.raises(ValueError, match="Invalid mode"):
+        validate_parameters(
+            str(input_path),
+            str(output_path),
+            str(report_path),
+            mode="rules'; __import__('os').system('id')",
+            model="mock",
+            backend="mock",
+        )
 
 def test_safe_fromstring_valid():
     """Test that valid XML is parsed correctly."""

@@ -4,7 +4,9 @@ This checklist ensures a consistent, high-quality release process for Marcut.
 
 ## 1. Pre-Release Checks
 - [ ] **Clean Build**: Run `./build_tui.py` and choose **Build Workflows → Full Release Build (Clean & Archive)**.
-- [ ] **Tests Pass**: Verify all unit tests pass (`python3 run_tests.py`).
+- [ ] **Tests Pass**: Verify all unit tests pass (`python3 -m pytest -q` and `swift test --package-path src/swift/MarcutApp`).
+- [ ] **Dependency Audit**: Run `python3 scripts/check_dependency_vulnerabilities.py requirements-pinned.txt`.
+- [ ] **SBOM Current**: Run `python3 scripts/generate_python_sbom.py --check`.
 - [ ] **Integrity Guards**: Confirm build logs include:
     - [ ] `python_site source verified against repo`
     - [ ] `python_site marcut package verified`
@@ -30,7 +32,9 @@ This checklist ensures a consistent, high-quality release process for Marcut.
 - [ ] **Version Sync**: Keep `build-scripts/config.json` `version` and `build_number` identical for release builds.
 - [ ] **Optional Auto-Bump**: Use `scripts/sh/build_appstore_release.sh --auto-bump` only when you explicitly want the next release number generated.
 - [ ] **DMG Creation**: Ensure DMG is generated and signed.
-- [ ] **Notarization**: (Optional for local/test, Mandatory for Release) Run notarization script.
+- [ ] **Workflow Validity**: Confirm `.github/workflows/macos-build-verify.yml` and `.github/workflows/macos-full-e2e.yml` run dependency audit, SBOM, Python tests, Swift tests, packaging, and bundle verification.
+- [ ] **Notarization**: Mandatory for release. `scripts/notarize_macos.sh` must fail closed unless `MARCUT_ALLOW_NOTARIZATION_SKIP=1` is explicitly set for local/test builds.
+- [ ] **Release Commit Consistency**: Confirm the release tag points at the audited branch/commit and matches the built DMG commit.
 
 ## 4. Release Assets
 - [ ] **Tag**: Create git tag (e.g., `v0.5.32`).

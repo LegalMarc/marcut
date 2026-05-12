@@ -97,7 +97,7 @@ from .model_enhanced import (
 )
 from .cluster import ClusterTable
 from .confidence import combine, low_conf
-from .report import write_report
+from .report import write_report, write_json_file, make_private_file
 import regex as re  # For consistency pass boundaries
 
 logger = logging.getLogger(__name__)
@@ -149,21 +149,21 @@ def _merge_overlaps(spans: List[Dict[str,Any]], text: str) -> List[Dict[str,Any]
     # Sort by start position primary, then priority descending, then length descending
     # This ensures that if multiple spans start at same spot, the "best" one is seen first
     valid_spans.sort(key=lambda s: (
-        s["start"], 
-        -_rank(s["label"]), 
+        s["start"],
+        -_rank(s["label"]),
         -(s["end"] - s["start"]),
         -s.get("confidence", 0)
     ))
-    
+
     out: List[Dict[str,Any]] = []
-    
+
     for sp in valid_spans:
         if not out:
             out.append(sp)
             continue
-            
+
         last = out[-1]
-        
+
         # Check for overlap
         if sp["start"] < last["end"]:
             # Intersection detected.
@@ -172,7 +172,7 @@ def _merge_overlaps(spans: List[Dict[str,Any]], text: str) -> List[Dict[str,Any]
             rank_curr = _rank(sp["label"])
             conf_last = last.get("confidence", 0.0)
             conf_curr = sp.get("confidence", 0.0)
-            
+
             is_better = False
             if rank_curr > rank_last:
                 is_better = True
@@ -183,11 +183,11 @@ def _merge_overlaps(spans: List[Dict[str,Any]], text: str) -> List[Dict[str,Any]
                     # Tie-break: length
                     if (sp["end"] - sp["start"]) > (last["end"] - last["start"]):
                         is_better = True
-            
+
             # UNION Logic: Extend the end coverage
             new_end = max(last["end"], sp["end"])
             last["end"] = new_end
-            
+
             # If current span is "better", adopt its identity (label, id, confidence)
             if is_better:
                 last["label"] = sp["label"]
@@ -197,24 +197,24 @@ def _merge_overlaps(spans: List[Dict[str,Any]], text: str) -> List[Dict[str,Any]
                 # Also adopt its source if present?
                 if "source" in sp:
                     last["source"] = sp["source"]
-            
+
             # Update text to cover thefull merged range
             if text:
                 last["text"] = text[last["start"]:last["end"]]
-                
+
         else:
             out.append(sp)
-    
+
     return out
 
 def _snap_to_boundaries(text: str, spans: List[Dict[str, Any]], debug: bool = False) -> List[Dict[str, Any]]:
     """Expand spans to encompass full tokens (snapping to whitespace/punctuation)."""
     out = []
     numeric_labels = {"PHONE", "ACCOUNT", "CARD", "SSN", "NUMBER", "IP"}
-    
+
     def is_word_char(c: str) -> bool:
         return c.isalnum() or c in ("-", "'", "’", "_")
-    
+
     def is_numeric_char(c: str) -> bool:
         return c.isdigit() or c in ("+", "-", "(", ")", ".", "/", ",")
 
@@ -222,12 +222,12 @@ def _snap_to_boundaries(text: str, spans: List[Dict[str, Any]], debug: bool = Fa
         s, e = sp["start"], sp["end"]
         label = sp.get("label")
         # original_text = sp.get("text", text[s:e])
-        
+
         # Expand left
-        # We greedily expand left if the previous char is a word char, 
+        # We greedily expand left if the previous char is a word char,
         # BUT we must be careful not to cross separating punctuation like ", " or ". "
         # Basic strategy: Expand if alnum. If punctuation, check if it's connected to alnum?
-        # Simpler: Expand while prev char is alnum. 
+        # Simpler: Expand while prev char is alnum.
         # If prev char is hyphen/apostrophe, check if char BEFORE that is alnum?
         # Actually, existing logic only checked isalnum().
         # Fixed logic: Expand while prev char matches a broader word-token set.
@@ -238,59 +238,59 @@ def _snap_to_boundaries(text: str, spans: List[Dict[str, Any]], debug: bool = Fa
              # If text[s-1] is '-', check text[s-2]?
              # For now, just expand loosely to capture Co-Op.
              s -= 1
-             
+
         # Expand right
         while e < len(text) and (
             is_numeric_char(text[e]) if label in numeric_labels else is_word_char(text[e])
         ):
              e += 1
-             
+
         # Trim leading/trailing delimiters if we expanded too far (e.g. captured leading "-")
         # " -Word" -> "-Word". Valid? No.
         # Clean up edges
         while s < e and not text[s].isalnum():
             s += 1
         while e > s and not text[e-1].isalnum():
-             # Exception: 's is valid suffix? "John's". ' is not alnum.
-             # If we have "John's", e is after 's'. text[e-1] is 's'. alnum.
-             # If we have "John-", text[e-1] is '-'.
+             if text[e-1] in ("'", "’") and e < len(text) and text[e].lower() == 's':
+                 break
+             if label in ("ORG", "BRAND") and text[e-1] == ".":
+                 break
              e -= 1
-        
+
         if s != sp["start"] or e != sp["end"]:
             sp["start"] = s
             sp["end"] = e
             sp["text"] = text[s:e]
-            
+
         out.append(sp)
     return out
 
 MAX_SUFFIX_PADDING = 30
+
+_ORG_SUFFIX_RE = re.compile(
+    r"(?:Incorporated|Corporation|Company|Limited|Inc\.?|Corp\.?|Co\.?|Ltd\.?|"
+    r"Limited\s+Liability\s+Company|L\.L\.C\.|LLC|L\.C\.|LC|"
+    r"Limited\s+Liability\s+Partnership|L\.L\.P\.|LLP|"
+    r"Limited\s+Partnership|L\.P\.|LP|"
+    r"General\s+Partnership|G\.P\.|GP|"
+    r"Professional\s+Corporation|P\.C\.|PC|"
+    r"Professional\s+Association|P\.A\.|PA|"
+    r"Federal\s+Savings\s+Bank|FSB|"
+    r"National\s+Association|N\.A\.|"
+    r"National\s+Bank|Bank|"
+    r"Trust\s+Company|"
+    r"Capital|Holdings|Group|Fund|"
+    r"Statutory\s+Trust|Business\s+Trust|REIT|Trust|"
+    r"Foundation|Association|Society|Institute|"
+    r"GmbH|AG|S\.A\.S\.|S\.A\.|S\.R\.L\.|Sp\.\s+z\s+o\.o\.|B\.V\.|N\.V\.|PLC|p\.l\.c\.)\s*$",
+    re.IGNORECASE
+)
 
 def _filter_overlong_org_spans(text: str, spans: List[Dict[str, Any]], max_len: int = 60) -> List[Dict[str, Any]]:
     """Drop ORG spans that are likely over-broad (very long or multi-line)."""
     if not spans:
         return spans
 
-    # Permit short, suffix-anchored ORGs with a single line break (common in tables).
-    # Use re.IGNORECASE flag rather than (?i) inside for cleaner multiline
-    suffix_re = re.compile(
-        r"(?:Incorporated|Corporation|Company|Limited|Inc\.?|Corp\.?|Co\.?|Ltd\.?|"
-        r"Limited\s+Liability\s+Company|L\.L\.C\.|LLC|L\.C\.|LC|"
-        r"Limited\s+Liability\s+Partnership|L\.L\.P\.|LLP|"
-        r"Limited\s+Partnership|L\.P\.|LP|"
-        r"General\s+Partnership|G\.P\.|GP|"
-        r"Professional\s+Corporation|P\.C\.|PC|"
-        r"Professional\s+Association|P\.A\.|PA|"
-        r"Federal\s+Savings\s+Bank|FSB|"
-        r"National\s+Association|N\.A\.|"
-        r"National\s+Bank|Bank|"
-        r"Trust\s+Company|"
-        r"Capital|Holdings|Group|Fund|"
-        r"Statutory\s+Trust|Business\s+Trust|REIT|Trust|"
-        r"Foundation|Association|Society|Institute|"
-        r"GmbH|AG|S\.A\.S\.|S\.A\.|S\.R\.L\.|Sp\.\s+z\s+o\.o\.|B\.V\.|N\.V\.|PLC|p\.l\.c\.)\s*$",
-        re.IGNORECASE
-    )
     suffix_max_len = max_len + MAX_SUFFIX_PADDING
 
     filtered: List[Dict[str, Any]] = []
@@ -310,7 +310,7 @@ def _filter_overlong_org_spans(text: str, spans: List[Dict[str, Any]], max_len: 
 
         normalized = span_text.replace("\r", "\n")
         line_breaks = normalized.count("\n")
-        has_suffix = suffix_re.search(normalized.strip()) is not None
+        has_suffix = _ORG_SUFFIX_RE.search(normalized.strip()) is not None
 
         if len(span_text) > max_len:
             if has_suffix and line_breaks <= 1 and len(normalized) <= suffix_max_len:
@@ -332,7 +332,7 @@ _ORG_SUFFIX_TRAIL_RE = re.compile(
     r"(?:inc\.?|corp\.?|co\.?|ltd\.?|llc|l\.l\.c\.|llp|l\.l\.p\.|lp|l\.p\.|"
     r"pllc|plc|p\.l\.c\.|gmbh|ag|s\.a\.?|b\.v\.?|n\.v\.?)"
     r")"
-    r"[\s\.]*" # Allow trailing whitespace or period
+    r"\.?"
     r"(?=$|[\s,;:\)\]\}])", # Lookahead for end or separator
     re.IGNORECASE,
 )
@@ -535,16 +535,16 @@ def _apply_consistency_pass(
     # 1. Collect Candidates
     SAFE_LABELS = {"ORG", "PERSON", "NAME", "EMAIL", "SSN", "PHONE", "ACCOUNT", "CARD", "BRAND"}
     STOP_WORDS = {
-        "the", "and", "for", "with", "from", "that", "this", "inc", "llc", "corp", 
+        "the", "and", "for", "with", "from", "that", "this", "inc", "llc", "corp",
         "ltd", "company", "mr", "mrs", "ms", "dr", "esq", "dept"
-    } 
-    
+    }
+
     # Store candidates: Map text -> Label
     # If same text maps to multiple labels, priority should handle it, or we just pick one?
     # Better: Map text -> List[Label] and emit spans for each? Or just emit highest priority?
     case_sensitive_map: Dict[str, str] = {}
     case_insensitive_map: Dict[str, str] = {}
-    
+
     # Also keep full candidate objects for strict checks or fuzzy scan
     all_candidates: List[Dict[str, Any]] = []
     seen_candidate_keys = set()
@@ -552,17 +552,17 @@ def _apply_consistency_pass(
     for sp in spans:
         lbl = sp["label"]
         txt = sp["text"].strip()
-        
+
         if lbl not in SAFE_LABELS:
             continue
-        
+
         if len(txt) < 4:
-            continue 
+            continue
         if txt.lower() in STOP_WORDS:
             continue
         if not any(c.isalnum() for c in txt):
             continue
-        
+
         if exclude_if and exclude_if(txt, lbl):
             continue
 
@@ -570,7 +570,7 @@ def _apply_consistency_pass(
         if key in seen_candidate_keys:
             continue
         seen_candidate_keys.add(key)
-        
+
         cand = {
             "text": txt,
             "label": lbl,
@@ -578,10 +578,10 @@ def _apply_consistency_pass(
             "tokens": _org_tokens(txt) if lbl == "ORG" else None,
         }
         all_candidates.append(cand)
-        
+
         if lbl == "ORG":
             # For ORG, we scan case-insensitive
-            # We strip singular 's for matching base form 
+            # We strip singular 's for matching base form
             base = re.sub(r"[’']s$", "", txt)
             if base not in case_insensitive_map:
                 case_insensitive_map[base.lower()] = lbl
@@ -624,7 +624,7 @@ def _apply_consistency_pass(
         return False
 
     # 2. Batched Rescan (Exact Matches)
-    
+
     # Build regex for case-sensitive
     if case_sensitive_map:
         # Sort by length descending to match longest first
@@ -636,13 +636,13 @@ def _apply_consistency_pass(
                 matched_text = match.group(0)
                 label = case_sensitive_map.get(matched_text)
                 if not label: continue
-                
+
                 s, e = match.span()
                 if _overlaps_existing(s, e, label, matched_text):
                     continue
                 key = (s, e, label)
                 if key in existing_keys or key in new_keys: continue
-                
+
                 new_spans.append({
                     "start": s, "end": e, "label": label, "text": matched_text,
                     "confidence": 0.95, "source": "consistency_pass"
@@ -661,13 +661,13 @@ def _apply_consistency_pass(
                 # Lookup by lowercase
                 label = case_insensitive_map.get(matched_text.lower())
                 if not label: continue
-                
+
                 s, e = match.span()
                 if _overlaps_existing(s, e, label, matched_text):
                     continue
                 key = (s, e, label)
                 if key in existing_keys or key in new_keys: continue
-                
+
                 new_spans.append({
                     "start": s, "end": e, "label": label, "text": matched_text,
                     "confidence": 0.95, "source": "consistency_pass_ci"
@@ -681,17 +681,17 @@ def _apply_consistency_pass(
     for cand in all_candidates:
         if cand["label"] != "ORG":
             continue
-        
+
         norm_tokens = cand.get("tokens") or []
         if len(norm_tokens) < 2:
             continue
-            
+
         cand_text = cand["text"]
         label = "ORG"
-        
+
         gap = r"[ \t\r\n\u00A0,.;:'\"/\-]{0,10}"
         fuzzy_pattern = r"\b" + gap.join(re.escape(tok) for tok in norm_tokens) + r"\b"
-        
+
         try:
             for match in re.finditer(fuzzy_pattern, text, flags=re.IGNORECASE):
                 s, e = match.span()
@@ -699,13 +699,13 @@ def _apply_consistency_pass(
                 if s > 0 and text[s - 1].isalnum(): continue
                 if e < len(text) and text[e:e+1].isalnum(): continue
                 if _overlaps_existing(s, e, label, text[s:e]): continue
-                
+
                 key = (s, e, label)
                 if key in existing_keys or key in new_keys: continue
-                
+
                 # Length check
                 if (e - s) < max(4, len("".join(norm_tokens)) - 1): continue
-                
+
                 new_spans.append({
                     "start": s, "end": e, "label": label, "text": text[s:e],
                     "confidence": 0.93, "source": "consistency_pass_fuzzy"
@@ -789,7 +789,7 @@ def _trim_trailing_parenthetical(segment: str) -> str:
     stripped = segment.rstrip()
     if not stripped.endswith(")"):
         return segment
-    
+
     # improved scan for matching '('
     depth = 0
     open_idx = -1
@@ -801,18 +801,18 @@ def _trim_trailing_parenthetical(segment: str) -> str:
             if depth == 0:
                 open_idx = i
                 break
-                
+
     if open_idx == -1:
         return segment
-        
+
     inner = stripped[open_idx + 1 : -1].strip()
     if not inner:
         # Empty parens? Treat as excluded/junk
         return stripped[:open_idx].rstrip()
-        
+
     if _is_excluded_combo(inner):
         return stripped[:open_idx].rstrip()
-    
+
     return segment
 
 def _trim_trailing_delimited_segment(segment: str) -> str:
@@ -1035,7 +1035,7 @@ def _extend_loc_to_line(text: str, spans: List[Dict[str, Any]], max_line_len: in
         line_len = len(line)
         best_match = max(matches, key=lambda m: (m.end() - m.start()))
         coverage = (best_match.end() - best_match.start()) / max(line_len, 1)
-        
+
         # Determine dominance, but cap at max_line_len to prevent huge redactions
         dominant = coverage >= 0.6
         if line_len > max_line_len:
@@ -1054,7 +1054,7 @@ def _extend_loc_to_line(text: str, spans: List[Dict[str, Any]], max_line_len: in
             updated["text"] = text[updated["start"]:updated["end"]]
             # Mark source as extended
             updated["source"] = "rule_extended_address"
-            
+
         extended.append(updated)
 
     return extended
@@ -1207,15 +1207,15 @@ def _finalize_and_write(
         suppressed = []
     ct = ClusterTable()
     url_counter = {}
-    
+
     # Assign entity IDs for clustering and consistent numbering
     # Use generic counters for exact-match types
     entity_counters = {} # label -> {text: id}
-    
+
     for sp in spans:
         label = sp["label"]
         text = sp["text"].strip() # Normalize text for matching
-        
+
         if label in ("NAME", "ORG", "BRAND"):
             eid, score, is_new = ct.link(label, text)
             sp["entity_id"] = eid
@@ -1224,55 +1224,55 @@ def _finalize_and_write(
             # Generalize numbering for ALL other types (PHONE, DATE, EMAIL, ACCOUNT, URL, etc.)
             if label not in entity_counters:
                 entity_counters[label] = {}
-            
+
             if text not in entity_counters[label]:
                 entity_counters[label][text] = len(entity_counters[label]) + 1
-            
+
             seq_id = entity_counters[label][text]
             sp["entity_id"] = f"{label}_{seq_id}"
-    
+
     # Create replacements
     replacements = []
     for sp in spans:
         if not sp.get("needs_redaction", True):
             continue
-            
+
         # Use entity_id if available, otherwise use label
         if sp.get("entity_id"):
             tag = f"[{sp['entity_id']}]"
         else:
             tag = f"[{sp['label']}]"
-        
+
         s, e = sp["start"], sp["end"]
-        
+
         # Handle possessive forms (e.g., "John's" -> "[NAME_1]'s")
         if e + 2 <= len(text) and text[e:e+2] == "'s":
             e += 2
             tag += "'s"
-        
+
         # Check for existing brackets to avoid [[TAG]]
         # Safety check: indices must be within valid range
         has_left_bracket = (s > 0 and s <= len(text) and text[s-1] == '[')
         has_right_bracket = (e < len(text) and text[e] == ']')
-        
+
         if has_left_bracket and has_right_bracket:
             tag = tag[1:-1]  # Remove our brackets
-        
+
         if debug:
              print(f"DEBUG: Replacement span: {s}-{e} = '{tag}' (Label: {sp.get('label')})")
 
         replacements.append({
-            "start": s, 
-            "end": e, 
-            "replacement": tag, 
+            "start": s,
+            "end": e,
+            "replacement": tag,
             "low_confidence": low_conf(sp.get("confidence", 0.7)),
             "label": sp.get("label")
         })
-    
+
     # Apply track changes and save
     dm.apply_replacements(replacements, track_changes=True)
     warnings.extend(getattr(dm, "warnings", []) or [])
-    
+
     # Parse metadata cleaning settings from environment (set by Swift UI)
     metadata_args_str = os.environ.get("MARCUT_METADATA_ARGS", "")
     metadata_args = metadata_args_str.split() if metadata_args_str else []
@@ -1292,7 +1292,7 @@ def _finalize_and_write(
             scrub_before_values = _read_metadata_values(dm_before)
         except Exception:
             scrub_before_values = _read_metadata_values(dm)
-    
+
     # Apply security hardening only if relevant settings are enabled
     # (RSIDs, hyperlinks, OLE objects are hardening targets)
     hardening_enabled = any([
@@ -1301,7 +1301,7 @@ def _finalize_and_write(
         metadata_settings.clean_ole_objects,
         metadata_settings.clean_activex,
     ])
-    
+
     if hardening_enabled:
         try:
             from .rules import _selected_rule_labels, _rule_enabled
@@ -1310,10 +1310,10 @@ def _finalize_and_write(
         except ImportError:
             scrub_images = False
         dm.harden_document(scrub_all_images=scrub_images, settings=metadata_settings)
-    
+
     # Scrub metadata using user-configured settings
     dm.scrub_metadata(metadata_settings)
-    
+
     dm.save(output_path)
 
     redaction_changes_created = bool(replacements)
@@ -1354,15 +1354,15 @@ def _finalize_and_write(
             report_dir = os.path.dirname(scrub_report_path)
             if report_dir:
                 os.makedirs(report_dir, exist_ok=True)
-            with open(scrub_report_path, "w", encoding="utf-8") as fh:
-                json.dump(report, fh, indent=2)
-            
+            write_json_file(scrub_report_path, report)
+
             # Generate HTML report alongside JSON
             try:
                 from .report_html import generate_report_from_json_file
                 html_report_path = generate_report_from_json_file(scrub_report_path)
                 if not html_report_path or not os.path.exists(html_report_path):
                     raise RuntimeError("HTML report generation did not produce a file")
+                make_private_file(html_report_path)
             except Exception as html_err:
                 report.setdefault("warnings", []).append({
                     "code": "SCRUB_REPORT_HTML_FAILED",
@@ -1375,8 +1375,7 @@ def _finalize_and_write(
                     "details": str(html_err)
                 })
                 try:
-                    with open(scrub_report_path, "w", encoding="utf-8") as fh:
-                        json.dump(report, fh, indent=2)
+                    write_json_file(scrub_report_path, report)
                 except Exception:
                     pass
         except Exception as e:
@@ -1387,11 +1386,11 @@ def _finalize_and_write(
             })
             if debug:
                 print(f"[MARCUT_PIPELINE] Failed to write scrub report: {e}")
-    
+
     # Generate audit report
     audit = [{
-        "start": sp["start"], 
-        "end": sp["end"], 
+        "start": sp["start"],
+        "end": sp["end"],
         "label": sp["label"],
         "entity_id": sp.get("entity_id"),
         "confidence": sp.get("confidence", 0.0),
@@ -1400,7 +1399,7 @@ def _finalize_and_write(
         "validated": sp.get("validated"),
         "validation_result": sp.get("validation_result")
     } for sp in spans]
-    
+
     try:
         write_report(
             report_path,
@@ -1442,9 +1441,12 @@ def _collect_enhanced_spans(
     seed: int,
     llm_skip_confidence: float,
     debug: bool,
+    llm_concurrency: int = 2,
     progress_callback=None,
     warnings: Optional[List[Dict[str, Any]]] = None,
     suppressed: Optional[List[Dict[str, Any]]] = None,
+    think_mode: bool = False,
+    format_schema: Optional[Dict] = None,
 ) -> List[Dict[str, Any]]:
     """Run the enhanced extraction pipeline (Ollama or llama.cpp)."""
     from .progress import ProgressTracker, ProcessingPhase
@@ -1480,9 +1482,12 @@ def _collect_enhanced_spans(
             temperature=temperature,
             seed=seed,
             skip_confidence=llm_skip_confidence,
+            llm_concurrency=llm_concurrency,
             progress_callback=progress_callback,
             warnings=warnings,
             suppressed=suppressed,
+            think_mode=think_mode,
+            format_schema=format_schema,
         )
 
     if debug:
@@ -1514,12 +1519,15 @@ def _log_redaction_error(error: RedactionError, debug: bool = False) -> None:
         traceback.print_exception(error.original_error)
 
 
-def _write_failure_report(report_path: str, input_path: str, error: RedactionError) -> None:
+def _write_failure_report(report_path: str, input_path: str, error: RedactionError, output_path: str = "") -> None:
     """Persist a minimal error report so the GUI/CLI can surface context."""
     details = str(error.technical_details or "")
-    for sensitive_path in (input_path, report_path):
+    for sensitive_path in (input_path, report_path, output_path):
         if sensitive_path:
             details = details.replace(sensitive_path, "<redacted-path>")
+            basename = os.path.basename(sensitive_path)
+            if basename:
+                details = details.replace(basename, "<redacted-file>")
     details = re.sub(r"/Users/[^/\s]+", "/Users/<redacted>", details)
     details = re.sub(r"[A-Za-z]:\\\\[^\s]+", "<redacted-path>", details)
     details = re.sub(r"\\\\\\\\[^\s]+", "<redacted-path>", details)
@@ -1532,8 +1540,7 @@ def _write_failure_report(report_path: str, input_path: str, error: RedactionErr
         "technical_details": details,
     }
     try:
-        with open(report_path, "w", encoding="utf-8") as fh:
-            json.dump(payload, fh, indent=2)
+        write_json_file(report_path, payload)
     except Exception as report_exc:
         print(f"[MARCUT_PIPELINE] Failed to write error report: {report_exc}")
         traceback.print_exc()
@@ -1559,6 +1566,9 @@ def run_redaction(
     timing: bool = False,
     llm_detail: bool = False,
     llm_skip_confidence: float = 0.95,
+    llm_concurrency: int = 2,
+    think_mode: bool = False,
+    format_schema: Optional[Dict] = None,
 ) -> Tuple[int, Dict[str, float]]:
     """
     Unified pipeline entry point. Dispatches between rule-only and Rules + AI
@@ -1568,7 +1578,7 @@ def run_redaction(
     llm_modes = {"rules_override", "constrained_overrides", "llm_overrides"}
     try:
         del do_qa  # parameter kept for API compatibility
-        
+
         # Initialize timing collection
         phase_timings: Dict[str, float] = {}
         warnings: List[Dict[str, Any]] = []
@@ -1582,7 +1592,7 @@ def run_redaction(
                 def __exit__(self, *args):
                     phase_timings[phase_name] = time.perf_counter() - self.start
             return Timer()
-        
+
         # Storage for LLM sub-timing
         llm_timing_detail = {}
 
@@ -1731,7 +1741,8 @@ def run_redaction(
                         for attempt_idx, wait_s in enumerate((0, 2), start=1):
                             try:
                                 model_spans, llm_timing_detail = ollama_extract_with_timing(
-                                    model_id, text, temperature, seed, context=prompt_context
+                                    model_id, text, temperature, seed, context=prompt_context,
+                                    think_mode=think_mode, format_schema=format_schema
                                 )
                                 llm_error = None
                                 # Store in phase_timings for return
@@ -1757,9 +1768,12 @@ def run_redaction(
                             seed,
                             llm_skip_confidence,
                             debug,
+                            llm_concurrency=llm_concurrency,
                             progress_callback=progress_callback,
                             warnings=warnings,
                             suppressed=suppressed,
+                            think_mode=think_mode,
+                            format_schema=format_schema,
                         )
                 if debug:
                     print(f"Enhanced AI processing found {len(model_spans)} spans")
@@ -1812,6 +1826,8 @@ def run_redaction(
                     allowed_labels=allowed_labels,
                     suppressed=suppressed,
                     debug=debug,
+                    think_mode=think_mode,
+                    format_schema=format_schema,
                 )
                 if debug:
                     removed = before_count - len(rule_spans)
@@ -1872,7 +1888,7 @@ def run_redaction(
             _log_redaction_error(err, debug=True)
         else:
             print(f"[MARCUT_PIPELINE] {err}")
-        _write_failure_report(report_path, input_path, err)
+        _write_failure_report(report_path, input_path, err, output_path)
         return (2, phase_timings if 'phase_timings' in dir() else {})
     except Exception as err:
         wrapped = RedactionError(
@@ -1882,7 +1898,7 @@ def run_redaction(
             original_error=err,
         )
         _log_redaction_error(wrapped, debug=debug)
-        _write_failure_report(report_path, input_path, wrapped)
+        _write_failure_report(report_path, input_path, wrapped, output_path)
         return (3, phase_timings if 'phase_timings' in dir() else {})
 
 
@@ -1989,7 +2005,7 @@ def _safe_report_file_info(path: Optional[str]) -> Dict[str, Any]:
 def _read_metadata_values(dm) -> dict:
     """
     Read current metadata values from document for forensic before/after comparison.
-    
+
     Captures FULL values (no truncation) for all metadata fields including:
     - Core properties (author, title, dc:rights, etc.)
     - Extended properties (company, template, statistics)
@@ -2014,11 +2030,11 @@ def _read_metadata_values(dm) -> dict:
             return " ".join(texts).strip()
         except Exception:
             return ""
-    
+
     # ========== CORE PROPERTIES (docProps/core.xml) ==========
     try:
         cp = dm.doc.core_properties
-        
+
         values['author'] = str(cp.author or '')
         values['last_modified_by'] = str(cp.last_modified_by or '')
         values['title'] = str(cp.title or '')
@@ -2036,7 +2052,7 @@ def _read_metadata_values(dm) -> dict:
         values['version'] = str(getattr(cp, 'version', '') or '')
     except Exception:
         pass
-    
+
     # Extended core properties from XML (dc:rights, dc:publisher, etc.)
     try:
         from lxml import etree
@@ -2062,7 +2078,7 @@ def _read_metadata_values(dm) -> dict:
                 break
     except Exception:
         pass
-    
+
     # ========== EXTENDED PROPERTIES (docProps/app.xml) ==========
     try:
         from lxml import etree
@@ -2073,12 +2089,12 @@ def _read_metadata_values(dm) -> dict:
                     app_xml = etree.fromstring(app_part._blob)
                     ns = {'ep': 'http://schemas.openxmlformats.org/officeDocument/2006/extended-properties',
                           'vt': 'http://schemas.openxmlformats.org/officeDocument/2006/docPropsVTypes'}
-                    
+
                     # All extended property fields
                     extended_tags = [
                         'Company', 'Manager', 'Application', 'AppVersion', 'Template',
                         'HyperlinkBase', 'TotalTime', 'Words', 'Characters', 'CharactersWithSpaces',
-                        'Pages', 'Paragraphs', 'Lines', 'DocSecurity', 'ScaleCrop', 
+                        'Pages', 'Paragraphs', 'Lines', 'DocSecurity', 'ScaleCrop',
                         'SharedDoc', 'LinksUpToDate', 'HyperlinksChanged',
                         'Slides', 'Notes', 'HiddenSlides', 'MMClips', 'PresentationFormat',
                     ]
@@ -2086,7 +2102,7 @@ def _read_metadata_values(dm) -> dict:
                         for elem in app_xml.findall(f'.//ep:{tag}', namespaces=ns):
                             key = "hyperlink_base" if tag == "HyperlinkBase" else tag.lower()
                             values[key] = str(elem.text or '')
-                    
+
                     # HeadingPairs and TitlesOfParts (can reveal document structure)
                     heading_pairs = []
                     for hp in app_xml.findall('.//ep:HeadingPairs', namespaces=ns):
@@ -2095,7 +2111,7 @@ def _read_metadata_values(dm) -> dict:
                                 heading_pairs.append(variant.text)
                     if heading_pairs:
                         values['heading_pairs'] = heading_pairs
-                    
+
                     titles_of_parts = []
                     for tp in app_xml.findall('.//ep:TitlesOfParts', namespaces=ns):
                         for variant in tp.findall('.//vt:lpstr', namespaces=ns):
@@ -2103,7 +2119,7 @@ def _read_metadata_values(dm) -> dict:
                                 titles_of_parts.append(variant.text)
                     if titles_of_parts:
                         values['titles_of_parts'] = titles_of_parts
-                    
+
                     # DigSig element presence
                     digsig = app_xml.find('.//ep:DigSig', namespaces=ns)
                     if digsig is not None:
@@ -2133,13 +2149,13 @@ def _read_metadata_values(dm) -> dict:
                     break
     except Exception:
         pass
-    
+
     # ========== DOCUMENT SETTINGS (settings.xml) ==========
     try:
         from docx.oxml.ns import qn
         if hasattr(dm.doc, 'settings') and dm.doc.settings:
             settings_xml = dm.doc.settings.element
-            
+
             # Spell/Grammar State
             proof_state = settings_xml.find(qn('w:proofState'))
             if proof_state is not None:
@@ -2171,7 +2187,7 @@ def _read_metadata_values(dm) -> dict:
                 values['document_protection'] = attrs
             else:
                 values['document_protection'] = {}
-            
+
             # Document Variables - FULL capture
             doc_vars = settings_xml.find(qn('w:docVars'))
             if doc_vars is not None:
@@ -2184,7 +2200,7 @@ def _read_metadata_values(dm) -> dict:
                 values['doc_vars'] = doc_var_list
             else:
                 values['doc_vars'] = []
-            
+
             # Mail merge - full sources
             mail_merge = settings_xml.find(qn('w:mailMerge'))
             if mail_merge is not None:
@@ -2396,14 +2412,14 @@ def _read_metadata_values(dm) -> dict:
                 for key, val in el.attrib.items():
                     if "rsid" in key.lower() and val:
                         rsid_values.add(val)
-            
+
             # Check for w:rsids in settings.xml
             if root.tag == qn('w:settings'):
                 for rsid_el in root.findall(".//{*}rsid"):
                     val = rsid_el.get(qn('w:val'))
                     if val:
                         rsid_values.add(val)
-        
+
         values['rsids'] = sorted(list(rsid_values))
 
         # ========== DOCUMENT GUIDs ==========
@@ -2826,7 +2842,7 @@ def _read_metadata_values(dm) -> dict:
             data = getattr(part, "blob", None) or getattr(part, "_blob", None)
             if data is None:
                 continue
-            
+
             part_type = None
             if name.startswith("/word/media/"):
                 part_type = "image"
@@ -2844,7 +2860,7 @@ def _read_metadata_values(dm) -> dict:
                 part_type = "activex"
             else:
                 part_type = "other"
-            
+
             binary_parts.append({
                 "name": name.strip("/"),
                 "type": part_type,
@@ -3063,11 +3079,11 @@ def _build_scrub_report(
 ) -> dict:
     """
     Build comprehensive forensic report with before/after values grouped like UI.
-    
+
     Handles list and dict values from enhanced _read_metadata_values,
     exports binary parts to structured binaries/ subdirectory.
     """
-    
+
     def _perform_forensic_analysis(before_values: dict, after_values: dict) -> List[Dict[str, Any]]:
         """Run heuristic checks to flag suspicious metadata inconsistencies."""
         findings: List[Dict[str, Any]] = []
@@ -3270,7 +3286,7 @@ def _build_scrub_report(
             return {"status": "present (non-zip container)"}
         except Exception:
             return {"status": "unknown"}
-    
+
     def _serialize_value(val):
         """Serialize complex values for JSON report while preserving structure."""
         if val is None:
@@ -3306,7 +3322,7 @@ def _build_scrub_report(
             "custom_xml_parts": values.get("custom_xml_parts") or [],
             "custom_xml_rel_count": int(values.get("custom_xml_rel_count") or 0),
         }
-    
+
     groups = {
         "App Properties": [
             {"field": "Company", "setting": "clean_company", "before_key": "company"},
@@ -3409,19 +3425,45 @@ def _build_scrub_report(
             {"field": "Nuclear Option: Alternate Content Blocks", "setting": "clean_alternate_content", "before_key": "alternate_content"},
         ],
     }
-    
+
+    report_warnings = list(warnings or [])
     report = {
         "summary": {"total_cleaned": 0, "total_preserved": 0, "total_unchanged": 0},
         "groups": {},
     }
-    if warnings:
-        report["warnings"] = warnings
-    
+
+    def _env_enabled(name: str) -> bool:
+        return os.environ.get(name, "").strip().lower() in {"1", "true", "yes", "on"}
+
+    def _env_int(name: str, default: int) -> int:
+        try:
+            return max(0, int(os.environ.get(name, str(default))))
+        except (TypeError, ValueError):
+            return default
+
+    def _add_report_warning(code: str, message: str, details: str = "") -> None:
+        warning = {"code": code, "message": message}
+        if details:
+            warning["details"] = details
+        report_warnings.append(warning)
+
     # ========== STRUCTURED BINARY EXPORT ==========
     binary_exports = []
     large_exports = []
     binary_parts = before.get("_binary_parts") or []
-    if report_dir and binary_parts:
+    forensic_exports_enabled = (
+        _env_enabled("MARCUT_ENABLE_FORENSIC_EXPORTS")
+        or _env_enabled("MARCUT_ENABLE_BINARY_EXPORTS")
+    )
+    max_export_count = _env_int("MARCUT_REPORT_EXPORT_MAX_COUNT", 50)
+    max_export_total_bytes = _env_int("MARCUT_REPORT_EXPORT_MAX_BYTES", 10 * 1024 * 1024)
+    max_export_part_bytes = _env_int("MARCUT_REPORT_EXPORT_MAX_PART_BYTES", 2 * 1024 * 1024)
+    if report_dir and binary_parts and not forensic_exports_enabled:
+        _add_report_warning(
+            "FORENSIC_BINARY_EXPORTS_DISABLED",
+            "Embedded binary export is disabled by default. Enable forensic export mode to write binary artifacts."
+        )
+    if report_dir and binary_parts and forensic_exports_enabled:
         # Create structured binaries directory
         binaries_dir = os.path.join(report_dir, "binaries")
         type_dirs = {
@@ -3433,9 +3475,18 @@ def _build_scrub_report(
             "ole_embedding": "ole",
             "activex": "activex",
         }
-        
+
         large_threshold = 64 * 1024
+        exported_count = 0
+        exported_bytes = 0
         for part in binary_parts:
+            if max_export_count and exported_count >= max_export_count:
+                _add_report_warning(
+                    "FORENSIC_BINARY_EXPORT_COUNT_LIMIT",
+                    "Some embedded binary exports were skipped because the report export count limit was reached.",
+                    f"limit={max_export_count}"
+                )
+                break
             part_name = part.get("name") or ""
             part_type = part.get("type") or "other"
             data = part.get("data")
@@ -3448,6 +3499,20 @@ def _build_scrub_report(
             is_large_embedded = (not is_binary_type) and size >= large_threshold
             if not is_binary_type and not is_large_embedded:
                 continue
+            if max_export_part_bytes and size > max_export_part_bytes:
+                _add_report_warning(
+                    "FORENSIC_BINARY_EXPORT_PART_LIMIT",
+                    "An embedded binary export was skipped because it exceeded the per-part size limit.",
+                    f"{part_name}: {size} bytes > {max_export_part_bytes} bytes"
+                )
+                continue
+            if max_export_total_bytes and exported_bytes + size > max_export_total_bytes:
+                _add_report_warning(
+                    "FORENSIC_BINARY_EXPORT_TOTAL_LIMIT",
+                    "Embedded binary exports stopped because the report export byte limit was reached.",
+                    f"limit={max_export_total_bytes}"
+                )
+                break
 
             # Determine subdirectory
             subdir = type_dirs.get(part_type, "other") if is_binary_type else "embedded"
@@ -3455,20 +3520,21 @@ def _build_scrub_report(
                 out_dir = os.path.join(binaries_dir, subdir)
             else:
                 out_dir = binaries_dir
-            
+
             try:
                 os.makedirs(out_dir, exist_ok=True)
             except OSError:
                 # Skip binary export if we can't create the directory (sandbox, permission issues)
                 continue
-            
+
             # Create safe filename
             safe_name = part_name.replace("/", "_").replace("\\", "_").lstrip("_")
             out_path = os.path.join(out_dir, safe_name)
-            
+
             try:
                 with open(out_path, "wb") as fh:
                     fh.write(data)
+                make_private_file(out_path)
                 rel_path = os.path.relpath(out_path, report_dir)
                 export_entry = {
                     "name": part_name,
@@ -3480,9 +3546,11 @@ def _build_scrub_report(
                     binary_exports.append(export_entry)
                 else:
                     large_exports.append(export_entry)
+                exported_count += 1
+                exported_bytes += size
             except Exception:
                 continue
-    
+
     # ========== FILE SUMMARY ==========
     input_file_info = dict(input_file_info or _safe_report_file_info(input_path))
     output_file_info = _safe_report_file_info(file_path or input_path)
@@ -3512,7 +3580,18 @@ def _build_scrub_report(
         report["large_exports"] = large_exports
 
     # ========== FORENSIC DEEP EXPLORER ==========
+    deep_explorer_enabled = (
+        _env_enabled("MARCUT_ENABLE_FORENSIC_EXPORTS")
+        or _env_enabled("MARCUT_ENABLE_DEEP_EXPLORER")
+    )
+    max_explorer_parts = _env_int("MARCUT_DEEP_EXPLORER_MAX_PARTS", 100)
+    max_explorer_total_bytes = _env_int("MARCUT_DEEP_EXPLORER_MAX_BYTES", 10 * 1024 * 1024)
+    max_explorer_part_bytes = _env_int("MARCUT_DEEP_EXPLORER_MAX_PART_BYTES", 512 * 1024)
+    max_explorer_text_chars = _env_int("MARCUT_DEEP_EXPLORER_MAX_TEXT_CHARS", 20_000)
+
     def _build_deep_explorer(package_path: Optional[str], label: str) -> Optional[Dict[str, Any]]:
+        if not deep_explorer_enabled:
+            return None
         if not report_dir or not package_path:
             return None
         try:
@@ -3571,24 +3650,55 @@ def _build_scrub_report(
             with zipfile.ZipFile(package_path, "r") as zf:
                 overrides, defaults = _read_content_types(zf)
                 with open(raw_text_path, "w", encoding="utf-8") as raw_out:
+                    make_private_file(raw_text_path)
+                    copied_count = 0
+                    copied_bytes = 0
                     for info in zf.infolist():
                         if info.is_dir():
                             continue
                         name = info.filename
-                        try:
-                            data = zf.read(name)
-                        except Exception:
+                        size = int(getattr(info, "file_size", 0) or 0)
+                        if max_explorer_parts and copied_count >= max_explorer_parts:
+                            _add_report_warning(
+                                "DEEP_EXPLORER_PART_COUNT_LIMIT",
+                                "Forensic explorer stopped copying package parts because the part count limit was reached.",
+                                f"{label}: limit={max_explorer_parts}"
+                            )
+                            break
+                        if max_explorer_part_bytes and size > max_explorer_part_bytes:
+                            _add_report_warning(
+                                "DEEP_EXPLORER_PART_SIZE_LIMIT",
+                                "A forensic explorer package part was skipped because it exceeded the per-part size limit.",
+                                f"{label}/{name}: {size} bytes > {max_explorer_part_bytes} bytes"
+                            )
                             continue
-                        size = len(data)
+                        if max_explorer_total_bytes and copied_bytes + size > max_explorer_total_bytes:
+                            _add_report_warning(
+                                "DEEP_EXPLORER_TOTAL_SIZE_LIMIT",
+                                "Forensic explorer stopped copying package parts because the byte limit was reached.",
+                                f"{label}: limit={max_explorer_total_bytes}"
+                            )
+                            break
                         ext = os.path.splitext(name)[1].lower()
                         content_type = overrides.get(name) or defaults.get(ext, "")
                         is_text = ext in text_exts or content_type.endswith(("xml", "+xml")) or content_type.startswith("text/")
                         text_content = ""
+                        try:
+                            data = zf.read(name)
+                        except Exception:
+                            continue
                         if is_text:
                             try:
                                 text_content = data.decode("utf-8", errors="replace")
                             except Exception:
                                 text_content = ""
+                            if max_explorer_text_chars and len(text_content) > max_explorer_text_chars:
+                                text_content = text_content[:max_explorer_text_chars]
+                                _add_report_warning(
+                                    "DEEP_EXPLORER_TEXT_TRUNCATED",
+                                    "A forensic explorer text preview was truncated because it exceeded the character limit.",
+                                    f"{label}/{name}: limit={max_explorer_text_chars}"
+                                )
                             raw_out.write(f"----- {name} -----\n")
                             raw_out.write(text_content)
                             raw_out.write("\n\n")
@@ -3600,9 +3710,12 @@ def _build_scrub_report(
                             os.makedirs(os.path.dirname(out_path), exist_ok=True)
                             with open(out_path, "wb") as fh:
                                 fh.write(data)
+                            make_private_file(out_path)
                         except Exception:
                             continue
 
+                        copied_count += 1
+                        copied_bytes += size
                         parts.append({
                             "name": name,
                             "path": os.path.relpath(out_path, report_dir),
@@ -3622,13 +3735,19 @@ def _build_scrub_report(
         }
 
     deep_explorer = {}
-    pre_explorer = _build_deep_explorer(input_path, "pre_scrub")
-    if pre_explorer:
-        deep_explorer["pre"] = pre_explorer
-    if report["summary"].get("report_type") != "metadata_only":
-        post_explorer = _build_deep_explorer(file_path or input_path, "post_scrub")
-        if post_explorer:
-            deep_explorer["post"] = post_explorer
+    if deep_explorer_enabled:
+        pre_explorer = _build_deep_explorer(input_path, "pre_scrub")
+        if pre_explorer:
+            deep_explorer["pre"] = pre_explorer
+        if report["summary"].get("report_type") != "metadata_only":
+            post_explorer = _build_deep_explorer(file_path or input_path, "post_scrub")
+            if post_explorer:
+                deep_explorer["post"] = post_explorer
+    elif report_dir:
+        _add_report_warning(
+            "DEEP_EXPLORER_DISABLED",
+            "Forensic package expansion is disabled by default. Enable forensic export mode to include copied package parts and raw text indexes."
+        )
     if deep_explorer:
         report["deep_explorer"] = deep_explorer
 
@@ -3650,7 +3769,7 @@ def _build_scrub_report(
         before["encryption"] = _detect_encryption(input_path)
     if "encryption" not in after:
         after["encryption"] = _detect_encryption(file_path or input_path)
-    
+
     # ========== PROCESS GROUPS ==========
     for group_name, group_fields in groups.items():
         group_data = []
@@ -3658,7 +3777,7 @@ def _build_scrub_report(
             field_name = field_info["field"]
             setting_attr = field_info["setting"]
             before_key = field_info.get("before_key")
-            
+
             was_enabled = getattr(settings, setting_attr, False)
             before_val = before.get(before_key, "") if before_key else "(complex data)"
             after_val = after.get(before_key, "") if before_key else ("" if was_enabled else "(preserved)")
@@ -3672,7 +3791,7 @@ def _build_scrub_report(
             elif before_key == "ink_annotations":
                 before_val = _summarize_parts(before_val, "ink parts")
                 after_val = _summarize_parts(after_val, "ink parts")
-            
+
             # Serialize for JSON output
             before_serialized = _serialize_value(before_val)
             after_serialized = _serialize_value(after_val)
@@ -3688,16 +3807,19 @@ def _build_scrub_report(
             else:
                 report["summary"]["total_preserved"] += 1
                 status = "preserved" if before_serialized == after_serialized else "observed"
-            
+
             group_data.append({
                 "field": field_name,
                 "before": before_serialized,
                 "after": after_serialized,
                 "status": status
             })
-        
+
         report["groups"][group_name] = group_data
-    
+
+    if report_warnings:
+        report["warnings"] = report_warnings
+
     return report
 
 
@@ -3715,10 +3837,10 @@ def scrub_metadata_only(
         metadata_args_str = os.environ.get("MARCUT_METADATA_ARGS", "")
         metadata_args = metadata_args_str.split() if metadata_args_str else []
         metadata_settings = MetadataCleaningSettings.from_environment(metadata_args)
-        
+
         # Check for explicit 'None' preset flag for ultra-robust handling
         is_none_preset = "--preset-none" in metadata_args or "--preset-none" in metadata_args_str
-        
+
         if debug:
             print(f"[MARCUT_PIPELINE] Input: {input_path}")
             print(f"[MARCUT_PIPELINE] Args: {metadata_args_str[:100]}...")
@@ -3752,7 +3874,7 @@ def scrub_metadata_only(
             dm = DocxMap.load_accepting_revisions(input_path, debug=debug)
         else:
             dm = dm_original
-        
+
         # Apply hardening if settings imply it
         # (Logic from before: hardening enabled if rsids/hyperlinks/ole enabled)
         hardening_enabled = any([
@@ -3773,7 +3895,7 @@ def scrub_metadata_only(
 
         # Scrub metadata
         dm.scrub_metadata(metadata_settings)
-        
+
         # Save processed document
         dm.save(output_path)
 
@@ -3783,7 +3905,7 @@ def scrub_metadata_only(
             after_values = _read_metadata_values(dm_after)
         except Exception:
             after_values = _read_metadata_values(dm)
-        
+
         # Build Report
         report = _build_scrub_report(
             before_values,
@@ -3850,12 +3972,13 @@ def metadata_report_only(
                 field["after"] = ""
                 field["status"] = "observed"
 
-        with open(report_path, "w", encoding="utf-8") as fh:
-            json.dump(report, fh, indent=2)
+        write_json_file(report_path, report)
 
         try:
             from .report_html import generate_report_from_json_file
             html_path = generate_report_from_json_file(report_path)
+            if html_path:
+                make_private_file(html_path)
             if not html_path or not os.path.exists(html_path):
                 raise RuntimeError("HTML report generation did not produce a file")
         except Exception as html_err:
