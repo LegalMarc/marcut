@@ -114,10 +114,12 @@ if [ -t 0 ] && [ "$CREDENTIALS_UPDATED" = "1" ]; then
   fi
 fi
 
-ASC_API_KEY_BASE64="$(printf "%s" "$ASC_API_KEY_BASE64" | tr -d '\n\r ')"
-NOTARYTOOL_APPLE_ID="$(printf "%s" "$NOTARYTOOL_APPLE_ID" | tr -d '\n\r ')"
-NOTARYTOOL_APP_PASSWORD="$(printf "%s" "$NOTARYTOOL_APP_PASSWORD" | tr -d '\n\r ')"
-NOTARYTOOL_TEAM_ID="$(printf "%s" "$NOTARYTOOL_TEAM_ID" | tr -d '\n\r ')"
+ASC_API_KEY_ID="$(printf "%s" "${ASC_API_KEY_ID:-}" | tr -d '\n\r ')"
+ASC_API_KEY_ISSUER="$(printf "%s" "${ASC_API_KEY_ISSUER:-}" | tr -d '\n\r ')"
+ASC_API_KEY_BASE64="$(printf "%s" "${ASC_API_KEY_BASE64:-}" | tr -d '\n\r ')"
+NOTARYTOOL_APPLE_ID="$(printf "%s" "${NOTARYTOOL_APPLE_ID:-}" | tr -d '\n\r ')"
+NOTARYTOOL_APP_PASSWORD="$(printf "%s" "${NOTARYTOOL_APP_PASSWORD:-}" | tr -d '\n\r ')"
+NOTARYTOOL_TEAM_ID="$(printf "%s" "${NOTARYTOOL_TEAM_ID:-}" | tr -d '\n\r ')"
 
 use_api_key=false
 use_apple_id=false

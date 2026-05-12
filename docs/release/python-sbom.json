@@ -1,10 +1,10 @@
 {
   "bomFormat": "CycloneDX",
   "specVersion": "1.5",
-  "serialNumber": "urn:uuid:6c9b73f0-d681-4738-aeda-5bed0d726137",
+  "serialNumber": "urn:uuid:667188b2-60b4-4f7e-931e-7a30e964e14b",
   "version": 1,
   "metadata": {
-    "timestamp": "2026-05-12T17:05:23.360230Z",
+    "timestamp": "2026-05-12T20:18:09.557381Z",
     "component": {
       "type": "application",
       "name": "Marcut"
@@ -20,8 +20,8 @@
     {
       "type": "library",
       "name": "rapidfuzz",
-      "version": "3.10.0",
-      "purl": "pkg:pypi/rapidfuzz@3.10.0"
+      "version": "3.14.5",
+      "purl": "pkg:pypi/rapidfuzz@3.14.5"
     },
     {
       "type": "library",
