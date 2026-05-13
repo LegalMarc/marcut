@@ -102,3 +102,16 @@ def test_ollama_validate_no_retry_on_4xx(monkeypatch):
 
     assert timeouts == [5]
     assert sleeps == []
+
+
+def test_document_context_collects_specific_org_alias_after_formation_clause():
+    text = (
+        'This agreement is by and between TIME USA, LLC, a Limited Liability Company '
+        'formed under the laws of Delaware ("Publisher" or "TIME").'
+    )
+    ctx = DocumentContext()
+    ctx.analyze_document(text)
+
+    aliases = ctx.entity_aliases.get("time usa, llc", [])
+    assert "TIME" in aliases
+    assert "Publisher" not in aliases

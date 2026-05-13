@@ -379,7 +379,10 @@ _DOCID_DOCUSIGN = r"(?:DocuSign|Docusign)\s+Envelope\s+ID:\s*[A-Fa-f0-9]{8}\s*-\
 _DOCID_LABELED = r"(?:Document|Doc|File|Envelope|Agreement|Contract|Transaction|Reference|Ref|Case|Matter|Deal|Project)\s*(?:ID|Id|No\.?|Number|#|Ref|Reference)?:\s*[A-Za-z0-9][-A-Za-z0-9_.]{4,40}"
 _DOCID_UUID = r"(?<![A-Za-z0-9])[A-Fa-f0-9]{8}-[A-Fa-f0-9]{4}-[A-Fa-f0-9]{4}-[A-Fa-f0-9]{4}-[A-Fa-f0-9]{12}(?![A-Za-z0-9])"
 _DOCID_VERSION = r"(?<![A-Za-z0-9])\d{7,12}(?:\s*[vV]\.?\s*\d{1,3}|\.\d{1,3})(?![A-Za-z0-9])"
-_DOCID_PREFIX = r"\b(?:DOC|ENV|AGR|REF|CASE|MATTER|DEAL|FILE|PROJ|TXN|DMS|ND)[-:_#]?[A-Za-z0-9]{4,20}\b"
+_DOCID_PREFIX = (
+    r"\b(?:DOC|ENV|AGR|REF|CASE|MATTER|DEAL|FILE|PROJ|TXN|DMS|ND)"
+    r"(?:[-:_#][A-Za-z0-9]{4,40}|(?=[A-Za-z0-9]*\d)[A-Za-z0-9]{4,20})\b"
+)
 
 DOCID = re.compile(
     rf"(?:{_DOCID_DOCUSIGN})|(?:{_DOCID_LABELED})|(?:{_DOCID_UUID})|(?:{_DOCID_VERSION})|(?:{_DOCID_PREFIX})",
@@ -463,7 +466,7 @@ COMPANY_SUFFIX = re.compile(
             r"(?i:and|of|the|for|a|an|&|de|la)"  # Connector (case-insensitive)
         r")"
         r",?\s+"                    # Required space (with optional comma) after each token
-    r"){1,10}"                      # Scan 1 to 10 tokens forward
+    r"){1,10}?"                     # Scan 1 to 10 tokens forward, preferring nearest suffix
     r"(?:"
     r"(?i:Incorporated|Corporation|Company|Limited)|"
     r"(?i:Inc)\.?|(?i:Corp)\.?|(?i:Co)\.?|(?i:Ltd)\.?|"
@@ -485,6 +488,123 @@ COMPANY_SUFFIX = re.compile(
     r")"
     r"(?!\w)"
 )
+
+_ORG_SUFFIX_ANY_RE = re.compile(
+    r"(?i)(?:"
+    r"\b(?:inc\.?|corp\.?|co\.?|ltd\.?|llc|l\.l\.c\.|llp|l\.l\.p\.|lp|l\.p\.|"
+    r"pllc|plc|p\.l\.c\.|gmbh|s\.a\.s\.|s\.a\.|s\.r\.l\.|b\.v\.|n\.v\.|"
+    r"reit|trust|bank|foundation|association|society|institute)\b"
+    r"|"
+    r"\b(?:incorporated|corporation|company|limited|limited\s+liability\s+company|"
+    r"limited\s+liability\s+partnership|limited\s+partnership|general\s+partnership|"
+    r"professional\s+corporation|professional\s+association|federal\s+savings\s+bank|"
+    r"national\s+association|national\s+bank|trust\s+company|statutory\s+trust|"
+    r"business\s+trust)\b"
+    r"|"
+    r"\b(?:capital|holdings|group|fund|management|ventures|partners)\b"
+    r")"
+)
+
+_ORG_LEGAL_FORM_WORDS = {
+    "inc", "incorporated", "corp", "corporation", "co", "company", "ltd",
+    "limited", "liability", "llc", "l", "c", "llp", "lp", "pllc", "plc",
+    "partnership", "general", "professional", "association", "bank", "trust",
+    "capital", "holdings", "group", "fund", "management", "ventures", "partners",
+    "statutory", "business", "foundation", "society", "institute", "national",
+    "federal", "savings",
+}
+
+_LEADING_ORG_CONNECTOR_RE = re.compile(
+    r"(?i)^\s*(?:,?\s*)?(?:and|or|by|between|with|from|to)\s+"
+)
+_ORG_SUFFIX_TRAIL_AFTER_RE = re.compile(
+    r"^[\s,]+(?:"
+    r"inc\.?|corp\.?|co\.?|ltd\.?|llc|l\.l\.c\.|llp|l\.l\.p\.|lp|l\.p\.|"
+    r"pllc|plc|p\.l\.c\.|gmbh|s\.a\.s\.|s\.a\.|s\.r\.l\.|b\.v\.|n\.v\.?"
+    r")\.?(?=$|[\s,;:\)\]\}])",
+    re.IGNORECASE,
+)
+
+
+def _org_words(text: str) -> List[str]:
+    return [w.strip(".,;:()[]{}\"'“”‘’").lower() for w in re.findall(r"[A-Za-z0-9.']+", text)]
+
+
+def _org_noise_segment(segment: str) -> bool:
+    words = [w for w in _org_words(segment) if w]
+    if not words:
+        return True
+    if _is_excluded_combo(segment) or _is_excluded(segment):
+        return True
+    return all(w in _ORG_LEGAL_FORM_WORDS for w in words)
+
+
+def _has_distinctive_org_name_part(text: str) -> bool:
+    for word in re.findall(r"[A-Za-z0-9&.'-]+", text or ""):
+        stripped = word.strip(".,;:()[]{}\"'“”‘’")
+        if not stripped:
+            continue
+        lower = stripped.lower().replace(".", "")
+        if lower in {"and", "or", "of", "the", "for", "a", "an", "de", "la"}:
+            continue
+        if lower in _ORG_LEGAL_FORM_WORDS:
+            continue
+        if stripped.isupper() and len(re.sub(r"[^A-Z0-9]", "", stripped)) >= 2:
+            return True
+        if any(ch.isdigit() for ch in stripped) or "-" in stripped or "&" in stripped:
+            return True
+        if not _is_excluded(stripped):
+            return True
+    return False
+
+
+def _trim_org_leading_context(text: str) -> str:
+    candidate = text.strip()
+    while True:
+        before = candidate
+        parts = re.split(r",\s*", candidate, maxsplit=1)
+        if len(parts) == 2 and _has_distinctive_org_name_part(parts[1]) and _org_noise_segment(parts[0]):
+            candidate = parts[1].strip()
+        candidate = _LEADING_ORG_CONNECTOR_RE.sub("", candidate).strip()
+        if candidate == before:
+            return candidate
+
+
+def _trim_org_trailing_context(text: str) -> str:
+    candidate = text.strip()
+    while True:
+        before = candidate
+        sep_idx = max(candidate.rfind(","), candidate.rfind(";"), candidate.rfind(":"))
+        if sep_idx != -1:
+            trailing = candidate[sep_idx + 1:].strip()
+            remaining = candidate[:sep_idx].rstrip()
+            if trailing and remaining and _has_org_suffix(remaining) and _org_noise_segment(trailing):
+                candidate = candidate[:sep_idx].rstrip()
+        if candidate.endswith(")"):
+            open_idx = candidate.rfind("(")
+            if open_idx != -1:
+                inner = candidate[open_idx + 1:-1].strip()
+                if not inner or _org_noise_segment(inner):
+                    candidate = candidate[:open_idx].rstrip()
+        if candidate == before:
+            return candidate
+
+
+def _clean_org_candidate(text: str) -> str:
+    candidate = _trim_org_leading_context(text)
+    candidate = _trim_org_trailing_context(candidate)
+    return candidate.strip(" ,;:")
+
+
+def _extend_org_suffix_tail(full_text: str, end: int) -> int:
+    match = _ORG_SUFFIX_TRAIL_AFTER_RE.match(full_text[end:])
+    if not match:
+        return end
+    return end + match.end()
+
+
+def _has_org_suffix(text: str) -> bool:
+    return _ORG_SUFFIX_ANY_RE.search(text or "") is not None
 
 # Address patterns - Strict Anchor strategy to avoid over-redaction
 def _compile_address_patterns() -> re.Pattern:
@@ -671,7 +791,8 @@ def _is_generic_org_span(text: str) -> bool:
     
     This prevents over-redaction of legal defined terms.
     """
-    parts = text.split()
+    cleaned_text = _clean_org_candidate(text)
+    parts = cleaned_text.split()
     if len(parts) < 2:
         return False  # Single word like "Company" is handled by exclusion list
     
@@ -708,6 +829,27 @@ def _is_generic_org_span(text: str) -> bool:
     # Check all words except the last (which is the suffix)
     # If ALL of them are either connectors or excluded words, it's generic
     name_portion = parts[:-1]  # Everything except the suffix
+
+    if _has_org_suffix(cleaned_text):
+        distinctive = False
+        for word in name_portion:
+            stripped = word.strip(".,;:()[]{}\"'“”‘’")
+            if not stripped:
+                continue
+            word_lower = stripped.lower()
+            if word_lower in generic_connectors or word_lower in _ORG_LEGAL_FORM_WORDS:
+                continue
+            if stripped.isupper() and len(re.sub(r"[^A-Z0-9]", "", stripped)) >= 2:
+                distinctive = True
+                break
+            if any(ch.isdigit() for ch in stripped) or "-" in stripped or "&" in stripped:
+                distinctive = True
+                break
+            if not is_excluded_word(stripped):
+                distinctive = True
+                break
+        if distinctive:
+            return False
     
     for word in name_portion:
         word_lower = word.lower().rstrip(",")
@@ -720,6 +862,15 @@ def _is_generic_org_span(text: str) -> bool:
     
     # All words in the name portion were generic
     return True
+
+
+def _is_specific_org_span(text: str) -> bool:
+    cleaned = _clean_org_candidate(text)
+    if not cleaned or not _has_org_suffix(cleaned):
+        return False
+    if _is_excluded(cleaned):
+        return False
+    return not _is_generic_org_span(cleaned)
 
 def run_rules(text: str) -> List[Dict[str,Any]]:
     out: List[Dict[str,Any]] = []
@@ -759,12 +910,32 @@ def run_rules(text: str) -> List[Dict[str,Any]]:
             
             # Special logic for ORG matches to avoid over-redaction of defined terms
             if label == "ORG":
+                extended_e = _extend_org_suffix_tail(text, e)
+                if extended_e != e:
+                    e = extended_e
+                    sub = text[s:e]
+                cleaned = _clean_org_candidate(sub)
+                if cleaned != sub:
+                    rel_start = sub.find(cleaned)
+                    if rel_start < 0:
+                        continue
+                    s = s + rel_start
+                    e = s + len(cleaned)
+                    sub = cleaned
                 trimmed = _trim_org_jurisdiction_suffix(sub)
                 if trimmed != sub:
                     if not trimmed:
                         continue
                     e = s + len(trimmed)
                     sub = trimmed
+                cleaned = _clean_org_candidate(sub)
+                if cleaned != sub:
+                    rel_start = sub.find(cleaned)
+                    if rel_start < 0:
+                        continue
+                    s = s + rel_start
+                    e = s + len(cleaned)
+                    sub = cleaned
                 # Reject spans that are too long (likely captured sentence fragments)
                 if _is_overlong_org_span(sub):
                     continue

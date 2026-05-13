@@ -87,7 +87,7 @@ from typing import List, Dict, Any, Tuple, Optional, Callable, TypedDict
 from .docx_io import DocxMap, MetadataCleaningSettings
 from .docx_revisions import accept_revisions_in_docx_bytes
 from .chunker import make_chunks
-from .rules import run_rules, _is_excluded_combo, _is_excluded, ADDRESS
+from .rules import run_rules, _is_excluded_combo, _is_excluded, _is_specific_org_span, ADDRESS
 from .model_enhanced import (
     LlamaCppRedactionPipeline,
     run_enhanced_model,
@@ -470,43 +470,58 @@ def _attach_defined_term_aliases(
             continue
 
         window = text[end:min(len(text), end + lookahead)]
+        alias_ranges: List[Tuple[int, int]] = []
+
         match = _DEFINED_TERM_PATTERN.match(window)
-        if not match:
-            continue
+        if match:
+            alias_ranges.append((end + match.start("alias"), end + match.end("alias")))
 
-        alias_start = end + match.start("alias")
-        alias_end = end + match.end("alias")
-        trimmed = _trim_defined_term_alias_span(text, alias_start, alias_end)
-        if not trimmed:
-            continue
-        alias_start, alias_end = trimmed
+        if label == "ORG":
+            for paren_match in re.finditer(r"\((?P<inner>[^)]{1,100})\)", window):
+                inner = paren_match.group("inner")
+                inner_start = end + paren_match.start("inner")
+                quoted = list(re.finditer(r"[\"“”'](?P<alias>[^\"“”']+)[\"“”']", inner))
+                if quoted:
+                    for alias_match in quoted:
+                        alias_ranges.append((
+                            inner_start + alias_match.start("alias"),
+                            inner_start + alias_match.end("alias"),
+                        ))
+                else:
+                    alias_ranges.append((inner_start, inner_start + len(inner)))
 
-        alias_text = text[alias_start:alias_end]
-        if not alias_text or "\n" in alias_text or "\r" in alias_text:
-            continue
-        if len(alias_text) > 60:
-            continue
-        if _is_excluded(alias_text):
-            continue
-        alias_text = alias_text.replace("’", "'").replace("‘", "'")
-        if not _defined_term_matches_entity(alias_text, sp.get("text", ""), label):
-            continue
+        for alias_start, alias_end in alias_ranges:
+            trimmed = _trim_defined_term_alias_span(text, alias_start, alias_end)
+            if not trimmed:
+                continue
+            alias_start, alias_end = trimmed
 
-        key = (alias_start, alias_end, label)
-        if key in existing:
-            continue
-        if any(alias_start < other.get("end", 0) and alias_end > other.get("start", 0) for other in spans):
-            continue
+            alias_text = text[alias_start:alias_end]
+            if not alias_text or "\n" in alias_text or "\r" in alias_text:
+                continue
+            if len(alias_text) > 60:
+                continue
+            alias_text = alias_text.replace("’", "'").replace("‘", "'")
+            if not _defined_term_matches_entity(alias_text, sp.get("text", ""), label):
+                continue
+            if _is_excluded(alias_text) and label != "ORG":
+                continue
 
-        out.append({
-            "start": alias_start,
-            "end": alias_end,
-            "label": label,
-            "confidence": sp.get("confidence", 0.7),
-            "source": "defined_term",
-            "text": alias_text,
-        })
-        existing.add(key)
+            key = (alias_start, alias_end, label)
+            if key in existing:
+                continue
+            if any(alias_start < other.get("end", 0) and alias_end > other.get("start", 0) for other in spans):
+                continue
+
+            out.append({
+                "start": alias_start,
+                "end": alias_end,
+                "label": label,
+                "confidence": sp.get("confidence", 0.7),
+                "source": "defined_term",
+                "text": alias_text,
+            })
+            existing.add(key)
 
     return out
 
@@ -739,6 +754,9 @@ def _filter_excluded_combo_spans(
                 except Exception:
                     span_text = ""
             if span_text and _is_excluded_combo(span_text):
+                if label == "ORG" and _is_specific_org_span(span_text):
+                    filtered.append(sp)
+                    continue
                 if suppressed is not None:
                     suppressed.append({
                         "reason": "excluded_combo",
@@ -754,7 +772,8 @@ def _filter_excluded_combo_spans(
 
 
 def _exclude_combo_for_pass(text: str, label: str) -> bool:
-    del label
+    if label == "ORG" and _is_specific_org_span(text):
+        return False
     return _is_excluded_combo(text)
 
 def _find_last_top_level_separator(text: str) -> Optional[int]:

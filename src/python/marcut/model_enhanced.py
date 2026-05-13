@@ -29,6 +29,8 @@ import re
 import time
 from typing import List, Dict, Any, Optional, Tuple, Set
 import requests
+import threading
+import concurrent.futures
 from dataclasses import dataclass, asdict
 import hashlib
 from .model import (
@@ -80,19 +82,19 @@ class Entity:
 
 class ValidationCache:
     """Cache validation decisions to avoid redundant LLM calls."""
-    
+
     def __init__(self):
         self.cache = {}
-    
+
     def get_key(self, text: str, label: str) -> str:
         """Generate cache key for entity."""
         return f"{text.lower().strip()}:{label}"
-    
+
     def get(self, text: str, label: str) -> Optional[Dict]:
         """Get cached validation if exists."""
         key = self.get_key(text, label)
         return self.cache.get(key)
-    
+
     def set(self, text: str, label: str, result: Dict):
         """Cache validation result."""
         key = self.get_key(text, label)
@@ -101,14 +103,14 @@ class ValidationCache:
 
 class DocumentContext:
     """Maintains document-level context for better extraction."""
-    
+
     def __init__(self):
         self.primary_entities = {}
         self.entity_aliases = {}
         self.document_type = None
         self.redaction_level = "standard"
         self.all_entities = []
-    
+
     def analyze_document(self, text: str):
         """Analyze document to identify main parties and document type."""
         # Identify document type from header/title
@@ -121,7 +123,7 @@ class DocumentContext:
             self.document_type = "employment_agreement"
         else:
             self.document_type = "legal_document"
-        
+
         # Look for primary entity patterns (company names that appear in title/header)
         header_text = text[:500]
         company_pattern = r'\b[A-Z][A-Z\s&,\.]+(?:INC\.|LLC|LTD|CORP|CORPORATION|COMPANY|L\.P\.|LP|AB|GMBH|AG)\b'
@@ -135,9 +137,9 @@ class DocumentContext:
                 continue
             upper_cleaned = cleaned.upper()
             if " BY AND BETWEEN " in upper_cleaned:
-                cleaned = cleaned.split(" BY AND BETWEEN ", 1)[1].strip(" ,.;:")
+                cleaned = re.split(r"\s+by\s+and\s+between\s+", cleaned, maxsplit=1, flags=re.IGNORECASE)[1].strip(" ,.;:")
             elif " BETWEEN " in upper_cleaned:
-                cleaned = cleaned.split(" BETWEEN ", 1)[1].strip(" ,.;:")
+                cleaned = re.split(r"\s+between\s+", cleaned, maxsplit=1, flags=re.IGNORECASE)[1].strip(" ,.;:")
             if not cleaned:
                 continue
             if _looks_like_document_title(cleaned):
@@ -167,7 +169,23 @@ class DocumentContext:
                     primary_parties.append(cleaned)
                     if len(primary_parties) >= 2:
                         break
-        
+
+        try:
+            from .rules import run_rules, _is_specific_org_span
+            for span in run_rules(text[:2000]):
+                if span.get("label") != "ORG":
+                    continue
+                candidate = " ".join((span.get("text") or "").split()).strip(" ,.;:")
+                if not candidate or not _is_specific_org_span(candidate):
+                    continue
+                key = candidate.lower()
+                if key in seen:
+                    continue
+                seen.add(key)
+                primary_parties.append(candidate)
+        except Exception:
+            pass
+
         if primary_parties:
             # The first major company name is likely the primary entity
             self.primary_entities['company'] = primary_parties[0]
@@ -180,7 +198,41 @@ class DocumentContext:
                 "borrower",
                 "issuer"
             ]
-    
+            self._extract_defined_org_aliases(text, primary_parties)
+
+    def _extract_defined_org_aliases(self, text: str, parties: List[str]) -> None:
+        if not text or not parties:
+            return
+
+        def tokens(value: str) -> Set[str]:
+            return {
+                tok.lower().rstrip(".")
+                for tok in re.findall(r"[A-Za-z0-9]+", value or "")
+                if len(tok) >= 2
+            }
+
+        party_tokens = {party: tokens(party) for party in parties}
+        for party in parties:
+            pattern = re.compile(
+                re.escape(party),
+                re.IGNORECASE,
+            )
+            for match in pattern.finditer(text[:5000]):
+                window = text[match.end():min(len(text), match.end() + 180)]
+                for paren_match in re.finditer(r"\((?P<inner>[^)]{1,100})\)", window):
+                    inner = paren_match.group("inner")
+                    quoted = list(re.finditer(r"[\"“”'](?P<alias>[^\"“”']+)[\"“”']", inner))
+                    for alias_match in quoted:
+                        alias = " ".join(alias_match.group("alias").split()).strip()
+                        alias_tokens = tokens(alias)
+                        if not alias or not alias_tokens:
+                            continue
+                        if not alias_tokens.issubset(party_tokens.get(party, set())):
+                            continue
+                        aliases = self.entity_aliases.setdefault(party.lower(), [])
+                        if alias.lower() not in {item.lower() for item in aliases}:
+                            aliases.append(alias)
+
     def get_confidence_threshold(self, label: str) -> float:
         """Get dynamic confidence threshold based on entity distribution."""
         same_label_entities = [e for e in self.all_entities if e.label == label]
@@ -227,7 +279,7 @@ def build_prompt_context(doc_context: DocumentContext) -> Optional[str]:
 
 def get_validation_prompt(entity: Entity, context: str, doc_context: DocumentContext) -> str:
     """Build validation prompt for uncertain entities."""
-    
+
     # Adaptive context window based on entity type
     context_sizes = {
         'ORG': 150,
@@ -236,28 +288,28 @@ def get_validation_prompt(entity: Entity, context: str, doc_context: DocumentCon
         'DATE': 60,
         'MONEY': 60
     }
-    
+
     context_size = context_sizes.get(entity.label, 100)
-    
+
     # Extract surrounding context
     start_ctx = max(0, entity.start - context_size)
     end_ctx = min(len(context), entity.end + context_size)
     surrounding = context[start_ctx:end_ctx]
-    
+
     # Highlight the entity in context
     entity_start_in_ctx = entity.start - start_ctx
     entity_end_in_ctx = entity_start_in_ctx + len(entity.text)
-    
+
     highlighted = (
-        surrounding[:entity_start_in_ctx] + 
+        surrounding[:entity_start_in_ctx] +
         f"**{surrounding[entity_start_in_ctx:entity_end_in_ctx]}**" +
         surrounding[entity_end_in_ctx:]
     )
-    
+
     doc_info = ""
     if doc_context.primary_entities.get('company'):
         doc_info = f"\nNote: The primary company in this document is '{doc_context.primary_entities['company']}', often referred to as 'the Company'."
-    
+
     prompt = f"""You are validating whether an extracted entity needs redaction in a legal document.
 {doc_info}
 
@@ -291,7 +343,7 @@ Classification guide:
 - CONTEXT_DEPENDENT: Depends on document recipient/use case
 
 Return ONLY valid JSON."""
-    
+
     return prompt
 
 
@@ -300,7 +352,7 @@ def needs_validation(entity: Entity, doc_context: DocumentContext) -> bool:
     Option A: If the text matches any excluded-words pattern, we FORCE validation
     but we do not auto-drop it. This keeps the decision with the LLM.
     """
-    
+
     # 1. Safety Net: Bypass validation for high-precision, rule-like patterns.
     # If it looks like an SSN/Email/Phone, do NOT ask the LLM to second-guess it.
     # We redact these by default.
@@ -310,23 +362,23 @@ def needs_validation(entity: Entity, doc_context: DocumentContext) -> bool:
     # Check rationale for uncertainty markers
     if entity.rationale:
         uncertain_phrases = [
-            'might be', 'possibly', 'unclear', 'could be', 
+            'might be', 'possibly', 'unclear', 'could be',
             'not sure', 'maybe', 'perhaps', 'seems like'
         ]
         if any(p in entity.rationale.lower() for p in uncertain_phrases):
             return True
-    
+
     # Use excluded-words list as a validation trigger (not a filter)
     # Use optimized O(1) lookup with consistent normalization (same as Rules path)
     txt = entity.text.strip()
     text_clean = _strip_leading_determiner(txt)
     normalized_txt = _normalize_for_exclusion(txt)
     literals, patterns = get_exclusion_data()
-    
+
     # Fast path: O(1) set lookup for literals with optional singularization
     if _matches_exclusion_literal(normalized_txt, literals):
         return True
-    
+
     # Slow path: check regex patterns (rare)
     for pat in patterns:
         try:
@@ -335,15 +387,15 @@ def needs_validation(entity: Entity, doc_context: DocumentContext) -> bool:
         except Exception:
             # In case any user-provided pattern is malformed, ignore
             continue
-    
+
     # Get dynamic threshold for this entity type
     threshold = doc_context.get_confidence_threshold(entity.label)
     if entity.confidence < threshold:
         return True
-    
+
     # Check for known problematic patterns
     text_lower = entity.text.lower()
-    
+
     # ORG-specific checks
     if entity.label == 'ORG':
         problematic_org_patterns = [
@@ -353,7 +405,7 @@ def needs_validation(entity: Entity, doc_context: DocumentContext) -> bool:
         ]
         if any(pattern in text_lower for pattern in problematic_org_patterns):
             return True
-    
+
     # NAME-specific checks
     if entity.label == 'NAME':
         problematic_name_patterns = [
@@ -362,25 +414,25 @@ def needs_validation(entity: Entity, doc_context: DocumentContext) -> bool:
         ]
         if any(pattern in text_lower for pattern in problematic_name_patterns):
             return True
-    
+
     # Check for unusually long spans that might be phrases
     if len(entity.text) > 60:
         return True
-    
+
     # If confidence is very high and no red flags, skip validation
     if entity.confidence > 0.9 and entity.needs_redaction:
         return False
-    
+
     # When in doubt about whether to redact, validate
     if entity.confidence > 0.7 and not entity.needs_redaction:
         return False
-    
+
     return True
 
 
 def get_batch_validation_prompt(entities: List[Entity], full_text: str, doc_context: DocumentContext) -> str:
     """Build validation prompt for a batch of entities."""
-    
+
     doc_info = ""
     if doc_context.primary_entities.get('company'):
         doc_info = f"\nNote: The primary company in this document is '{doc_context.primary_entities['company']}', often referred to as 'the Company'."
@@ -396,11 +448,11 @@ def get_batch_validation_prompt(entities: List[Entity], full_text: str, doc_cont
 
         # Escape newlines in context for prompt clarity
         surrounding = surrounding.replace("\n", " ")
-        
+
         # approximate highlight
-        # Since we just took a substring, we can't easily bold perfectly without offset math, 
+        # Since we just took a substring, we can't easily bold perfectly without offset math,
         # but for batching we just provide the snippet.
-        
+
         items_str += f"""
 Item {idx + 1}:
 - Text: "{entity.text}"
@@ -447,9 +499,11 @@ def ollama_validate_batch(
     temperature: float = 0.1,
     skip_confidence: float = 0.95,
     warnings: Optional[List[Dict[str, Any]]] = None,
+    think_mode: bool = False,
+    format_schema: Optional[Dict] = None,
 ) -> List[Dict]:
     """Validate a batch of entities. Returns a list of results corresponding to input entities."""
-    
+
     if not entities:
         return []
 
@@ -461,20 +515,23 @@ def ollama_validate_batch(
         "model": model_id,
         "prompt": prompt,
         "stream": False,
+        "think": think_mode,   # Configurable thinking mode
         "options": {
             "temperature": temperature,
             "top_p": 0.9,
             "num_predict": 2048 # Increased for batch response
         }
     }
-    
+    if format_schema is not None:
+        body["format"] = format_schema
+
     retry_plan = [
         {"timeout": 30, "wait": 2},
         {"timeout": 60, "wait": 2},
     ]
-    
+
     response_json = {}
-    
+
     # Execute Request
     for attempt in retry_plan:
         try:
@@ -482,7 +539,7 @@ def ollama_validate_batch(
             if resp.status_code == 200:
                 try:
                     res = resp.json()
-                    parsed = parse_llm_response(res.get("response", ""))
+                    parsed = parse_llm_response(res.get("response") or res.get("thinking", ""))
                     response_json = parsed
                     break
                 except Exception as e:
@@ -496,7 +553,7 @@ def ollama_validate_batch(
         except Exception as e:
             print(f"Batch validation attempt failed: {e}")
             time.sleep(attempt["wait"])
-            
+
     # Process results with "Bias Towards Retention"
     results_map = {}
     if "results" in response_json and isinstance(response_json["results"], list):
@@ -511,13 +568,13 @@ def ollama_validate_batch(
     for idx, entity in enumerate(entities):
         item_id = idx + 1
         res = results_map.get(item_id, {})
-        
+
         classification = res.get("classification", "UNKNOWN")
         try:
             confidence = float(res.get("confidence", 0.0))
         except (ValueError, TypeError):
             confidence = 0.0  # Treat as uncertain -> keep redaction
-        
+
         # SAFEGUARD: Strict retention bias
         # Only SKIP if model meets the configured confidence threshold.
         effective_skip = skip_confidence
@@ -542,7 +599,7 @@ def ollama_validate_batch(
             "confidence": confidence,
             "rationale": f"Batch Validation: {final_classification} ({confidence})"
         })
-        
+
     return final_results
 
 
@@ -557,6 +614,7 @@ def apply_llm_overrides_to_rule_spans(
     allowed_labels: Optional[Set[str]] = None,
     suppressed: Optional[List[Dict[str, Any]]] = None,
     debug: bool = False,
+    **kwargs
 ) -> List[Dict[str, Any]]:
     """Use LLM validation to drop rule spans marked as SKIP with high confidence."""
     if not rule_spans:
@@ -630,6 +688,8 @@ def apply_llm_overrides_to_rule_spans(
                 doc_context,
                 temperature,
                 skip_confidence=skip_confidence,
+                think_mode=kwargs.get("think_mode", False),
+                format_schema=kwargs.get("format_schema", None),
             )
     except Exception as exc:
         if debug:
@@ -680,7 +740,9 @@ def ollama_validate(
     entity: Entity,
     full_text: str,
     doc_context: DocumentContext,
-    temperature: float = 0.1
+    temperature: float = 0.1,
+    think_mode: bool = False,
+    format_schema: Optional[Dict] = None,
 ) -> Dict:
     """Validate a single entity using Ollama."""
 
@@ -692,13 +754,16 @@ def ollama_validate(
         "model": model_id,
         "prompt": prompt,
         "stream": False,
+        "think": think_mode,   # Configurable thinking mode
         "options": {
             "temperature": temperature,
             "top_p": 0.9,
             "num_predict": 500
         }
     }
-    
+    if format_schema is not None:
+        body["format"] = format_schema
+
     retry_plan = [
         {"timeout": 5, "wait": 2},
         {"timeout": 20, "wait": 5},
@@ -719,7 +784,7 @@ def ollama_validate(
                 raise RuntimeError(f"Ollama validation request failed: {status} Client Error {detail}".strip())
 
             result = json.loads(resp.text or "{}")
-            response_text = result.get("response", "")
+            response_text = result.get("response") or result.get("thinking", "")
 
             # Parse validation result
             validation = parse_llm_response(response_text)
@@ -744,14 +809,21 @@ def ollama_validate(
 
 class IntelligentRedactionPipeline:
     """Main pipeline for intelligent entity extraction and validation."""
-    
-    def __init__(self, model_id: str = "llama3.1:8b", temperature: float = 0.1, skip_confidence: float = 0.95):
+
+    def __init__(self, model_id: str = "qwen2.5:14b", temperature: float = 0.1, skip_confidence: float = 0.95, llm_concurrency: int = 2, think_mode: bool = False, format_schema: Optional[Dict] = None):
         self.model_id = model_id
         self.temperature = temperature
         self.skip_confidence = skip_confidence
+        try:
+            requested_concurrency = int(llm_concurrency)
+        except (TypeError, ValueError):
+            requested_concurrency = 2
+        self.llm_concurrency = max(1, min(5, requested_concurrency))
+        self.think_mode = think_mode
+        self.format_schema = format_schema
         self.validation_cache = ValidationCache()
         self.doc_context = DocumentContext()
-    
+
     def process_document(
         self,
         text: str,
@@ -761,7 +833,7 @@ class IntelligentRedactionPipeline:
         suppressed: Optional[List[Dict[str, Any]]] = None,
     ) -> List[Dict]:
         """Process entire document with intelligent extraction and validation."""
-        
+
         # Analyze document for context
         self.doc_context.analyze_document(text)
         prompt_context = build_prompt_context(self.doc_context)
@@ -787,7 +859,7 @@ class IntelligentRedactionPipeline:
                     print(message.encode('ascii', errors='replace').decode('ascii'), flush=True)
             except Exception as e:
                 pass
-        
+
         all_entities = []
 
         tracker = None
@@ -823,67 +895,87 @@ class IntelligentRedactionPipeline:
         if suppressed is None:
             suppressed = []
 
+        # We will dispatch extraction to the ThreadPool.
+        chunk_lock = threading.Lock()
+        result_lock = threading.Lock()
+        validation_lock = threading.Lock()
+        current_chunk = 0
+        total_chunks = len(chunks)
+
+        executor = concurrent.futures.ThreadPoolExecutor(max_workers=self.llm_concurrency)
+        futures = []
+        validation_futures = []
+
         # Helper to flush validation buffer
-        def flush_validation(force=False):
+        def flush_validation(force=False, execute_async=False):
             if not to_validate_buffer:
-                return
-            
+                return []
+
             # Flush if enough items or forced
             if len(to_validate_buffer) < 20 and not force:
-                return
+                return []
 
             batch_entities = to_validate_buffer[:]
             to_validate_buffer.clear()
-            
+
             print(f"[MARCUT][LLM] Batch validating {len(batch_entities)} items...", flush=True)
-            
-            try:
-                 results = ollama_validate_batch(
-                    self.model_id,
-                    batch_entities,
-                    text,
-                    self.doc_context,
-                    self.temperature,
-                    skip_confidence=self.skip_confidence,
-                    warnings=warnings,
-                )
-                 
-                 # Apply results
-                 for entity, result in zip(batch_entities, results):
-                     entity.validated = True
-                     entity.validation_result = result.get("classification")
-                     entity.needs_redaction = result.get("needs_redaction", True) # Default True
-                     
-                     # Cache result for future
-                     self.validation_cache.set(entity.text, entity.label, result)
-                     
-            except Exception as e:
-                print(f"[MARCUT] Batch validation failed: {e}")
-                # Fallback: explicitly mark all as needs_redaction=True for safety
-                for entity in batch_entities:
-                    entity.validated = False
-                    entity.needs_redaction = True
+
+            def do_validate(entities_to_proc):
+                try:
+                    results = ollama_validate_batch(
+                        self.model_id,
+                        entities_to_proc,
+                        text,
+                        self.doc_context,
+                        self.temperature,
+                        skip_confidence=self.skip_confidence,
+                        warnings=warnings,
+                        think_mode=self.think_mode,
+                        format_schema=self.format_schema,
+                    )
+
+                    # Apply results via lock
+                    with validation_lock:
+                        for entity, result in zip(entities_to_proc, results):
+                            entity.validated = True
+                            entity.validation_result = result.get("classification")
+                            entity.needs_redaction = result.get("needs_redaction", True) # Default True
+
+                            # Cache result for future
+                            self.validation_cache.set(entity.text, entity.label, result)
+                except Exception as e:
+                    print(f"[MARCUT] Batch validation error: {e}")
+                    # Fallback: explicitly mark all as needs_redaction=True for safety
+                    with validation_lock:
+                        for entity in entities_to_proc:
+                            entity.validated = False
+                            entity.needs_redaction = True
+
+            if execute_async and executor:
+                return [executor.submit(do_validate, batch_entities)]
+            else:
+                do_validate(batch_entities)
+                return []
 
         # === Main Processing Loop ===
-        
+
         from .model import ollama_extract
-        import time
-        import threading
-        
+
         # Global keep-alive mechanism for this process
         stop_progress = threading.Event()
         progress_thread = None
-        chunk_lock = threading.Lock()
-        current_chunk = 0
 
         if progress_callback:
             keepalive_warning_emitted = False
             def send_keepalive():
                 nonlocal keepalive_warning_emitted
+                start_time = None
                 while not stop_progress.is_set():
                     with chunk_lock:
                         chunk_index = current_chunk
                         chunk_total = total_chunks
+                        if chunk_index > 0 and start_time is None:
+                            start_time = time.time()
                     try:
                         payload = {
                             "type": "keepalive",
@@ -892,9 +984,12 @@ class IntelligentRedactionPipeline:
                         if chunk_total:
                             payload["chunk"] = chunk_index
                             payload["total"] = chunk_total
-                        elapsed = time.time() - tracker.start_time if tracker else None
-                        if elapsed is not None and chunk_total:
-                            status = f"Processing chunk {chunk_index}/{chunk_total} (still running, {elapsed:.0f}s elapsed)"
+
+                        elapsed_overall = time.time() - tracker.start_time if tracker else None
+                        elapsed = time.time() - start_time if start_time else None
+
+                        if elapsed_overall is not None and chunk_total:
+                            status = f"Processing chunk {chunk_index}/{chunk_total} (still running, {elapsed_overall:.0f}s elapsed)"
                         elif elapsed is not None:
                             status = f"Processing AI extraction (still running, {elapsed:.0f}s elapsed)"
                         else:
@@ -902,66 +997,68 @@ class IntelligentRedactionPipeline:
                         emit_mass_event(payload, status_message=status)
                     except Exception as e:
                         if not keepalive_warning_emitted:
-                            warnings.append({
-                                "code": "LLM_KEEPALIVE_FAILED",
-                                "message": "Progress keepalive updates failed during AI extraction.",
-                                "details": str(e),
-                            })
+                            with result_lock:
+                                warnings.append({
+                                    "code": "LLM_KEEPALIVE_FAILED",
+                                    "message": "Progress keepalive updates failed during AI extraction.",
+                                    "details": str(e),
+                                })
                             keepalive_warning_emitted = True
                         print(f"[MARCUT] Keepalive update failed: {e}")
                     stop_progress.wait(3.0)
             progress_thread = threading.Thread(target=send_keepalive, daemon=True)
             progress_thread.start()
 
-        try:
-            for chunk_idx, chunk in enumerate(chunks):
-                with chunk_lock:
-                    current_chunk = chunk_idx + 1
-                chunk_progress = (chunk_idx / total_chunks) if total_chunks else 0.0
-                if tracker:
-                    tracker.update_phase(ProcessingPhase.LLM_EXTRACTION, chunk_progress, f"Processing chunk {chunk_idx + 1}/{total_chunks}")
-                
-                chunk_text = chunk.get("text", "")
-                chunk_start = chunk.get("start", 0)
+        def process_single_chunk(chunk_idx, chunk):
+            nonlocal current_chunk
+            chunk_text = chunk.get("text", "")
+            chunk_start = chunk.get("start", 0)
 
-                # Emit chunk start
-                emit_mass_event({
-                    "type": "chunk_start",
-                    "size": len(chunk_text),
-                    "estimated_time": 30.0
-                }, chunk_progress)
-                
-                # 1. Extraction (per chunk) with retry
-                simple_spans = []
-                extract_error = None
-                for attempt_idx, wait_s in enumerate((0, 2), start=1):
-                    try:
-                        simple_spans = ollama_extract(
-                            self.model_id,
-                            chunk_text,
-                            self.temperature,
-                            seed=42,
-                            context=prompt_context
-                        )
-                        extract_error = None
-                        break
-                    except Exception as e:
-                        extract_error = e
-                        print(f"Extraction attempt {attempt_idx} failed for chunk {chunk_idx}: {e}")
-                        if wait_s:
-                            time.sleep(wait_s)
+            # 1. Extraction (per chunk) with retry
+            simple_spans = []
+            extract_error = None
+            for attempt_idx, wait_s in enumerate((0, 2), start=1):
+                try:
+                    simple_spans = ollama_extract(
+                        self.model_id,
+                        chunk_text,
+                        self.temperature,
+                        seed=42,
+                        context=prompt_context
+                    )
+                    extract_error = None
+                    break
+                except Exception as e:
+                    extract_error = e
+                    print(f"Extraction attempt {attempt_idx} failed for chunk {chunk_idx}: {e}")
+                    if wait_s:
+                        time.sleep(wait_s)
+
+            with result_lock:
+                with chunk_lock:
+                    current_chunk += 1
+
+                chunk_progress = (current_chunk / total_chunks) if total_chunks else 0.0
+                if tracker:
+                    tracker.update_phase(ProcessingPhase.LLM_EXTRACTION, chunk_progress, f"Processed chunk {current_chunk}/{total_chunks}")
+
                 if extract_error is not None:
                     warnings.append({
                         "code": "LLM_CHUNK_FAILED",
                         "message": f"AI extraction failed for chunk {chunk_idx + 1} after retries.",
                         "details": str(extract_error)
                     })
+                    emit_mass_event({
+                        "type": "chunk_end",
+                        "size": len(chunk_text)
+                    }, chunk_progress)
+                    return
 
                 # Convert to Entities
                 entities = []
                 for span in simple_spans:
                     entity_text = chunk_text[span["start"]:span["end"]]
-                    
+
                     # PRE-FILTER: Skip clearly generic entities immediately
                     # This catches "the Company", "the Board", etc. before wasting LLM calls
                     if _looks_like_document_title(entity_text):
@@ -984,7 +1081,7 @@ class IntelligentRedactionPipeline:
                             "source": "llm_extract",
                         })
                         continue
-                        
+
                     entities.append(Entity(
                         text=entity_text,
                         label=span["label"],
@@ -994,13 +1091,14 @@ class IntelligentRedactionPipeline:
                         needs_redaction=True,
                         rationale="Extracted by model"
                     ))
-                
+
                 self.doc_context.all_entities.extend(entities)
                 all_entities.extend(entities)
 
                 # 2. Identify candidates for validation (check cache first)
                 for entity in entities:
-                    cached = self.validation_cache.get(entity.text, entity.label)
+                    with validation_lock:
+                        cached = self.validation_cache.get(entity.text, entity.label)
                     if cached:
                         entity.validated = True
                         entity.needs_redaction = cached.get("needs_redaction", True)
@@ -1009,17 +1107,37 @@ class IntelligentRedactionPipeline:
                         to_validate_buffer.append(entity)
 
                 # 3. Opportunistic Flush (Batch Validation)
-                flush_validation(force=False)
+                val_futures = flush_validation(force=False, execute_async=True)
+                validation_futures.extend(val_futures)
 
                 emit_mass_event({
                     "type": "chunk_end",
                     "size": len(chunk_text)
-                }, (chunk_idx + 1) / total_chunks)
+                }, chunk_progress)
+
+        try:
+            for chunk_idx, chunk in enumerate(chunks):
+                # Emit chunk start immediately
+                emit_mass_event({
+                    "type": "chunk_start",
+                    "size": len(chunk.get("text", "")),
+                    "estimated_time": 30.0
+                }, (chunk_idx / total_chunks) if total_chunks else 0.0)
+
+                futures.append(executor.submit(process_single_chunk, chunk_idx, chunk))
+
+            # Wait for all extraction chunks to complete
+            concurrent.futures.wait(futures)
 
             # Final flush of validaton buffer
-            flush_validation(force=True)
+            val_futures = flush_validation(force=True, execute_async=True)
+            validation_futures.extend(val_futures)
+
+            # Wait for all validation requests to complete
+            concurrent.futures.wait(validation_futures)
 
         finally:
+            executor.shutdown(wait=True)
             if stop_progress:
                 stop_progress.set()
             if progress_thread:
@@ -1027,14 +1145,14 @@ class IntelligentRedactionPipeline:
 
         if tracker:
             tracker.update_phase(ProcessingPhase.LLM_EXTRACTION, 1.0, "AI extraction complete")
-        
+
         # Convert to output format
         output_spans = []
         for entity in all_entities:
             # Filter based on final needs_redaction status
             if not entity.needs_redaction:
                 continue
-            
+
             span = {
                 "start": entity.start,
                 "end": entity.end,
@@ -1046,9 +1164,10 @@ class IntelligentRedactionPipeline:
             }
             if entity.validation_result:
                 span["validation_result"] = entity.validation_result
-            
+
             output_spans.append(span)
-        
+
+        output_spans.sort(key=lambda span: (span["start"], span["end"], span["label"], span["text"]))
         return output_spans
 
 
@@ -1062,8 +1181,11 @@ def run_enhanced_model(
     model_id: str = None,  # For backward compatibility
     model_path: str = None,  # For llama_cpp backend
     skip_confidence: float = 0.95,
+    llm_concurrency: int = 2,
     warnings: Optional[List[Dict[str, Any]]] = None,
     suppressed: Optional[List[Dict[str, Any]]] = None,
+    think_mode: bool = False,
+    format_schema: Optional[Dict] = None,
     **kwargs
 ) -> List[Dict]:
     """Main entry point for enhanced model extraction."""
@@ -1071,7 +1193,14 @@ def run_enhanced_model(
     if backend == "ollama":
         if not model_id:
             raise ValueError("model_id required for Ollama backend")
-        pipeline = IntelligentRedactionPipeline(model_id, temperature, skip_confidence=skip_confidence)
+        pipeline = IntelligentRedactionPipeline(
+            model_id,
+            temperature,
+            skip_confidence=skip_confidence,
+            llm_concurrency=llm_concurrency,
+            think_mode=think_mode,
+            format_schema=format_schema
+        )
         return pipeline.process_document(
             text,
             chunks,
@@ -1156,17 +1285,17 @@ class LlamaCppRedactionPipeline:
             # Generate response locally
             # Note: We trust the prompt builder to provide the correct JSON structure instruction
             response_text = self._generate_response(prompt)
-            
+
             # Parse JSON response
             parsed = parse_llm_response(response_text)
-            
+
             # Convert parsed dict items to Entity objects
             entities = []
             for item in parsed.get("entities", []):
                 entity_text = item.get("text", "")
                 if not entity_text:
                     continue
-                    
+
                 raw_label = item.get("label") or item.get("type") or ""
                 label = _map_label(raw_label)
                 if not label and raw_label:
@@ -1209,10 +1338,10 @@ class LlamaCppRedactionPipeline:
         try:
             # Build validation prompt
             prompt = get_validation_prompt(entity, full_text, doc_context)
-            
+
             # Generate response locally
             response_text = self._generate_response(prompt, max_tokens=512)
-            
+
             # Parse JSON
             validation_result = parse_llm_response(response_text)
 

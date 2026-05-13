@@ -21,6 +21,7 @@ from marcut.pipeline import (
     _snap_to_boundaries,
     _filter_overlong_org_spans,
     _apply_consistency_pass,
+    _filter_excluded_combo_spans,
     _trim_org_trailing_excluded_segments,
     _attach_defined_term_aliases,
     RedactionError,
@@ -257,6 +258,41 @@ class TestTrimOrgTrailingExcludedSegments:
         result = _trim_org_trailing_excluded_segments(text, spans)
         assert result[0]["text"] == "Sample 123, Inc."
         assert result[0]["end"] == len("Sample 123, Inc.")
+
+
+class TestOrgDefinedTermAliases:
+    def test_specific_org_alias_redacted_but_generic_role_preserved(self):
+        text = (
+            'and TIME USA, LLC, a Limited Liability Company formed under the laws '
+            'of the State of Delaware ("Publisher" or "TIME").'
+        )
+        org_start = text.index("TIME USA, LLC")
+        org_end = org_start + len("TIME USA, LLC")
+        spans = [{
+            "start": org_start,
+            "end": org_end,
+            "label": "ORG",
+            "text": "TIME USA, LLC",
+            "confidence": 0.9,
+        }]
+
+        result = _attach_defined_term_aliases(text, spans)
+        aliases = [span for span in result if span.get("source") == "defined_term"]
+
+        assert any(span["text"] == "TIME" for span in aliases)
+        assert not any(span["text"] == "Publisher" for span in aliases)
+
+    def test_specific_org_not_suppressed_by_token_exclusions(self):
+        text = "Publisher means TIME USA, LLC."
+        start = text.index("TIME USA, LLC")
+        spans = [{
+            "start": start,
+            "end": start + len("TIME USA, LLC"),
+            "label": "ORG",
+            "text": "TIME USA, LLC",
+        }]
+
+        assert _filter_excluded_combo_spans(text, spans) == spans
 
 
 class TestAttachDefinedTermAliases:
