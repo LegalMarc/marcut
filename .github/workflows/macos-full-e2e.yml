@@ -53,6 +53,9 @@ jobs:
         run: swift test --package-path src/swift/MarcutApp
 
       - name: Build App Store DMG (skip notarization here)
+        env:
+          CUSTOM_SIGN_IDENTITY: "${{ secrets.MACOS_SIGN_IDENTITY || 'Developer ID Application: Marc Mandel (QG85EMCQ75)' }}"
+          TEAM_ID: QG85EMCQ75
         run: |
           chmod +x scripts/sh/build_appstore_release.sh
           ./scripts/sh/build_appstore_release.sh --skip-notarization
@@ -92,18 +95,18 @@ jobs:
           MNT=$(hdiutil attach -nobrowse "$DMG" | awk '{print $3}' | tail -1)
           echo "Mounted at: $MNT"
           APP="$MNT/MarcutApp.app"
-          PYB="$APP/Contents/Resources/python_bundle"
+          PY="$APP/Contents/Resources/run_python.sh"
           ARTDIR="$GITHUB_WORKSPACE/artifacts"
           mkdir -p "$ARTDIR"
           INP="$ARTDIR/e2e_input.docx"; OUTDOC="$ARTDIR/e2e_out_dmg.docx"; OUTJSON="$ARTDIR/e2e_report_dmg.json"
-          /bin/bash "$PYB/test_bundle.sh" - "$INP" <<'PY'
+          /bin/bash "$PY" - "$INP" <<'PY'
           from docx import Document
           from pathlib import Path
           import sys
           p=Path(sys.argv[1]); d=Document(); d.add_paragraph('Email: alice@example.com URL: https://legal.example')
           d.save(p); print('ok')
           PY
-          /bin/bash "$PYB/test_bundle.sh" -m marcut.cli redact --in "$INP" --out "$OUTDOC" --report "$OUTJSON" --backend ollama --model llama3.2:1b --enhanced
+          /bin/bash "$PY" -m marcut.cli redact --in "$INP" --out "$OUTDOC" --report "$OUTJSON" --backend ollama --model llama3.2:1b --enhanced
           test -f "$OUTDOC" && test -f "$OUTJSON"
           hdiutil detach "$MNT"
 
@@ -116,17 +119,17 @@ jobs:
           APP_MNT="$MNT/MarcutApp.app"
           DST="$HOME/Applications/MarcutApp.app"
           rm -rf "$DST"; mkdir -p "$HOME/Applications"; cp -R "$APP_MNT" "$DST"
-          PYB="$DST/Contents/Resources/python_bundle"
+          PY="$DST/Contents/Resources/run_python.sh"
           ARTDIR="$GITHUB_WORKSPACE/artifacts"
           INP="$ARTDIR/e2e_input2.docx"; OUTDOC="$ARTDIR/e2e_out_installed.docx"; OUTJSON="$ARTDIR/e2e_report_installed.json"
-          /bin/bash "$PYB/test_bundle.sh" - "$INP" <<'PY'
+          /bin/bash "$PY" - "$INP" <<'PY'
           from docx import Document
           from pathlib import Path
           import sys
           p=Path(sys.argv[1]); d=Document(); d.add_paragraph('Contact: bob@example.com URL: https://contracts.example')
           d.save(p); print('ok')
           PY
-          /bin/bash "$PYB/test_bundle.sh" -m marcut.cli redact --in "$INP" --out "$OUTDOC" --report "$OUTJSON" --backend ollama --model llama3.2:1b --enhanced
+          /bin/bash "$PY" -m marcut.cli redact --in "$INP" --out "$OUTDOC" --report "$OUTJSON" --backend ollama --model llama3.2:1b --enhanced
           test -f "$OUTDOC" && test -f "$OUTJSON"
           hdiutil detach "$MNT"
 
