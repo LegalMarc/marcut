@@ -4,10 +4,17 @@ import AppKit
 import Security
 import Foundation
 
+private enum ReportDisclosureAction {
+    case print
+    case share
+}
+
 struct ReportViewer: View {
     let report: ReportViewerItem
     @StateObject private var webViewState = ReportWebViewState()
     @State private var showBurnConfirm = false
+    @State private var showDisclosureConfirm = false
+    @State private var pendingDisclosureAction: ReportDisclosureAction?
     @State private var burnErrorMessage: String?
     @State private var openBinaryErrorMessage: String?
 
@@ -29,7 +36,7 @@ struct ReportViewer: View {
                 .disabled(!webViewState.canGoBack)
 
                 Button {
-                    printReport()
+                    confirmDisclosure(.print)
                 } label: {
                     Label("Print", systemImage: "printer")
                 }
@@ -37,7 +44,13 @@ struct ReportViewer: View {
                 .controlSize(.regular)
                 .frame(width: 100, height: 32)
                 
-                SharePickerButton(url: report.url)
+                Button {
+                    confirmDisclosure(.share)
+                } label: {
+                    Label("Share", systemImage: "square.and.arrow.up")
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.regular)
                     .frame(width: 100, height: 32)
                 
                 Button {
@@ -58,8 +71,8 @@ struct ReportViewer: View {
                 ReportWebView(
                     url: report.url,
                     state: webViewState,
-                    onPrintRequest: { printReport() },
-                    onShareRequest: { shareReport() },
+                    onPrintRequest: { confirmDisclosure(.print) },
+                    onShareRequest: { confirmDisclosure(.share) },
                     onBurnRequest: { showBurnConfirm = true },
                     onOpenBinary: { openBinary(at: $0) }
                 )
@@ -89,6 +102,16 @@ struct ReportViewer: View {
         } message: {
             Text("This permanently deletes the report files (HTML/JSON and extracted binaries).")
         }
+        .alert("Report May Contain Original Text", isPresented: $showDisclosureConfirm) {
+            Button("Continue") {
+                performPendingDisclosureAction()
+            }
+            Button("Cancel", role: .cancel) {
+                pendingDisclosureAction = nil
+            }
+        } message: {
+            Text("Audit and metadata reports may include original detected text, filenames, document metadata, and forensic artifacts. Share or print only to approved destinations.")
+        }
         .alert("Burn Failed", isPresented: Binding(
             get: { burnErrorMessage != nil },
             set: { if !$0 { burnErrorMessage = nil } }
@@ -104,6 +127,22 @@ struct ReportViewer: View {
             Button("OK", role: .cancel) {}
         } message: {
             Text(openBinaryErrorMessage ?? "The selected file could not be found.")
+        }
+    }
+
+    private func confirmDisclosure(_ action: ReportDisclosureAction) {
+        pendingDisclosureAction = action
+        showDisclosureConfirm = true
+    }
+
+    private func performPendingDisclosureAction() {
+        guard let action = pendingDisclosureAction else { return }
+        pendingDisclosureAction = nil
+        switch action {
+        case .print:
+            printReport()
+        case .share:
+            shareReport()
         }
     }
 

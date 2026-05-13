@@ -5,10 +5,10 @@ Thank you for your interest in contributing to Marcut! We welcome contributions 
 ## Getting Started
 
 1.  **Read the Docs**: Familiarize yourself with the project structure.
-    *   [User Guide](docs/USER_GUIDE.md)
-    *   [Developer Guide](docs/DEVELOPER_GUIDE.md)
-    *   [Architecture](docs/TECHNICAL_ARCHITECTURE.md)
-2.  **Environment Setup**: Follow the [Developer Guide](docs/DEVELOPER_GUIDE.md) to set up your macOS development environment (Xcode, Python 3.9+).
+    *   [User Guide](USER_GUIDE.md)
+    *   [Developer Guide](DEVELOPER_GUIDE.md)
+    *   [Architecture](TECHNICAL_ARCHITECTURE.md)
+2.  **Environment Setup**: Follow the [Developer Guide](DEVELOPER_GUIDE.md) to set up your macOS development environment (Xcode, Python 3.9+).
 3.  **Fork & Clone**: Fork the repository and clone it locally.
 
 ## Development Workflow

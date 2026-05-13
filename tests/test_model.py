@@ -6,11 +6,13 @@ These tests focus on pure functions that don't require an actual LLM.
 
 import pytest
 import json
+import marcut.llm_timing as llm_timing_module
+import marcut.model as model_module
 from marcut.model import (
     parse_llm_response, _map_label, _valid_candidate, _find_entity_spans,
     get_ollama_base_url, _is_generic_term, get_exclusion_patterns,
     get_system_prompt, DEFAULT_EXTRACT_SYSTEM, _normalize_for_exclusion,
-    _matches_exclusion_literal
+    _matches_exclusion_literal, ollama_extract
 )
 
 
@@ -235,14 +237,112 @@ class TestGetOllamaBaseUrl:
             del os.environ['OLLAMA_HOST']
     
     def test_host_with_scheme(self):
-        """Test host that already has scheme."""
+        """Test remote host is forced to loopback by default."""
         import os
         os.environ['OLLAMA_HOST'] = 'http://custom-host:8080'
+        try:
+            url = get_ollama_base_url()
+            assert url == "http://127.0.0.1:8080"
+        finally:
+            del os.environ['OLLAMA_HOST']
+
+    def test_remote_host_requires_explicit_override(self):
+        """Test remote Ollama hosts require an explicit unsafe opt-in."""
+        import os
+        os.environ['OLLAMA_HOST'] = 'http://custom-host:8080'
+        os.environ['MARCUT_ALLOW_REMOTE_OLLAMA'] = '1'
         try:
             url = get_ollama_base_url()
             assert url == "http://custom-host:8080"
         finally:
             del os.environ['OLLAMA_HOST']
+            del os.environ['MARCUT_ALLOW_REMOTE_OLLAMA']
+
+
+class TestOllamaDiagnostics:
+    """Test LLM diagnostics avoid persisting document-derived text."""
+
+    def test_timing_path_uses_production_context_and_prediction_budget(self, monkeypatch):
+        captured = {}
+
+        class MockResponse:
+            def raise_for_status(self):
+                return None
+
+            def json(self):
+                return {"response": '{"entities": []}'}
+
+        def fake_post(*args, **kwargs):
+            captured.update(kwargs)
+            return MockResponse()
+
+        monkeypatch.delenv("OLLAMA_HOST", raising=False)
+        monkeypatch.delenv("MARCUT_OLLAMA_REQUEST_TIMEOUT", raising=False)
+        monkeypatch.delenv("MARCUT_OLLAMA_NUM_PREDICT", raising=False)
+        monkeypatch.setattr(llm_timing_module.requests, "post", fake_post)
+
+        spans, _timing = llm_timing_module.ollama_extract_with_timing("mock-model", "Document text")
+        assert spans == []
+        assert captured["timeout"] == 300.0
+        assert captured["json"]["options"]["num_ctx"] == 12288
+        assert captured["json"]["options"]["num_predict"] == 2048
+
+    def test_request_timeout_and_prediction_limit_are_bounded_by_default(self, monkeypatch):
+        captured = {}
+
+        class MockResponse:
+            def raise_for_status(self):
+                return None
+
+            def json(self):
+                return {"response": '{"entities": []}'}
+
+        def fake_post(*args, **kwargs):
+            captured.update(kwargs)
+            return MockResponse()
+
+        monkeypatch.delenv("OLLAMA_HOST", raising=False)
+        monkeypatch.delenv("MARCUT_OLLAMA_REQUEST_TIMEOUT", raising=False)
+        monkeypatch.delenv("MARCUT_OLLAMA_NUM_PREDICT", raising=False)
+        monkeypatch.setattr(model_module.requests, "post", fake_post)
+
+        assert ollama_extract("mock-model", "Document text", temperature=0.0) == []
+        assert captured["timeout"] == 300.0
+        assert captured["json"]["options"]["num_predict"] == 2048
+
+    def test_parse_failure_omits_raw_response_from_log_and_exception(self, tmp_path, monkeypatch):
+        secret = "patient@example.com"
+        log_path = tmp_path / "marcut.log"
+
+        class MockResponse:
+            def __init__(self, response_text):
+                self.response_text = response_text
+
+            def raise_for_status(self):
+                return None
+
+            def json(self):
+                return {"response": self.response_text}
+
+        responses = iter([
+            MockResponse(f"not json {secret}"),
+            MockResponse(f"still not json {secret}"),
+        ])
+
+        def fake_post(*args, **kwargs):
+            return next(responses)
+
+        monkeypatch.setenv("MARCUT_LOG_PATH", str(log_path))
+        monkeypatch.delenv("OLLAMA_HOST", raising=False)
+        monkeypatch.setattr(model_module.requests, "post", fake_post)
+
+        with pytest.raises(RuntimeError) as exc_info:
+            ollama_extract("mock-model", "Document text", temperature=0.0)
+
+        log_text = log_path.read_text(encoding="utf-8")
+        assert secret not in log_text
+        assert secret not in str(exc_info.value)
+        assert "Raw response omitted" in log_text
 
 
 class TestIsGenericTerm:

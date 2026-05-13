@@ -986,6 +986,7 @@ struct RedactionSettings {
     var seed: Int = 42
     var chunkTokens: Int = RedactionSettings.standardNormalModeChunkTokens
     var overlap: Int = RedactionSettings.standardNormalModeOverlap
+    var llmConcurrency: Int = 2
     var processingTimeoutSeconds: Int = 7200  // 120 minutes
     var enabledRules: Set<RedactionRule> = RedactionRule.defaultSelection
     var llmConfidenceThreshold: Int = RedactionSettings.standardNormalModeConfidence

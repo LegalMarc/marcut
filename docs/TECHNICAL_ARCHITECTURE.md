@@ -129,8 +129,8 @@ Marcut is a native macOS redaction application that combines a deterministic rul
 4. **Entity Clustering**: Stable entity IDs created for NAME/ORG/BRAND tagging.
 
 #### Stage 5: Output + Audit
-1. **Track Changes**: Redactions are applied as Word revisions for review.
-2. **JSON Report**: Spans, labels, confidence, and sources are written to report JSON.
+1. **Track Changes**: Redactions are applied as Word revisions for review; the DOCX output is a review artifact until changes are accepted or otherwise finalized.
+2. **JSON Report**: Spans, labels, confidence, and sources are written to report JSON; reports may include original detected text and document metadata.
 3. **Metadata Scrub**: Optional removal of hidden document metadata with a scrub report.
 4. **Failure Reports**: Pipeline errors emit a minimal JSON report for UI/CLI surfacing.
 
@@ -242,7 +242,7 @@ Marcut.app/
 - **Local processing**: Default processing is on-device only.
 
 ### Audit Trail
-- **Track Changes output**: Word-native review workflow.
+- **Track Changes output**: Word-native review workflow; not a destructively sanitized final-share file by default.
 - **JSON report**: Span-level details, sources, and confidence values.
 - **Metadata scrub report**: Before/after values for scrubbed fields.
 
@@ -256,8 +256,8 @@ Marcut.app/
 - **Sandbox coordination**: File bookmarks and Application Support storage keep access compliant.
 
 ### Document Formats
-- **DOCX**: Primary format; edits written as Track Changes for auditability.
-- **JSON**: Redaction and scrub reports for downstream tooling.
+- **DOCX**: Primary format; edits written as Track Changes for auditability and review.
+- **JSON**: Redaction and scrub reports for downstream tooling; handle as sensitive because raw detected text and metadata can appear in reports.
 
 ---
 

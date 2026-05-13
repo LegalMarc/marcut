@@ -12,6 +12,32 @@ from typing import Any, Dict, List, Optional
 from .report_common import escape_html, get_base_css
 
 
+def write_json_file(path: str, data: Dict[str, Any]) -> None:
+    """Write JSON with owner-only permissions where the filesystem supports it."""
+    payload = json.dumps(data, indent=2)
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(payload)
+        try:
+            os.chmod(path, 0o600)
+        except OSError:
+            pass
+    except Exception:
+        try:
+            os.close(fd)
+        except OSError:
+            pass
+        raise
+
+
+def make_private_file(path: str) -> None:
+    try:
+        os.chmod(path, 0o600)
+    except OSError:
+        pass
+
+
 def sha256_file(p: str) -> str:
     """Calculate SHA-256 hash of a file."""
     h = hashlib.sha256()
@@ -54,13 +80,13 @@ def write_report(
         data['settings'] = settings
     
     # Write JSON report
-    with open(report_path, 'w', encoding='utf-8') as f:
-        f.write(json.dumps(data, indent=2))
+    write_json_file(report_path, data)
     
     # Generate HTML report alongside JSON
     try:
         html_path = os.path.splitext(report_path)[0] + '.html'
         _generate_html_audit_report(data, input_path, html_path)
+        make_private_file(html_path)
     except Exception as e:
         data.setdefault("warnings", []).append({
             "code": "AUDIT_REPORT_HTML_FAILED",
@@ -68,8 +94,7 @@ def write_report(
             "details": str(e)
         })
         try:
-            with open(report_path, 'w', encoding='utf-8') as f:
-                f.write(json.dumps(data, indent=2))
+            write_json_file(report_path, data)
         except Exception:
             pass
         print(f"[MARCUT_REPORT] HTML report generation failed: {e}")

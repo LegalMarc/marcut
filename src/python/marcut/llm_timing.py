@@ -4,6 +4,7 @@ LLM Timing Instrumentation Module
 import time
 import json
 import sys
+import os
 import requests
 from typing import List, Dict, Any, Tuple, Optional
 
@@ -21,10 +22,20 @@ def ollama_extract_with_timing(
     text: str,
     temperature: float = 0.0,
     seed: int = 42,
-    context: Optional[str] = None
+    context: Optional[str] = None,
+    think_mode: bool = False,
+    format_schema: Optional[Dict] = None,
 ) -> Tuple[List[Dict[str, Any]], Dict[str, float]]:
     """Extract entities with detailed timing. Returns (spans, timing_dict)."""
     base_url = get_ollama_base_url()
+    try:
+        request_timeout = max(1.0, float(os.getenv("MARCUT_OLLAMA_REQUEST_TIMEOUT", "300")))
+    except (TypeError, ValueError):
+        request_timeout = 300.0
+    try:
+        num_predict = max(128, int(os.getenv("MARCUT_OLLAMA_NUM_PREDICT", "2048")))
+    except (TypeError, ValueError):
+        num_predict = 2048
     timing = {
         "prompt_build": 0.0, "http_request": 0.0, "ollama_model_load": 0.0,
         "ollama_prompt_eval": 0.0, "ollama_generation": 0.0, "network_overhead": 0.0,
@@ -39,13 +50,17 @@ def ollama_extract_with_timing(
     # Make HTTP request
     t1 = time.perf_counter()
     try:
+        body = {
+            "model": model, "prompt": base_prompt, "stream": False, "think": think_mode,
+            "options": {"temperature": max(temperature, 0.1), "seed": seed, "num_ctx": 12288, "num_predict": num_predict, "top_p": 0.9}
+        }
+        if format_schema is not None:
+             body["format"] = format_schema
+
         resp = requests.post(
             f"{base_url}/api/generate",
-            json={
-                "model": model, "prompt": base_prompt, "stream": False,
-                "options": {"temperature": max(temperature, 0.1), "seed": seed, "num_ctx": 4096, "num_predict": 512, "top_p": 0.9}
-            },
-            timeout=60
+            json=body,
+            timeout=request_timeout
         )
         resp.raise_for_status()
     except requests.exceptions.RequestException as e:

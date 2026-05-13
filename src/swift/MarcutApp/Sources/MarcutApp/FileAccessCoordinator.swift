@@ -694,6 +694,7 @@ class FileAccessCoordinator: ObservableObject {
         if createIfMissing {
             do {
                 try fm.createDirectory(at: cacheURL, withIntermediateDirectories: true)
+                try? fm.setAttributes([.posixPermissions: NSNumber(value: Int16(0o700))], ofItemAtPath: cacheURL.path)
             } catch {
                 DebugLogger.shared.log("❌ Failed to prepare metadata report cache: \(error)", component: "FileAccessCoordinator")
                 return nil

@@ -1,0 +1,69 @@
+{
+  "bomFormat": "CycloneDX",
+  "specVersion": "1.5",
+  "serialNumber": "urn:uuid:667188b2-60b4-4f7e-931e-7a30e964e14b",
+  "version": 1,
+  "metadata": {
+    "timestamp": "2026-05-12T20:18:09.557381Z",
+    "component": {
+      "type": "application",
+      "name": "Marcut"
+    }
+  },
+  "components": [
+    {
+      "type": "library",
+      "name": "python-docx",
+      "version": "1.1.2",
+      "purl": "pkg:pypi/python-docx@1.1.2"
+    },
+    {
+      "type": "library",
+      "name": "rapidfuzz",
+      "version": "3.14.5",
+      "purl": "pkg:pypi/rapidfuzz@3.14.5"
+    },
+    {
+      "type": "library",
+      "name": "pydantic",
+      "version": "2.10.3",
+      "purl": "pkg:pypi/pydantic@2.10.3"
+    },
+    {
+      "type": "library",
+      "name": "requests",
+      "version": "2.33.0",
+      "purl": "pkg:pypi/requests@2.33.0"
+    },
+    {
+      "type": "library",
+      "name": "dateparser",
+      "version": "1.2.0",
+      "purl": "pkg:pypi/dateparser@1.2.0"
+    },
+    {
+      "type": "library",
+      "name": "tqdm",
+      "version": "4.67.1",
+      "purl": "pkg:pypi/tqdm@4.67.1"
+    },
+    {
+      "type": "library",
+      "name": "lxml",
+      "version": "6.1.0",
+      "purl": "pkg:pypi/lxml@6.1.0"
+    },
+    {
+      "type": "library",
+      "name": "numpy",
+      "version": "2.2.0",
+      "purl": "pkg:pypi/numpy@2.2.0"
+    },
+    {
+      "type": "library",
+      "name": "regex",
+      "version": "2024.11.6",
+      "purl": "pkg:pypi/regex@2024.11.6"
+    }
+  ]
+}

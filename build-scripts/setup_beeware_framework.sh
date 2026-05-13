@@ -247,17 +247,12 @@ if [ -z "$SYSTEM_PYTHON" ]; then
     exit 1
 fi
 
-cat > "$TEMP_DIR/requirements.txt" <<'REQS'
-python-docx>=1.1.0
-rapidfuzz>=3.6.1
-pydantic>=2.6.4
-requests>=2.31.0
-dateparser>=1.2.0
-tqdm>=4.66.0
-lxml>=5.0.0
-numpy>=1.24.0
-regex>=2023.0.0
-REQS
+PINNED_REQUIREMENTS="${REPO_ROOT}/requirements-pinned.txt"
+if [ ! -f "$PINNED_REQUIREMENTS" ]; then
+    echo -e "${RED}❌ Missing pinned requirements file: ${PINNED_REQUIREMENTS}${NC}"
+    exit 1
+fi
+cp "$PINNED_REQUIREMENTS" "$TEMP_DIR/requirements.txt"
 
 # --- Compile Dependencies from Source ---
 echo -e "${BLUE}Compiling Python dependencies from source against the BeeWare framework...${NC}"

@@ -226,7 +226,7 @@ Text is extracted from:
 
 ### Redaction Tags and Track Changes
 
-- Redactions are applied as track changes so you can accept or reject each change.
+- Redactions are applied as track changes so you can accept or reject each change. The default DOCX is a review artifact, not a destructively sanitized final-share file.
 - Redaction tags appear as inserted text in red (for example `[NAME_1]`).
 - Original content appears as deletions.
 - Possessives are preserved (`[NAME_1]'s`).
@@ -234,7 +234,7 @@ Text is extracted from:
 
 ### JSON Audit Report (High Level)
 
-The audit report is a machine-readable summary of what was detected.
+The audit report is a machine-readable summary of what was detected. It may include original detected text, filenames, and document metadata; share, print, or export it only to approved destinations.
 
 - Includes `created_at`, `input_sha256`, `model`, and `spans`.
 - Each span includes offsets into a flattened document text, not Word XML positions.
@@ -361,7 +361,7 @@ Each completed document row includes:
 - View Audit Report.
 - Show in Finder.
 
-Open the DOCX in Word to review track changes and accept or reject redactions.
+Open the DOCX in Word to review track changes and accept or reject redactions before sharing the document outside your review workflow.
 
 ### Output Naming (GUI and headless)
 
@@ -1247,7 +1247,7 @@ A: Any editor that shows track changes can work, but Word is the most reliable.
 ## Glossary
 
 - DOCX: Microsoft Word OpenXML document format.
-- Track Changes: Word feature that records deletions and insertions for review.
+- Track Changes: Word feature that records deletions and insertions for review; Marcut's default DOCX output preserves this review artifact.
 - Redaction Tag: Bracketed placeholder inserted in the output (for example `[SSN_1]`).
 - Span: A start and end offset into the flattened text.
 - LLM: Large language model used for entity extraction.

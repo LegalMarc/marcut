@@ -24,6 +24,9 @@ jobs:
           python -m pip install -U pip
           pip install -e .
           pip install pytest
+          python scripts/check_dependency_vulnerabilities.py requirements-pinned.txt
+          python scripts/generate_python_sbom.py --check
+          python scripts/check_markdown_links.py
           pytest -q
 
       - name: Prepare stub Ollama for packaging
@@ -39,6 +42,9 @@ jobs:
         run: |
           chmod +x create_python_bundle.sh
           ./create_python_bundle.sh
+
+      - name: Swift unit tests
+        run: swift test --package-path src/swift/MarcutApp
 
       - name: Build Debug DMG (Swift-only)
         run: |

@@ -380,7 +380,13 @@ private enum ModelPromotion {
             return nil
         }
 
-        guard let object = try? JSONSerialization.jsonObject(with: data),
+        // Clean control characters that sometimes corrupt model manifests
+        let cleanedData = String(data: data, encoding: .utf8)?
+            .components(separatedBy: .controlCharacters)
+            .joined()
+            .data(using: .utf8) ?? data
+
+        guard let object = try? JSONSerialization.jsonObject(with: cleanedData, options: [.fragmentsAllowed]),
               let json = object as? [String: Any] else {
             return nil
         }
@@ -450,7 +456,7 @@ final class PythonBridgeService: ObservableObject {
 
     @Published var isOllamaRunning: Bool = false
     @Published var installedModels: [String] = []
-    @Published var currentModel: String = "llama3.1:8b"
+    @Published var currentModel: String = "qwen2.5:14b"
     @Published var setupComplete: Bool = false
     @Published var ollamaLaunchError: String?
     @Published var lastModelDownloadError: String?
@@ -465,6 +471,9 @@ final class PythonBridgeService: ObservableObject {
     
     // Store active processes by document ID to allow cancellation
     private var activeProcesses: [UUID: Process] = [:]
+    private var activeModelDownloadSession: URLSession?
+    private var activeModelDownloadProcess: Process?
+    private var modelDownloadCancelled = false
 
     
     /// Public getter for the current Ollama host (including dynamic port)
@@ -552,8 +561,8 @@ final class PythonBridgeService: ObservableObject {
         for tmpDir in candidates {
             bridgeLog("Checking Temp Dir Candidate: \(tmpDir.path)", component: "Ollama")
             do {
-                try fm.createDirectory(at: tmpDir, withIntermediateDirectories: true, attributes: [.posixPermissions: NSNumber(value: Int16(0o755))])
-                try? fm.setAttributes([.posixPermissions: NSNumber(value: Int16(0o755))], ofItemAtPath: tmpDir.path)
+                try fm.createDirectory(at: tmpDir, withIntermediateDirectories: true, attributes: [.posixPermissions: NSNumber(value: Int16(0o700))])
+                try? fm.setAttributes([.posixPermissions: NSNumber(value: Int16(0o700))], ofItemAtPath: tmpDir.path)
                 bridgeLog("✅ Using temp dir: \(tmpDir.path)", component: "Ollama")
                 return tmpDir
             } catch {
@@ -595,27 +604,9 @@ final class PythonBridgeService: ObservableObject {
 
     nonisolated private static func secureEraseFile(_ url: URL) {
         let fm = FileManager.default
-        guard let attributes = try? fm.attributesOfItem(atPath: url.path),
-              let size = attributes[.size] as? Int64,
-              size > 0,
-              let handle = try? FileHandle(forWritingTo: url) else {
-            try? fm.removeItem(at: url)
-            return
-        }
-
-        let chunkSize = 1_048_576
-        let zeroChunk = Data(repeating: 0, count: chunkSize)
-        var remaining = size
-        while remaining > 0 {
-            let writeSize = Int(min(Int64(chunkSize), remaining))
-            if writeSize < chunkSize {
-                handle.write(zeroChunk.prefix(writeSize))
-            } else {
-                handle.write(zeroChunk)
-            }
-            remaining -= Int64(writeSize)
-        }
-        try? handle.close()
+        // Secure erase zero-out removed:
+        // APFS copy-on-write makes zeroing files ineffective and increases SSD wear.
+        // FileVault provides data-at-rest encryption securely.
         try? fm.removeItem(at: url)
     }
 
@@ -713,8 +704,8 @@ final class PythonBridgeService: ObservableObject {
     /// Finds a free port starting from `start`, trying up to `maxAttempts` times.
     /// Returns the first available port, or the `start` port if all fail (fallback).
     private static func findFreePort(start: Int32, maxAttempts: Int) -> Int32 {
-        for i in 0..<maxAttempts {
-            let port = start + Int32(i)
+        for _ in 0..<maxAttempts {
+            let port = Int32.random(in: 11434...12434)
             if isPortFree(port) {
                 return port
             }
@@ -2034,6 +2025,7 @@ final class PythonBridgeService: ObservableObject {
         model: String,
         mode: String,
         llmSkipConfidence: Double = 0.95,
+        llmConcurrency: Int = 2,
         debug: Bool = false,
         onProgress: ((String) -> Void)? = nil
     ) async -> Bool {
@@ -2045,44 +2037,56 @@ final class PythonBridgeService: ObservableObject {
         }
 
 
-        // Build Python script based on mode
-        // CRITICAL: Use Bundle path, not hardcoded dev path
-        // CRITICAL: Escape paths to prevent quote injection
+        // Build Python script based on mode. Values are passed as base64 JSON so
+        // model/mode/path strings are data, never executable Python source.
         guard let pythonSitePath = Bundle.main.resourcePath.map({ "\($0)/python_site" }) else {
             bridgeLog("UNIFIED: Could not determine python_site path from bundle", component: "UNIFIED_EXECUTION")
             return false
         }
-        
-        // Escape single quotes in paths to prevent injection
-        func escapePath(_ path: String) -> String {
-            return path.replacingOccurrences(of: "'", with: "'\"'\"'")
+
+        let requestedMode = (mode == "rules" || model == "mock") ? "rules" : mode
+        let payload: [String: Any] = [
+            "python_site": pythonSitePath,
+            "input_path": inputPath,
+            "output_path": outputPath,
+            "report_path": reportPath,
+            "mode": requestedMode,
+            "model": model,
+            "debug": debug,
+            "llm_skip_confidence": llmSkipConfidence,
+            "llm_concurrency": llmConcurrency
+        ]
+        guard
+            let payloadData = try? JSONSerialization.data(withJSONObject: payload, options: []),
+            !payloadData.isEmpty
+        else {
+            bridgeLog("UNIFIED: Failed to encode redaction payload", component: "UNIFIED_EXECUTION")
+            return false
         }
-        
-        let safeInputPath = escapePath(inputPath)
-        let safeOutputPath = escapePath(outputPath)
-        let safeReportPath = escapePath(reportPath)
-        let safePythonSitePath = escapePath(pythonSitePath)
-        
+        let payloadB64 = payloadData.base64EncodedString()
+
         let pythonScript: String
-        if mode != "rules" && model != "mock" {
+        if requestedMode != "rules" && model != "mock" {
             pythonScript = """
-            import sys;
-            sys.path.insert(0, '\(safePythonSitePath)');
+            import base64, json, sys;
+            payload = json.loads(base64.b64decode('\(payloadB64)').decode('utf-8'));
+            sys.path.insert(0, payload['python_site']);
             from marcut.unified_redactor import run_unified_redaction;
-            result = run_unified_redaction('\(safeInputPath)', '\(safeOutputPath)', '\(safeReportPath)', mode='\(mode)', model='\(model)', debug=\(debug ? "True" : "False"), llm_skip_confidence=\(llmSkipConfidence));
+            result = run_unified_redaction(payload['input_path'], payload['output_path'], payload['report_path'], mode=payload['mode'], model=payload['model'], debug=bool(payload['debug']), llm_skip_confidence=float(payload['llm_skip_confidence']), llm_concurrency=int(payload['llm_concurrency']));
             exit_code = 0 if result.get('success', False) else 1;
             sys.exit(exit_code)
             """
         } else {
             pythonScript = """
-            import sys;
+            import base64, json, sys;
             import traceback;
 
-            sys.path.insert(0, '\(safePythonSitePath)');
+            payload = json.loads(base64.b64decode('\(payloadB64)').decode('utf-8'));
+            sys.path.insert(0, payload['python_site']);
 
             try:
                 from marcut.unified_redactor import run_unified_redaction;
-                result = run_unified_redaction('\(safeInputPath)', '\(safeOutputPath)', '\(safeReportPath)', mode='rules', model='\(model)', debug=\(debug ? "True" : "False"), llm_skip_confidence=\(llmSkipConfidence));
+                result = run_unified_redaction(payload['input_path'], payload['output_path'], payload['report_path'], mode='rules', model=payload['model'], debug=bool(payload['debug']), llm_skip_confidence=float(payload['llm_skip_confidence']), llm_concurrency=int(payload['llm_concurrency']));
                 exit_code = 0 if result.get('success', False) else 1
                 sys.exit(exit_code)
             except Exception as e:
@@ -2117,23 +2121,25 @@ final class PythonBridgeService: ObservableObject {
         process.environment = cliEnvironment
 
         // Capture output
-        let outputPipe = Pipe()
-        process.standardOutput = outputPipe
-        process.standardError = outputPipe
+        let stdoutPipe = Pipe()
+        let stderrPipe = Pipe()
+        process.standardOutput = stdoutPipe
+        process.standardError = stderrPipe
 
         let outputQueue = DispatchQueue(label: "com.marcut.output")
         final class OutputState: @unchecked Sendable {
-            var data = Data()
+            var stdoutData = Data()
+            var stderrData = Data()
             var buffer = ""
         }
         let outputState = OutputState()
 
-        outputPipe.fileHandleForReading.readabilityHandler = { handle in
+        stdoutPipe.fileHandleForReading.readabilityHandler = { handle in
             let data = handle.availableData
             guard !data.isEmpty else { return }
 
             outputQueue.async { [outputState] in
-                outputState.data.append(data)
+                outputState.stdoutData.append(data)
                 guard let chunk = String(data: data, encoding: .utf8) else { return }
                 outputState.buffer.append(chunk)
 
@@ -2152,14 +2158,29 @@ final class PythonBridgeService: ObservableObject {
             }
         }
 
+        stderrPipe.fileHandleForReading.readabilityHandler = { handle in
+            let data = handle.availableData
+            guard !data.isEmpty else { return }
+            outputQueue.async { [outputState] in
+                outputState.stderrData.append(data)
+            }
+        }
+
         bridgeLog("UNIFIED: Executing subprocess with mode=\(mode), model=\(model)", component: "UNIFIED_EXECUTION")
 
         do {
             try process.run()
-            process.waitUntilExit()
             
-            // Clean up handler
-            outputPipe.fileHandleForReading.readabilityHandler = nil
+            // Wait for completion non-blockingly using a continuation
+            let exitCode = await withCheckedContinuation { continuation in
+                process.terminationHandler = { terminatedProcess in
+                    continuation.resume(returning: terminatedProcess.terminationStatus)
+                }
+            }
+            
+            // Clean up handlers
+            stdoutPipe.fileHandleForReading.readabilityHandler = nil
+            stderrPipe.fileHandleForReading.readabilityHandler = nil
             
             // Wait for queue to drain
             outputQueue.sync { }
@@ -2172,15 +2193,15 @@ final class PythonBridgeService: ObservableObject {
                 outputState.buffer = ""
             }
 
-            let output = String(data: outputState.data, encoding: .utf8) ?? ""
-            let exitCode = process.terminationStatus
+            let output = String(data: outputState.stdoutData, encoding: .utf8) ?? ""
+            let errorOutput = String(data: outputState.stderrData, encoding: .utf8) ?? ""
             let success = exitCode == 0
 
             bridgeLog("UNIFIED: Process completed with exit code \(exitCode)", component: "UNIFIED_EXECUTION")
             
             // If success, log the final output for debugging
             if !success {
-                bridgeLog("UNIFIED: Error output: \(output)", component: "UNIFIED_EXECUTION")
+                bridgeLog("UNIFIED: Error output: \nSTDOUT: \(output)\nSTDERR:\n\(errorOutput)", component: "UNIFIED_EXECUTION")
             } else {
                  bridgeLog("UNIFIED: Successfully completed redaction", component: "UNIFIED_EXECUTION")
             }
@@ -2407,6 +2428,7 @@ CLI Error: Input file '\(displayInput)' is outside the sandboxed Application Sup
                 model: modelId,
                 mode: redactionMode,
                 llmSkipConfidence: settings.llmConfidenceThresholdValue,
+                llmConcurrency: settings.llmConcurrency,
                 debug: settings.debug,
                 onProgress: { [weak item] outputLine in
                     let trimmed = outputLine.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -2492,6 +2514,7 @@ CLI Error: Input file '\(displayInput)' is outside the sandboxed Application Sup
             model: modelId,
             mode: redactionMode,
             llmSkipConfidence: settings.llmConfidenceThresholdValue,
+            llmConcurrency: settings.llmConcurrency,
             debug: settings.debug,
             onProgress: { [weak item] outputLine in
                 let trimmed = outputLine.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -2750,6 +2773,7 @@ CLI Error: Input file '\(displayInput)' is outside the sandboxed Application Sup
 
     func downloadModel(_ modelName: String, progress: @escaping (Double) -> Void) async -> Bool {
         lastModelDownloadError = nil
+        modelDownloadCancelled = false
         var lastProgress = 0.0
         let updateProgress: (Double) -> Void = { value in
             let clipped = min(max(value, 0.0), 100.0)
@@ -2787,6 +2811,10 @@ CLI Error: Input file '\(displayInput)' is outside the sandboxed Application Sup
             do {
                 updateProgress(5.0) // Confirmed server responsiveness
                 bridgeLog("Starting download for \(modelName) via HTTP (attempt \(attempt)/\(maxAttempts))", component: "MODEL_DOWNLOAD")
+                if modelDownloadCancelled {
+                    lastErrorMessage = "Model download cancelled."
+                    break
+                }
                 let ok = try await pullModelViaHTTP(modelName: modelName, progress: updateProgress)
                 
                 if ok {
@@ -2815,6 +2843,10 @@ CLI Error: Input file '\(displayInput)' is outside the sandboxed Application Sup
             } catch {
                 let message = formatModelDownloadError(error)
                 lastErrorMessage = message
+                if modelDownloadCancelled {
+                    lastErrorMessage = "Model download cancelled."
+                    break
+                }
                 bridgeLog("MODEL_DOWNLOAD attempt \(attempt) failed: \(message)", component: "MODEL_DOWNLOAD")
                 if attempt < maxAttempts && shouldRetryModelDownload(message: message) {
                     bridgeLog("MODEL_DOWNLOAD: Retrying after error...", component: "MODEL_DOWNLOAD")
@@ -2829,6 +2861,10 @@ CLI Error: Input file '\(displayInput)' is outside the sandboxed Application Sup
         }
 
         if let message = lastErrorMessage, shouldFallbackToCLIDownload(message: message) {
+            if modelDownloadCancelled {
+                lastModelDownloadError = "Model download cancelled."
+                return false
+            }
             bridgeLog("MODEL_DOWNLOAD: Falling back to CLI pull after HTTP error: \(message)", component: "MODEL_DOWNLOAD")
             do {
                 updateProgress(max(lastProgress, 8.0))
@@ -2848,6 +2884,9 @@ CLI Error: Input file '\(displayInput)' is outside the sandboxed Application Sup
             } catch {
                 let message = formatModelDownloadError(error)
                 lastErrorMessage = message
+                if modelDownloadCancelled {
+                    lastErrorMessage = "Model download cancelled."
+                }
                 bridgeLog("MODEL_DOWNLOAD CLI failed: \(message)", component: "MODEL_DOWNLOAD")
             }
         }
@@ -2878,17 +2917,27 @@ CLI Error: Input file '\(displayInput)' is outside the sandboxed Application Sup
         request.httpBody = try JSONSerialization.data(withJSONObject: body, options: [])
 
         let configuration = URLSessionConfiguration.ephemeral
-        configuration.timeoutIntervalForRequest = 60 * 60
+        // Set an idle byte timeout to unblock hung streams and trigger fallback
+        configuration.timeoutIntervalForRequest = 20.0
         configuration.timeoutIntervalForResource = 60 * 60
         configuration.requestCachePolicy = .reloadIgnoringLocalCacheData
         configuration.connectionProxyDictionary = [:]
         let session = URLSession(configuration: configuration)
-        defer { session.invalidateAndCancel() }
+        activeModelDownloadSession = session
+        defer {
+            if activeModelDownloadSession === session {
+                activeModelDownloadSession = nil
+            }
+            session.invalidateAndCancel()
+        }
         let decoder = JSONDecoder()
 
         var totalsByDigest: [String: Int64] = [:]
         var completedByDigest: [String: Int64] = [:]
 
+        if modelDownloadCancelled {
+            throw NSError(domain: "Ollama", code: NSURLErrorCancelled, userInfo: [NSLocalizedDescriptionKey: "Model download cancelled."])
+        }
         let (stream, response) = try await session.bytes(for: request)
         guard let httpResponse = response as? HTTPURLResponse else {
             throw NSError(domain: "Ollama", code: -1, userInfo: [NSLocalizedDescriptionKey: "Unexpected response from Ollama pull"])
@@ -2901,6 +2950,9 @@ CLI Error: Input file '\(displayInput)' is outside the sandboxed Application Sup
         progress(6.0)
 
         for try await line in stream.lines {
+            if modelDownloadCancelled {
+                throw NSError(domain: "Ollama", code: NSURLErrorCancelled, userInfo: [NSLocalizedDescriptionKey: "Model download cancelled."])
+            }
             let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !trimmed.isEmpty else { continue }
 
@@ -3017,6 +3069,11 @@ CLI Error: Input file '\(displayInput)' is outside the sandboxed Application Sup
 
             process.terminationHandler = { _ in
                 pipe.fileHandleForReading.readabilityHandler = nil
+                Task { @MainActor [weak self] in
+                    if self?.activeModelDownloadProcess === process {
+                        self?.activeModelDownloadProcess = nil
+                    }
+                }
 
                 outputQueue.sync { }
 
@@ -3044,8 +3101,12 @@ CLI Error: Input file '\(displayInput)' is outside the sandboxed Application Sup
             }
 
             do {
+                self.activeModelDownloadProcess = process
                 try process.run()
             } catch {
+                if self.activeModelDownloadProcess === process {
+                    self.activeModelDownloadProcess = nil
+                }
                 pipe.fileHandleForReading.readabilityHandler = nil
                 continuation.resume(throwing: error)
             }
@@ -3120,7 +3181,14 @@ CLI Error: Input file '\(displayInput)' is outside the sandboxed Application Sup
     }
 
     func cancelModelDownload() {
-        // No-op: downloads run via XPC helper
+        modelDownloadCancelled = true
+        lastModelDownloadError = "Model download cancelled."
+        activeModelDownloadSession?.invalidateAndCancel()
+        activeModelDownloadSession = nil
+        if let process = activeModelDownloadProcess, process.isRunning {
+            process.terminate()
+        }
+        activeModelDownloadProcess = nil
     }
 
 
@@ -3271,9 +3339,10 @@ extension PythonBridgeService {
         outputPath: String,
         reportPath: String,
         scrubReportPath: String? = nil,
-        model: String = "llama3.1:8b",
+        model: String = "qwen2.5:14b",
         mode: String = "enhanced",
         llmSkipConfidence: Double = 0.95,
+        llmConcurrency: Int = 2,
         debug: Bool = false,
         progressUpdater: @escaping (PythonRunnerProgressUpdate) -> Void,
         completion: @escaping (Bool) -> Void
@@ -3365,7 +3434,8 @@ extension PythonBridgeService {
             "--mode", mode,
             "--backend", resolvedBackend,
             "--model", resolvedModel,
-            "--llm-skip-confidence", String(llmSkipConfidence)
+            "--llm-skip-confidence", String(llmSkipConfidence),
+            "--llm-concurrency", String(llmConcurrency)
         ]
 
         if debug {
@@ -3385,6 +3455,8 @@ extension PythonBridgeService {
         bridgeLog("CLI subprocess command: \(process.executableURL!.path) \(process.arguments!.joined(separator: " "))", component: "CLI_SUBPROCESS")
         bridgeLog("Working directory: \(process.currentDirectoryURL!.path)", component: "CLI_SUBPROCESS")
 
+        let cleanupTempDir = cliTempDir
+
         // Start a background task to handle process execution and output parsing
         Task.detached(priority: .userInitiated) {
             let outputQueue = DispatchQueue(label: "com.marcut.cli.stdout")
@@ -3394,8 +3466,12 @@ extension PythonBridgeService {
                 var buffer = ""
             }
 
+            final class DataState: @unchecked Sendable {
+                var data = Data()
+            }
+
             let stdoutState = StreamState()
-            var stderrData = Data()
+            let stderrState = DataState()
             let terminationStream = AsyncStream<Void> { continuation in
                 process.terminationHandler = { _ in
                     continuation.yield(())
@@ -3429,8 +3505,8 @@ extension PythonBridgeService {
             stderrPipe.fileHandleForReading.readabilityHandler = { handle in
                 let data = handle.availableData
                 guard !data.isEmpty else { return }
-                stderrQueue.async {
-                    stderrData.append(data)
+                stderrQueue.async { [stderrState] in
+                    stderrState.data.append(data)
                 }
             }
 
@@ -3462,11 +3538,14 @@ extension PythonBridgeService {
 
                 let trailingStderr = stderrPipe.fileHandleForReading.readDataToEndOfFile()
                 if !trailingStderr.isEmpty {
-                    stderrQueue.sync {
-                        stderrData.append(trailingStderr)
+                    stderrQueue.sync { [stderrState] in
+                        stderrState.data.append(trailingStderr)
                     }
                 }
 
+                let stderrData = stderrQueue.sync { [stderrState] in
+                    stderrState.data
+                }
                 if debug, let stderrString = String(data: stderrData, encoding: .utf8), !stderrString.isEmpty {
                     bridgeLog("CLI subprocess stderr: \(stderrString)", component: "CLI_SUBPROCESS")
                 }
@@ -3474,8 +3553,8 @@ extension PythonBridgeService {
                 let success = process.terminationStatus == 0
                 bridgeLog("CLI subprocess completed with status: \(process.terminationStatus)", component: "CLI_SUBPROCESS")
 
-                if let cliTempDir {
-                    Self.secureEraseDirectory(cliTempDir)
+                if let cleanupTempDir {
+                    Self.secureEraseDirectory(cleanupTempDir)
                 }
 
                 // Call completion on main actor
@@ -3487,8 +3566,8 @@ extension PythonBridgeService {
                 stdoutPipe.fileHandleForReading.readabilityHandler = nil
                 stderrPipe.fileHandleForReading.readabilityHandler = nil
                 bridgeLog("CLI subprocess failed: \(error)", component: "CLI_SUBPROCESS")
-                if let cliTempDir {
-                    Self.secureEraseDirectory(cliTempDir)
+                if let cleanupTempDir {
+                    Self.secureEraseDirectory(cleanupTempDir)
                 }
                 await MainActor.run {
                     completion(false)

@@ -1,0 +1,91 @@
+{
+  "document": "sample-files-marcut/Framework Agreement.docx",
+  "prompt": null,
+  "ground_truth_count": 8,
+  "results": [
+    {
+      "model": "gemma4:e2b",
+      "path": "gemma4:e2b",
+      "is_gguf": false,
+      "avg_time": 9.969274583971128,
+      "min_time": 9.969274583971128,
+      "max_time": 9.969274583971128,
+      "entities_found": 3,
+      "precision": 1.0,
+      "recall": 0.25,
+      "f1": 0.4,
+      "prompt_tokens": 10705,
+      "output_tokens": 76
+    },
+    {
+      "model": "phi4-mini:3.8b",
+      "path": "phi4-mini:3.8b",
+      "is_gguf": false,
+      "avg_time": 12.166919208015315,
+      "min_time": 12.166919208015315,
+      "max_time": 12.166919208015315,
+      "entities_found": 0,
+      "precision": 0,
+      "recall": 0.0,
+      "f1": 0,
+      "prompt_tokens": 10403,
+      "output_tokens": 49
+    },
+    {
+      "model": "qwen3.5:2b-q4_K_M",
+      "path": "qwen3.5:2b-q4_K_M",
+      "is_gguf": false,
+      "avg_time": 7.065280458016787,
+      "min_time": 7.065280458016787,
+      "max_time": 7.065280458016787,
+      "entities_found": 3,
+      "precision": 1.0,
+      "recall": 0.25,
+      "f1": 0.4,
+      "prompt_tokens": 10617,
+      "output_tokens": 36
+    },
+    {
+      "model": "llama3.2:3b",
+      "path": "llama3.2:3b",
+      "is_gguf": false,
+      "avg_time": 10.937212750024628,
+      "min_time": 10.937212750024628,
+      "max_time": 10.937212750024628,
+      "entities_found": 3,
+      "precision": 1.0,
+      "recall": 0.25,
+      "f1": 0.4,
+      "prompt_tokens": 10485,
+      "output_tokens": 49
+    },
+    {
+      "model": "llama3.2:1b",
+      "path": "llama3.2:1b",
+      "is_gguf": false,
+      "avg_time": 4.934481834003236,
+      "min_time": 4.934481834003236,
+      "max_time": 4.934481834003236,
+      "entities_found": 3,
+      "precision": 1.0,
+      "recall": 0.25,
+      "f1": 0.4,
+      "prompt_tokens": 10485,
+      "output_tokens": 66
+    },
+    {
+      "model": "qwen3.5:9b",
+      "path": "qwen3.5:9b",
+      "is_gguf": false,
+      "avg_time": 95.06893579103053,
+      "min_time": 95.06893579103053,
+      "max_time": 95.06893579103053,
+      "entities_found": 0,
+      "precision": 0,
+      "recall": 0.0,
+      "f1": 0,
+      "prompt_tokens": 10617,
+      "output_tokens": 2048
+    }
+  ]
+}

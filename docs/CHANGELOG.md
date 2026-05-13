@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
+## 2026-05-13
+- **Fix**: Stop treating plain legal terms such as `Agreement` as `DOCID` redactions.
+- **Fix**: Preserve specific legal entities such as `TIME USA, LLC` through ORG filtering instead of suppressing them as generic contract wording.
+- **Fix**: Add derived alias redaction for entity-name aliases such as `TIME` while preserving generic roles such as `Publisher`.
+- **Performance**: Align LLM timing benchmark extraction with the production Ollama context, prediction, and timeout budget.
+- **Build**: Update App Store packaging for embedded Ollama 0.23.2 runtime bundling and helper signing.
+
 ## 2025-12-28
 - **Docs**: Refine changelog style to use category prefixes
 - **Docs**: Update changelog with full history back to origin

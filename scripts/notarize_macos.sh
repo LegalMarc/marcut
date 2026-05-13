@@ -114,10 +114,12 @@ if [ -t 0 ] && [ "$CREDENTIALS_UPDATED" = "1" ]; then
   fi
 fi
 
-ASC_API_KEY_BASE64="$(printf "%s" "$ASC_API_KEY_BASE64" | tr -d '\n\r ')"
-NOTARYTOOL_APPLE_ID="$(printf "%s" "$NOTARYTOOL_APPLE_ID" | tr -d '\n\r ')"
-NOTARYTOOL_APP_PASSWORD="$(printf "%s" "$NOTARYTOOL_APP_PASSWORD" | tr -d '\n\r ')"
-NOTARYTOOL_TEAM_ID="$(printf "%s" "$NOTARYTOOL_TEAM_ID" | tr -d '\n\r ')"
+ASC_API_KEY_ID="$(printf "%s" "${ASC_API_KEY_ID:-}" | tr -d '\n\r ')"
+ASC_API_KEY_ISSUER="$(printf "%s" "${ASC_API_KEY_ISSUER:-}" | tr -d '\n\r ')"
+ASC_API_KEY_BASE64="$(printf "%s" "${ASC_API_KEY_BASE64:-}" | tr -d '\n\r ')"
+NOTARYTOOL_APPLE_ID="$(printf "%s" "${NOTARYTOOL_APPLE_ID:-}" | tr -d '\n\r ')"
+NOTARYTOOL_APP_PASSWORD="$(printf "%s" "${NOTARYTOOL_APP_PASSWORD:-}" | tr -d '\n\r ')"
+NOTARYTOOL_TEAM_ID="$(printf "%s" "${NOTARYTOOL_TEAM_ID:-}" | tr -d '\n\r ')"
 
 use_api_key=false
 use_apple_id=false
@@ -130,9 +132,13 @@ elif [ -n "${NOTARYTOOL_APPLE_ID:-}" ] && [ -n "${NOTARYTOOL_APP_PASSWORD:-}" ];
 fi
 
 if [ "${use_api_key}" = false ] && [ "${use_apple_id}" = false ]; then
-  echo "NOTARIZATION: SKIPPED (missing API key or Apple ID credentials)" >&2
+  if [ "${MARCUT_ALLOW_NOTARIZATION_SKIP:-}" = "1" ]; then
+    echo "NOTARIZATION: SKIPPED (missing API key or Apple ID credentials; MARCUT_ALLOW_NOTARIZATION_SKIP=1)" >&2
+    exit 0
+  fi
+  echo "NOTARIZATION: FAILED (missing API key or Apple ID credentials)" >&2
   echo "Set ASC_API_KEY_ID/ASC_API_KEY_ISSUER/ASC_API_KEY_BASE64 or NOTARYTOOL_APPLE_ID/NOTARYTOOL_APP_PASSWORD (optional NOTARYTOOL_TEAM_ID)" >&2
-  exit 0
+  exit 1
 fi
 
 echo "NOTARIZATION: START"
@@ -141,12 +147,12 @@ if [ "${use_api_key}" = true ]; then
   tmp_key="$(mktemp)"
   trap 'rm -f "$tmp_key"' EXIT
   if ! printf "%s" "$ASC_API_KEY_BASE64" | decode_base64 > "$tmp_key" 2>/dev/null; then
-    echo "NOTARIZATION: SKIPPED (invalid ASC_API_KEY_BASE64)" >&2
-    exit 0
+    echo "NOTARIZATION: FAILED (invalid ASC_API_KEY_BASE64)" >&2
+    exit 1
   fi
   if ! validate_key_file "$tmp_key"; then
-    echo "NOTARIZATION: SKIPPED (decoded key is not a valid .p8 file)" >&2
-    exit 0
+    echo "NOTARIZATION: FAILED (decoded key is not a valid .p8 file)" >&2
+    exit 1
   fi
   notary_args=(--key "$tmp_key" --key-id "$ASC_API_KEY_ID" --issuer "$ASC_API_KEY_ISSUER")
 else

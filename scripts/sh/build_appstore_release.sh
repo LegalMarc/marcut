@@ -43,6 +43,8 @@ emit("VERSION", "version")
 emit("BUILD_NUMBER", "build_number")
 emit("PYTHON_SITE_SOURCE", "python_site_source", is_path=True)
 emit("PYTHON_SITE_REPO_SOURCE", "python_site_repo_source", is_path=True)
+emit("RUN_PYTHON_LAUNCHER", "run_python_launcher", is_path=True)
+emit("PYTHON_STUB_SOURCE", "python_stub_source", is_path=True)
 emit("TEAM_ID", "appstore_default_team_id")
 emit("DEVELOPER_ID", "appstore_default_identity")
 emit("CUSTOM_SIGN_IDENTITY", "custom_sign_identity")
@@ -75,7 +77,7 @@ TEAM_ID="${TEAM_ID:-}"
 AUTO_BUMP_BUILD_NUMBER="${AUTO_BUMP_BUILD_NUMBER:-false}"
 
 # Ollama configuration
-OLLAMA_VERSION="0.12.5"
+OLLAMA_VERSION="0.23.2"
 OLLAMA_DOWNLOAD_URL="https://github.com/ollama/ollama/releases/download/v${OLLAMA_VERSION}/ollama-darwin.tgz"
 
 cd "$ROOT_DIR"
@@ -86,6 +88,8 @@ SWIFT_BUILD_DIR="${SWIFT_BUILD_DIR:-${OUTPUT_ROOT}/builds/swiftpm}"
 SWIFT_PROJECT_DIR="${SWIFT_PROJECT_DIR:-${ROOT_DIR}/src/swift/MarcutApp}"
 PYTHON_SITE_SOURCE="${PYTHON_SITE_SOURCE:-${SWIFT_PROJECT_DIR}/Sources/MarcutApp/python_site}"
 PYTHON_SITE_REPO_SOURCE="${PYTHON_SITE_REPO_SOURCE:-${ROOT_DIR}/src/python/marcut}"
+RUN_PYTHON_LAUNCHER="${RUN_PYTHON_LAUNCHER:-${ROOT_DIR}/build-scripts/resources/run_python.sh}"
+PYTHON_STUB_SOURCE="${PYTHON_STUB_SOURCE:-${ROOT_DIR}/build-scripts/resources/python_embed_stub.c}"
 APP_BUNDLE="${BUILD_DIR}/${APP_NAME}.app"
 ARCHIVE_NAME="${APPSTORE_DEFAULT_ARCHIVE:-${APP_NAME}}"
 ARCHIVE_PATH="${ARCHIVE_DIR}/${ARCHIVE_NAME}.xcarchive"
@@ -264,7 +268,35 @@ clear_quarantine() {
         return
     fi
     xattr -dr com.apple.quarantine "$target" 2>/dev/null || true
-    xattr -cr "$target" 2>/dev/null || true
+}
+
+detach_dmg_mount() {
+    local mount_dir="$1"
+    if [ -z "${mount_dir}" ] || [ ! -d "${mount_dir}" ]; then
+        return
+    fi
+
+    local attempt
+    for attempt in 1 2 3; do
+        if hdiutil detach "${mount_dir}" >/dev/null 2>&1; then
+            break
+        fi
+        sleep "${attempt}"
+    done
+
+    if [ -d "${mount_dir}" ]; then
+        hdiutil detach -force "${mount_dir}" >/dev/null 2>&1 || true
+    fi
+
+    for attempt in 1 2 3 4 5 6 7 8 9 10; do
+        if [ ! -d "${mount_dir}" ]; then
+            return
+        fi
+        sleep 1
+    done
+
+    log_error "Failed to detach DMG mount before conversion: ${mount_dir}"
+    exit 1
 }
 
 prune_static_artifacts() {
@@ -522,13 +554,14 @@ ensure_ollama_binary() {
 
     local cache_dir="${OUTPUT_ROOT}/build_cache"
     local cached_archive="${cache_dir}/ollama-${OLLAMA_VERSION}-darwin.tgz"
-    local extracted_binary="${cache_dir}/ollama-${OLLAMA_VERSION}-darwin-arm64"
+    local extracted_dir="${cache_dir}/ollama-${OLLAMA_VERSION}-darwin-runtime"
     local output_binary="${OUTPUT_ROOT}/binaries/ollama_binary"
+    local output_runtime_dir="${OUTPUT_ROOT}/binaries/ollama_runtime"
 
     mkdir -p "${cache_dir}"
     mkdir -p "$(dirname "${output_binary}")"
 
-    if [ ! -f "${extracted_binary}" ]; then
+    if [ ! -x "${extracted_dir}/ollama" ]; then
         if [ ! -f "${cached_archive}" ]; then
             log_step "Downloading Ollama ${OLLAMA_VERSION} (arm64)..."
             curl -L -o "${cached_archive}.tmp" "${OLLAMA_DOWNLOAD_URL}"
@@ -538,31 +571,92 @@ ensure_ollama_binary() {
             log_info "Using cached Ollama archive at ${cached_archive}"
         fi
 
-        log_step "Extracting Ollama binary..."
-        tar -xzf "${cached_archive}" -C "${cache_dir}"
-        mv "${cache_dir}/ollama" "${extracted_binary}"
-        log_success "Extracted Ollama binary"
+        cleanup_path "${extracted_dir}"
+        mkdir -p "${extracted_dir}"
+        log_step "Extracting Ollama runtime..."
+        tar -xzf "${cached_archive}" -C "${extracted_dir}"
+        log_success "Extracted Ollama runtime"
     else
-        log_info "Using cached Ollama binary at ${extracted_binary}"
+        log_info "Using cached Ollama runtime at ${extracted_dir}"
     fi
 
-    cp "${extracted_binary}" "${output_binary}"
+    if [ ! -x "${extracted_dir}/ollama" ]; then
+        log_error "Ollama executable missing from extracted runtime"
+        cleanup_path "${extracted_dir}"
+        cleanup_path "${output_binary}"
+        cleanup_path "${output_runtime_dir}"
+        exit 1
+    fi
+
+    cleanup_path "${output_runtime_dir}"
+    mkdir -p "${output_runtime_dir}"
+    ditto "${extracted_dir}" "${output_runtime_dir}"
+
+    cp "${extracted_dir}/ollama" "${output_binary}"
     chmod 755 "${output_binary}"
+    chmod 755 "${output_runtime_dir}/ollama"
+    clear_quarantine "${output_runtime_dir}"
 
     local binary_size
     binary_size=$(stat -f%z "${output_binary}")
     if [ "${binary_size}" -lt 100000 ]; then
         log_error "Downloaded Ollama binary size (${binary_size}) looks invalid"
-        log_info "Removing cached binary so next run re-downloads..."
-        rm -f "${cached_binary}" "${output_binary}"
+        log_info "Removing cached runtime so next run re-downloads..."
+        cleanup_path "${extracted_dir}"
+        cleanup_path "${output_binary}"
+        cleanup_path "${output_runtime_dir}"
         exit 1
     fi
 
     if ! file "${output_binary}" | grep -q "Mach-O"; then
         log_error "Downloaded Ollama binary is not a Mach-O executable"
-        rm -f "${cached_binary}" "${output_binary}"
+        cleanup_path "${extracted_dir}"
+        cleanup_path "${output_binary}"
+        cleanup_path "${output_runtime_dir}"
         exit 1
     fi
+
+    local runtime_file_count
+    runtime_file_count="$(find "${output_runtime_dir}" -type f | wc -l | tr -d ' ')"
+    log_success "Prepared Ollama runtime with ${runtime_file_count} files"
+}
+
+sign_ollama_helper_runtime() {
+    local helper_macos="$1"
+
+    if [ ! -d "${helper_macos}" ]; then
+        log_warning "Ollama helper runtime directory not found: ${helper_macos}"
+        return
+    fi
+
+    while IFS= read -r -d '' target; do
+        if [[ "${target}" == *.metallib ]]; then
+            codesign --force --sign "${DEVELOPER_ID}" \
+                --options runtime \
+                --timestamp \
+                "${target}"
+            continue
+        fi
+
+        if ! file "${target}" | grep -q "Mach-O"; then
+            continue
+        fi
+
+        chmod 755 "${target}" 2>/dev/null || true
+
+        if [ "$(basename "${target}")" = "ollama" ]; then
+            codesign --force --sign "${DEVELOPER_ID}" \
+                --entitlements "${OLLAMA_ENTITLEMENTS}" \
+                --options runtime \
+                --timestamp \
+                "${target}"
+        else
+            codesign --force --sign "${DEVELOPER_ID}" \
+                --options runtime \
+                --timestamp \
+                "${target}"
+        fi
+    done < <(find "${helper_macos}" -type f \( -name "ollama" -o -name "*.dylib" -o -name "*.so" -o -name "*.metallib" \) -print0)
 }
 
 # ===== UTILITY FUNCTIONS =====
@@ -872,12 +966,13 @@ EOF
     log_step "Bundling Ollama runtime..."
     ensure_ollama_binary
     FOUND_OLLAMA="${OUTPUT_ROOT}/binaries/ollama_binary"
+    FOUND_OLLAMA_RUNTIME="${OUTPUT_ROOT}/binaries/ollama_runtime"
     log_step "Preparing and bundling Ollama..."
-    # Best-effort cleanup of the source binary's attributes.
-    if xattr -cr "$FOUND_OLLAMA" &>/dev/null; then
-        log_info "Removed quarantine attributes from source Ollama"
+    # Best-effort cleanup of the source runtime's attributes.
+    if xattr -cr "$FOUND_OLLAMA_RUNTIME" &>/dev/null; then
+        log_info "Removed quarantine attributes from source Ollama runtime"
     else
-        log_info "Could not remove quarantine attributes from source (may not be present)"
+        log_info "Could not remove quarantine attributes from source runtime (may not be present)"
     fi
 
     if chmod 755 "$FOUND_OLLAMA" &>/dev/null; then
@@ -893,9 +988,15 @@ EOF
     cleanup_path "${HELPER_BUNDLE}"
     mkdir -p "${HELPER_MACOS}"
 
-    cp "$FOUND_OLLAMA" "${HELPER_MACOS}/ollama"
+    if [ -d "${FOUND_OLLAMA_RUNTIME}" ]; then
+        ditto "${FOUND_OLLAMA_RUNTIME}" "${HELPER_MACOS}"
+    else
+        log_warning "Ollama runtime directory missing; falling back to executable-only bundle"
+        cp "$FOUND_OLLAMA" "${HELPER_MACOS}/ollama"
+    fi
+
     chmod 755 "${HELPER_MACOS}/ollama"
-    xattr -cr "${HELPER_MACOS}/ollama"
+    xattr -cr "${HELPER_MACOS}"
 
     if [ -f "packaging/ollama-helper-Info.plist" ]; then
         cp "packaging/ollama-helper-Info.plist" "${HELPER_INFO}"
@@ -921,6 +1022,9 @@ EOF
 EOF
     fi
 
+    log_step "Signing Ollama helper runtime files..."
+    sign_ollama_helper_runtime "${HELPER_MACOS}"
+
     log_step "Signing Ollama helper bundle..."
     codesign --force --sign "${DEVELOPER_ID}" \
         --options runtime \
@@ -931,7 +1035,7 @@ EOF
 
     ln -fsh "Ollama.app/Contents/MacOS/ollama" "${APP_BUNDLE}/Contents/Resources/ollama"
 
-    log_success "Ollama bundled from: ${FOUND_OLLAMA}"
+    log_success "Ollama bundled from: ${FOUND_OLLAMA_RUNTIME}"
 
     # ===== Bundle BeeWare Python.framework (REQUIRED) =====
     log_step "Bundling BeeWare Python.framework for App Store compatibility..."
@@ -1012,6 +1116,35 @@ EOF
     log_step "Pruning static/bitcode artifacts from embedded Python.framework..."
     prune_static_artifacts "${APP_BUNDLE}/Contents/Frameworks/Python.framework"
 
+    log_step "Installing embedded Python launcher..."
+    if [ -n "${RUN_PYTHON_LAUNCHER}" ] && [ -f "${RUN_PYTHON_LAUNCHER}" ]; then
+        cp "${RUN_PYTHON_LAUNCHER}" "${APP_BUNDLE}/Contents/Resources/run_python.sh"
+        chmod +x "${APP_BUNDLE}/Contents/Resources/run_python.sh"
+        log_success "Python launcher installed"
+    else
+        log_warning "Python launcher source missing: ${RUN_PYTHON_LAUNCHER}"
+    fi
+
+    if command -v clang >/dev/null 2>&1 && [ -n "${PYTHON_STUB_SOURCE}" ] && [ -f "${PYTHON_STUB_SOURCE}" ]; then
+        log_step "Compiling embedded Python executable stub..."
+        local python_framework_dest="${APP_BUNDLE}/Contents/Frameworks/Python.framework"
+        if clang -arch arm64 -arch x86_64 \
+            -F "${APP_BUNDLE}/Contents/Frameworks" \
+            -I "${python_framework_dest}/Headers" \
+            -I "${python_framework_dest}/Versions/3.11/include" \
+            -framework Python \
+            -Wl,-rpath,@executable_path/../Frameworks \
+            -o "${APP_BUNDLE}/Contents/Resources/python3_embed" \
+            "${PYTHON_STUB_SOURCE}"; then
+            chmod +x "${APP_BUNDLE}/Contents/Resources/python3_embed"
+            log_success "Embedded Python executable stub installed"
+        else
+            log_warning "Failed to compile embedded Python executable stub"
+        fi
+    else
+        log_warning "clang or Python stub source missing; python3_embed not built"
+    fi
+
     # Sign embedded BeeWare framework and python_site with Developer ID so macOS allows execution
     log_step "Signing embedded BeeWare framework and python_site…"
     sign_with_id() {
@@ -1044,6 +1177,10 @@ EOF
     if [ -d "$PYTHON_SITE_PATH" ]; then
         while IFS= read -r f; do sign_with_id "$f"; done < <(find "$PYTHON_SITE_PATH" -type f \( -name "*.dylib" -o -name "*.so" -o -name "*.o" -o -perm +111 \) 2>/dev/null)
         log_success "python_site dependencies signed"
+    fi
+
+    if [ -x "${APP_BUNDLE}/Contents/Resources/python3_embed" ]; then
+        sign_with_id "${APP_BUNDLE}/Contents/Resources/python3_embed"
     fi
 
     # Copy additional resources
@@ -1209,21 +1346,24 @@ sign_app_bundle() {
             "$lib"
     done < <(find "${APP_BUNDLE}/Contents/Frameworks" -type f \( -name "*.dylib" -o -name "*.so" -o -perm -111 \) 2>/dev/null)
 
-    # Sign the embedded Ollama binary
-    log_step "Signing embedded Ollama binary..."
-    if [ -f "${APP_BUNDLE}/Contents/Resources/ollama" ]; then
+    # Sign the embedded Ollama helper app and all runtime Mach-O files.
+    log_step "Signing embedded Ollama helper runtime..."
+    local ollama_helper_bundle="${APP_BUNDLE}/Contents/Resources/Ollama.app"
+    local ollama_helper_macos="${ollama_helper_bundle}/Contents/MacOS"
+    if [ -d "${ollama_helper_bundle}" ]; then
+        sign_ollama_helper_runtime "${ollama_helper_macos}"
         codesign --force --sign "${DEVELOPER_ID}" \
             --entitlements "${OLLAMA_ENTITLEMENTS}" \
             --options runtime \
             --timestamp \
-            "${APP_BUNDLE}/Contents/Resources/ollama"
-        log_success "Ollama binary signed"
-        # Verify the signature and entitlements on the binary
-        log_info "Verifying Ollama binary signature..."
-        codesign --verify --deep --strict --verbose=2 "${APP_BUNDLE}/Contents/Resources/ollama"
-        codesign -d --entitlements :- "${APP_BUNDLE}/Contents/Resources/ollama"
+            --identifier com.marclaw.marcutapp.ollama-helper \
+            "${ollama_helper_bundle}"
+        log_success "Ollama helper runtime signed"
+        log_info "Verifying Ollama helper signature..."
+        codesign --verify --deep --strict --verbose=2 "${ollama_helper_bundle}"
+        codesign -d --entitlements - "${ollama_helper_bundle}"
     else
-        log_warning "Ollama binary not found for signing"
+        log_warning "Ollama helper bundle not found for signing"
     fi
 
     # Sign the main app bundle
@@ -1256,7 +1396,7 @@ create_xcarchive() {
     mkdir -p "${ARCHIVE_PATH}/Products/Applications"
 
     log_step "Copying app bundle into archive..."
-    cp -R "${APP_BUNDLE}" "${ARCHIVE_PATH}/Products/Applications/${APP_NAME}.app"
+    ditto "${APP_BUNDLE}" "${ARCHIVE_PATH}/Products/Applications/${APP_NAME}.app"
     normalize_permissions "${ARCHIVE_PATH}"
 
     log_step "Writing archive metadata..."
@@ -1356,8 +1496,7 @@ create_dmg() {
 
     local volume_mount="/Volumes/${VOLUME_NAME}"
     if [ -d "${volume_mount}" ]; then
-        hdiutil detach "${volume_mount}" >/dev/null 2>&1 || true
-        sleep 1
+        detach_dmg_mount "${volume_mount}"
     fi
 
     local attach_output
@@ -1366,7 +1505,7 @@ create_dmg() {
     mount_dir="$(echo "${attach_output}" | awk 'END {print $3}')"
     if [ -n "${mount_dir}" ] && [ -d "${mount_dir}" ]; then
         if ! touch "${mount_dir}/.write_test" 2>/dev/null; then
-            hdiutil detach "${mount_dir}" >/dev/null 2>&1 || true
+            detach_dmg_mount "${mount_dir}"
             local shadow_file="${temp_dmg}.shadow"
             rm -f "${shadow_file}"
             attach_output="$(hdiutil attach -readwrite -owners on -noverify -noautoopen -shadow "${shadow_file}" "${temp_dmg}")"
@@ -1436,7 +1575,7 @@ EOF
         fi
 
         sync
-        hdiutil detach "${mount_dir}" >/dev/null 2>&1 || true
+        detach_dmg_mount "${mount_dir}"
     fi
 
     hdiutil convert "${temp_dmg}" -format UDZO -imagekey zlib-level=9 -o "${FINAL_DMG}"

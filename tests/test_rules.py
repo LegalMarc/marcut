@@ -10,7 +10,7 @@ import os
 from marcut.rules import (
     run_rules, EMAIL, PHONE, SSN, CURRENCY, DATE, URL, IPV4, ADDRESS,
     SIGNATURE_NAME, INDIVIDUAL_NAME, luhn_ok, COMPANY_SUFFIX, NUMBER_BRACKET,
-    _is_excluded, _is_generic_org_span, _is_excluded_combo
+    _is_excluded, _is_generic_org_span, _is_excluded_combo, _is_specific_org_span
 )
 
 
@@ -465,6 +465,25 @@ class TestCompanySuffixPattern:
         spans = run_rules(text)
         assert any(s['label'] == 'PHONE' and s['text'] == '4155551234' for s in spans)
 
+    def test_contract_party_orgs_trim_legal_prose(self):
+        text = (
+            "This Framework Agreement is made by and between Plant-A Insights Group LLC, "
+            "a limited liability company formed under the laws of Delaware, and TIME USA, LLC, "
+            "a Limited Liability Company formed under the laws of the State of Delaware."
+        )
+        orgs = [s for s in run_rules(text) if s["label"] == "ORG"]
+
+        assert any(s["text"] == "Plant-A Insights Group LLC" for s in orgs)
+        assert any(s["text"] == "TIME USA, LLC" for s in orgs)
+        assert not any("formed under" in s["text"] for s in orgs)
+
+    def test_all_caps_org_is_specific_even_with_excluded_tokens(self):
+        text = "Publisher means TIME USA, LLC."
+        orgs = [s for s in run_rules(text) if s["label"] == "ORG"]
+
+        assert any(s["text"] == "TIME USA, LLC" for s in orgs)
+        assert _is_specific_org_span("TIME USA, LLC") is True
+
 
 class TestRunRulesIntegration:
     """Integration tests for run_rules function."""
@@ -530,6 +549,29 @@ class TestExclusionHelpers:
         assert _is_generic_org_span("The Company") == True
         assert _is_generic_org_span("Certain Company") == True
         assert _is_generic_org_span("Sample 123 Company") == False
+        assert _is_generic_org_span("TIME USA, LLC") == False
+        assert _is_generic_org_span("Limited Liability Company") == True
+
+
+class TestDocIdPattern:
+    """Test document ID detection does not consume ordinary legal words."""
+
+    def test_plain_legal_words_are_not_docids(self):
+        for text in ("Agreement", "Framework Agreement", "agreements", "referred", "Projects"):
+            docids = [s for s in run_rules(text) if s["label"] == "DOCID"]
+            assert docids == []
+
+    def test_real_document_ids_still_match(self):
+        examples = [
+            "Agreement ID: ABCDE",
+            "AGR-12345",
+            "DOC:ABC123",
+            "DocuSign Envelope ID: 12345678-1234-1234-1234-123456789abc",
+            "12345678-1234-1234-1234-123456789abc",
+        ]
+
+        for text in examples:
+            assert any(s["label"] == "DOCID" for s in run_rules(text))
 
 
 class TestSentenceBoundary:

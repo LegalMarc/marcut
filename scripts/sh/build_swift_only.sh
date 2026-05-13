@@ -14,6 +14,8 @@ if [ ! -f "$CONFIG_FILE" ] && [ -f "$REPO_ROOT/config.json" ]; then
     CONFIG_FILE="$REPO_ROOT/config.json"
 elif [ ! -f "$CONFIG_FILE" ] && [ -f "$SCRIPT_DIR/config.json" ]; then
     CONFIG_FILE="$SCRIPT_DIR/config.json"
+elif [ ! -f "$CONFIG_FILE" ] && [ -f "$REPO_ROOT/build-scripts/config.example.json" ]; then
+    CONFIG_FILE="$REPO_ROOT/build-scripts/config.example.json"
 fi
 
 if [ ! -f "$CONFIG_FILE" ]; then

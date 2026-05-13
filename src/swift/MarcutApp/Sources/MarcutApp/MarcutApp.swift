@@ -4,6 +4,42 @@ import OSLog
 import Foundation
 import PythonKit
 
+func redactedLaunchArguments(_ args: [String]) -> [String] {
+    let pathValuedFlags: Set<String> = [
+        "--in", "--out", "--outdir", "--report", "--metadata-report",
+        "--metadata-settings-json", "--metadata-args", "--llama-gguf",
+        "--format-schema", "--log"
+    ]
+    var redacted: [String] = []
+    var redactNext = false
+
+    for arg in args {
+        if redactNext {
+            redacted.append("<redacted>")
+            redactNext = false
+            continue
+        }
+
+        if pathValuedFlags.contains(arg) {
+            redacted.append(arg)
+            redactNext = true
+            continue
+        }
+
+        if let separator = arg.firstIndex(of: "=") {
+            let key = String(arg[..<separator])
+            if pathValuedFlags.contains(key) {
+                redacted.append("\(key)=<redacted>")
+                continue
+            }
+        }
+
+        redacted.append(arg)
+    }
+
+    return redacted
+}
+
 // App Delegate for proper menu handling
 class AppDelegate: NSObject, NSApplicationDelegate {
     // Global Python runtime - initialized once at app launch
@@ -25,10 +61,13 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
         // Check for CLI mode early
         let args = ProcessInfo.processInfo.arguments
-        logStartupBanner(args: args)
-        print("Launch arguments: \(args)")
-        DebugLogger.shared.log("Launch arguments: \(args)", component: "AppDelegate")
-        LaunchDiagnostics.shared.mark(.activationStateChanged, extra: "args=\(args)")
+        let safeArgs = redactedLaunchArguments(args)
+        logStartupBanner(args: safeArgs)
+        if DebugPreferences.isEnabled() {
+            print("Launch arguments: \(safeArgs)")
+        }
+        DebugLogger.shared.log("Launch arguments: \(safeArgs)", component: "AppDelegate")
+        LaunchDiagnostics.shared.mark(.activationStateChanged, extra: "args=\(safeArgs)")
         registerActivationObservers()
         FileAccessCoordinator.shared.clearMetadataReportCache()
 
@@ -195,6 +234,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func logStartupBanner(args: [String]) {
+        guard DebugPreferences.isEnabled() else { return }
         let formatter = ISO8601DateFormatter()
         let timestamp = formatter.string(from: Date())
         let pid = getpid()

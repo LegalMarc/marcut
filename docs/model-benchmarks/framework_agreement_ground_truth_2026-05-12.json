@@ -1,0 +1,54 @@
+{
+  "document": "sample-files-marcut/Framework Agreement.docx",
+  "notes": "Manually created on 2026-05-12 from extracted DOCX text. One canonical occurrence per distinct entity text for compatibility with the fuzzy benchmark scorer.",
+  "expected_entities": [
+    {
+      "start": 130,
+      "end": 156,
+      "label": "ORG",
+      "text": "Plant-A Insights Group LLC"
+    },
+    {
+      "start": 242,
+      "end": 255,
+      "label": "ORG",
+      "text": "TIME USA, LLC"
+    },
+    {
+      "start": 52443,
+      "end": 52463,
+      "label": "ORG",
+      "text": "Plant-A Insights LLC"
+    },
+    {
+      "start": 43592,
+      "end": 43601,
+      "label": "ORG",
+      "text": "A.M. Best"
+    },
+    {
+      "start": 215,
+      "end": 223,
+      "label": "LOC",
+      "text": "Delaware"
+    },
+    {
+      "start": 36830,
+      "end": 36843,
+      "label": "LOC",
+      "text": "United States"
+    },
+    {
+      "start": 47090,
+      "end": 47098,
+      "label": "LOC",
+      "text": "New York"
+    },
+    {
+      "start": 47449,
+      "end": 47461,
+      "label": "LOC",
+      "text": "Kings County"
+    }
+  ]
+}
