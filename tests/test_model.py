@@ -6,6 +6,7 @@ These tests focus on pure functions that don't require an actual LLM.
 
 import pytest
 import json
+import marcut.llm_timing as llm_timing_module
 import marcut.model as model_module
 from marcut.model import (
     parse_llm_response, _map_label, _valid_candidate, _find_entity_spans,
@@ -260,6 +261,31 @@ class TestGetOllamaBaseUrl:
 
 class TestOllamaDiagnostics:
     """Test LLM diagnostics avoid persisting document-derived text."""
+
+    def test_timing_path_uses_production_context_and_prediction_budget(self, monkeypatch):
+        captured = {}
+
+        class MockResponse:
+            def raise_for_status(self):
+                return None
+
+            def json(self):
+                return {"response": '{"entities": []}'}
+
+        def fake_post(*args, **kwargs):
+            captured.update(kwargs)
+            return MockResponse()
+
+        monkeypatch.delenv("OLLAMA_HOST", raising=False)
+        monkeypatch.delenv("MARCUT_OLLAMA_REQUEST_TIMEOUT", raising=False)
+        monkeypatch.delenv("MARCUT_OLLAMA_NUM_PREDICT", raising=False)
+        monkeypatch.setattr(llm_timing_module.requests, "post", fake_post)
+
+        spans, _timing = llm_timing_module.ollama_extract_with_timing("mock-model", "Document text")
+        assert spans == []
+        assert captured["timeout"] == 300.0
+        assert captured["json"]["options"]["num_ctx"] == 12288
+        assert captured["json"]["options"]["num_predict"] == 2048
 
     def test_request_timeout_and_prediction_limit_are_bounded_by_default(self, monkeypatch):
         captured = {}
