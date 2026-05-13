@@ -10,7 +10,7 @@ exclude = ["runs*", "packaging*", "enhanced_batch_output*", "demo-output*", "hyb
 
 [project]
 name = "marcut"
-version = "0.2.2"
+version = "0.5.96"
 description = "Local-first DOCX redaction"
 requires-python = ">=3.9"
 dependencies = [
