@@ -1180,11 +1180,15 @@ EOF
     fi
 
     if [ -x "${APP_BUNDLE}/Contents/Resources/python3_embed" ]; then
-        codesign --force --sign "${DEVELOPER_ID}" \
-            --entitlements "${OLLAMA_ENTITLEMENTS}" \
-            --options runtime \
-            --timestamp \
-            "${APP_BUNDLE}/Contents/Resources/python3_embed"
+        if [[ "${DEVELOPER_ID}" == "3rd Party Mac Developer Application"* || "${DEVELOPER_ID}" == "Apple Distribution"* ]]; then
+            codesign --force --sign "${DEVELOPER_ID}" \
+                --entitlements "${OLLAMA_ENTITLEMENTS}" \
+                --options runtime \
+                --timestamp \
+                "${APP_BUNDLE}/Contents/Resources/python3_embed"
+        else
+            sign_with_id "${APP_BUNDLE}/Contents/Resources/python3_embed"
+        fi
     fi
 
     # Copy additional resources
