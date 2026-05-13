@@ -141,7 +141,7 @@ jobs:
           p=Path(sys.argv[1]); d=Document(); d.add_paragraph('Email: alice@example.com URL: https://legal.example')
           d.save(p); print('ok')
           PY
-          /bin/bash "$PY" -m marcut.cli redact --in "$INP" --out "$OUTDOC" --report "$OUTJSON" --backend ollama --model llama3.2:1b --enhanced
+          /bin/bash "$PY" -m marcut.cli redact --in "$INP" --out "$OUTDOC" --report "$OUTJSON" --backend ollama --model llama3.2:1b
           test -f "$OUTDOC" && test -f "$OUTJSON"
           hdiutil detach "$MNT"
 
@@ -164,7 +164,7 @@ jobs:
           p=Path(sys.argv[1]); d=Document(); d.add_paragraph('Contact: bob@example.com URL: https://contracts.example')
           d.save(p); print('ok')
           PY
-          /bin/bash "$PY" -m marcut.cli redact --in "$INP" --out "$OUTDOC" --report "$OUTJSON" --backend ollama --model llama3.2:1b --enhanced
+          /bin/bash "$PY" -m marcut.cli redact --in "$INP" --out "$OUTDOC" --report "$OUTJSON" --backend ollama --model llama3.2:1b
           test -f "$OUTDOC" && test -f "$OUTJSON"
           hdiutil detach "$MNT"
 
