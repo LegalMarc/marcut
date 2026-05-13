@@ -1180,7 +1180,11 @@ EOF
     fi
 
     if [ -x "${APP_BUNDLE}/Contents/Resources/python3_embed" ]; then
-        sign_with_id "${APP_BUNDLE}/Contents/Resources/python3_embed"
+        codesign --force --sign "${DEVELOPER_ID}" \
+            --entitlements "${OLLAMA_ENTITLEMENTS}" \
+            --options runtime \
+            --timestamp \
+            "${APP_BUNDLE}/Contents/Resources/python3_embed"
     fi
 
     # Copy additional resources
