@@ -1,0 +1,91 @@
+{
+  "document": "sample-files-marcut/Framework Agreement.docx",
+  "prompt": null,
+  "ground_truth_count": 0,
+  "results": [
+    {
+      "model": "gemma4:e2b",
+      "path": "gemma4:e2b",
+      "is_gguf": false,
+      "avg_time": 15.450227374967653,
+      "min_time": 15.450227374967653,
+      "max_time": 15.450227374967653,
+      "entities_found": 3,
+      "precision": 0,
+      "recall": 0,
+      "f1": 0,
+      "prompt_tokens": 10705,
+      "output_tokens": 76
+    },
+    {
+      "model": "phi4-mini:3.8b",
+      "path": "phi4-mini:3.8b",
+      "is_gguf": false,
+      "avg_time": 20.58654650003882,
+      "min_time": 20.58654650003882,
+      "max_time": 20.58654650003882,
+      "entities_found": 0,
+      "precision": 0,
+      "recall": 0,
+      "f1": 0,
+      "prompt_tokens": 10403,
+      "output_tokens": 49
+    },
+    {
+      "model": "qwen3.5:2b-q4_K_M",
+      "path": "qwen3.5:2b-q4_K_M",
+      "is_gguf": false,
+      "avg_time": 8.926234458980616,
+      "min_time": 8.926234458980616,
+      "max_time": 8.926234458980616,
+      "entities_found": 3,
+      "precision": 0,
+      "recall": 0,
+      "f1": 0,
+      "prompt_tokens": 10617,
+      "output_tokens": 36
+    },
+    {
+      "model": "llama3.2:3b",
+      "path": "llama3.2:3b",
+      "is_gguf": false,
+      "avg_time": 13.494138625042979,
+      "min_time": 13.494138625042979,
+      "max_time": 13.494138625042979,
+      "entities_found": 3,
+      "precision": 0,
+      "recall": 0,
+      "f1": 0,
+      "prompt_tokens": 10485,
+      "output_tokens": 49
+    },
+    {
+      "model": "llama3.2:1b",
+      "path": "llama3.2:1b",
+      "is_gguf": false,
+      "avg_time": 6.065633750054985,
+      "min_time": 6.065633750054985,
+      "max_time": 6.065633750054985,
+      "entities_found": 3,
+      "precision": 0,
+      "recall": 0,
+      "f1": 0,
+      "prompt_tokens": 10485,
+      "output_tokens": 66
+    },
+    {
+      "model": "qwen3.5:9b",
+      "path": "qwen3.5:9b",
+      "is_gguf": false,
+      "avg_time": 132.58969466597773,
+      "min_time": 132.58969466597773,
+      "max_time": 132.58969466597773,
+      "entities_found": 0,
+      "precision": 0,
+      "recall": 0,
+      "f1": 0,
+      "prompt_tokens": 10617,
+      "output_tokens": 2048
+    }
+  ]
+}
