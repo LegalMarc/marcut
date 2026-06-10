@@ -4,7 +4,7 @@
 
 Marcut is a native macOS application for legal and professional document redaction. It combines a deterministic rules engine with optional local AI (Ollama) to identify and redact sensitive information (PII) from Microsoft Word (.docx) documents, producing "Track Changes" redlines plus JSON audit and scrub reports.
 
-![License](https://img.shields.io/github/license/marclaw/marcut)
+![License](https://img.shields.io/github/license/LegalMarc/marcut)
 ![Python](https://img.shields.io/badge/python-3.11%2B-blue.svg)
 ![Build](https://img.shields.io/badge/build-passing-brightgreen.svg)
 
