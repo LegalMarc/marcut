@@ -287,7 +287,7 @@ Canonical entrypoint for humans: `build_tui.py`.
 ### Signing + Notarization
 - **Deep signing**: Python.framework, python_site extensions, and Ollama binary.
 - **Entitlements**: App Sandbox, local network (Ollama), user-selected file access.
-- **DMG notarization**: Optional for direct distribution builds.
+- **DMG notarization**: Mandatory for public direct distribution builds; local/test skips require the explicit `MARCUT_ALLOW_NOTARIZATION_SKIP=1` override and are not releasable artifacts.
 
 ---
 
