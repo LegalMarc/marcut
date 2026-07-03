@@ -471,6 +471,27 @@ struct ContentView: View {
                 dismissButton: .default(Text("OK"))
             )
         }
+        .alert(
+            "Resume pending documents?",
+            isPresented: Binding(
+                get: { viewModel.pendingResumeRecord != nil },
+                set: { isPresented in
+                    if !isPresented {
+                        viewModel.discardPendingJob()
+                    }
+                }
+            ),
+            presenting: viewModel.pendingResumeRecord
+        ) { _ in
+            Button("Discard", role: .cancel) {
+                viewModel.discardPendingJob()
+            }
+            Button("Resume") {
+                viewModel.resumePendingJob()
+            }
+        } message: { record in
+            Text("Resume \(record.documentPaths.count) pending document(s) from your last session?")
+        }
     }
     
     // MARK: - Drop Zone

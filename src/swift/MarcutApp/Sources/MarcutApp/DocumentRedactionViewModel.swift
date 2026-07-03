@@ -82,6 +82,25 @@ final class DocumentRedactionViewModel: ObservableObject {
     /// `processAllDocuments` run — estimates never persist across runs or app launches.
     @Published var batchETA: TimeInterval? = nil
 
+    /// A pending-job record recovered from a previous session (crash or quit mid-batch), or `nil`
+    /// once there's nothing to offer. Set at launch from `PendingBatchJobStore`; the UI observes
+    /// this to show the "Resume N pending document(s)?" prompt. Cleared by `resumePendingJob()`
+    /// or `discardPendingJob()`.
+    @Published var pendingResumeRecord: PendingBatchJobRecord? = nil
+
+    /// Guards against re-persisting the same empty/non-empty state repeatedly from `updateState()`.
+    private var lastPersistedPendingPaths: [String] = []
+
+    /// Set by `resumePendingJob()` and left set until the *next* state-changing event, so the
+    /// alert's `isPresented` binding setter — which SwiftUI invokes with `false` right after the
+    /// "Resume" button action returns, as a separate call once the alert finishes dismissing —
+    /// knows that dismissal is just an echo of the resume, not an explicit Discard. Without this,
+    /// `discardPendingJob()` would wipe the record `resumePendingJob()` just re-persisted, leaving
+    /// nothing on disk to recover if the app quits before the next state change. A plain
+    /// "in-flight" flag cleared when `resumePendingJob()` returns does NOT work here: SwiftUI's
+    /// setter call happens strictly after `resumePendingJob()` has already returned.
+    private var didJustResumePendingJob = false
+
     // MARK: - Initialization & Cleanup
     private var pythonInitObservers: [NSObjectProtocol] = []
 
@@ -137,6 +156,8 @@ final class DocumentRedactionViewModel: ObservableObject {
 
         pythonBridge.updateRuleFilter(settings.enabledRules)
         AppDelegate.pythonRunner?.updateRuleFilter(settings.enabledRules)
+
+        pendingResumeRecord = PendingBatchJobStore.load()
     }
 
     deinit {
@@ -1430,8 +1451,68 @@ final class DocumentRedactionViewModel: ObservableObject {
         let hasPendingRedaction = items.contains { needsRedaction($0) }
         hasFinishedProcessing = hasCompletedDocuments && !hasProcessingDocuments && !hasPendingDocuments && !hasPendingRedaction
         ProcessingState.isProcessing = hasProcessingDocuments
+
+        persistPendingBatchJobIfNeeded()
     }
-    
+
+    /// Documents that are still queued (`.validDocument`) or were mid-processing
+    /// (`status.isProcessing`) when the record is saved. A document that quits mid-processing
+    /// resumes as `.pending`, not wherever it left off — see issue #19 "Out of scope".
+    private var pendingBatchJobPaths: [String] {
+        items
+            .filter { $0.status == .validDocument || $0.status.isProcessing }
+            .map { $0.url.path }
+    }
+
+    /// Persists the current pending/in-progress document set whenever it changes, or clears the
+    /// persisted record once nothing is pending. Called from every `updateState()` pass so it
+    /// stays in sync with adds/removes/status transitions without needing to hook every call site.
+    private func persistPendingBatchJobIfNeeded() {
+        let paths = pendingBatchJobPaths
+        guard paths != lastPersistedPendingPaths else { return }
+        lastPersistedPendingPaths = paths
+
+        if paths.isEmpty {
+            PendingBatchJobStore.save(nil)
+        } else {
+            PendingBatchJobStore.save(PendingBatchJobRecord(documentPaths: paths, settings: settings))
+        }
+    }
+
+    /// Repopulates the document list from a previously persisted pending-job record, in
+    /// `.pending` (`.validDocument`) state. Does not auto-start processing — the user still
+    /// presses the normal "Redact Documents" action. Restores the settings that were active for
+    /// the persisted run.
+    func resumePendingJob() {
+        guard let record = pendingResumeRecord else { return }
+        pendingResumeRecord = nil
+        didJustResumePendingJob = true
+
+        settings = record.settings
+        pythonBridge.updateRuleFilter(settings.enabledRules)
+        AppDelegate.pythonRunner?.updateRuleFilter(settings.enabledRules)
+
+        let urls = record.documentPaths.map { URL(fileURLWithPath: $0) }
+        add(urls: urls)
+    }
+
+    /// Dismisses the resume prompt without repopulating the document list, clearing the
+    /// persisted record so it doesn't reappear on the next launch.
+    ///
+    /// No-op immediately after `resumePendingJob()`: SwiftUI writes `isPresented = false` back
+    /// through the alert's binding as a separate call once the "Resume" button action returns and
+    /// the alert finishes dismissing, which would otherwise call this and immediately wipe the
+    /// record `resumePendingJob()` just re-persisted (see `didJustResumePendingJob`). That echo
+    /// call is consumed here (flag reset) so a *later*, genuine Discard still clears the record.
+    func discardPendingJob() {
+        if didJustResumePendingJob {
+            didJustResumePendingJob = false
+            return
+        }
+        pendingResumeRecord = nil
+        PendingBatchJobStore.save(nil)
+    }
+
     func clearAllDocuments() {
         stopProcessing()
         for item in items {

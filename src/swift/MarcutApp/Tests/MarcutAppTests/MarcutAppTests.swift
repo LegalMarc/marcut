@@ -890,6 +890,144 @@ final class MarcutAppTests: XCTestCase {
         XCTAssertFalse(ExcludedWordMatcher.match("John Smith", entries: entries).matched)
         XCTAssertFalse(ExcludedWordMatcher.match("Acme Corp", entries: entries).matched)
     }
+
+    // MARK: - Pending Batch Job Persistence Tests
+
+    private func makePendingBatchJobTestDefaults() -> UserDefaults {
+        let suiteName = "com.marclaw.marcutapp.tests.pendingBatchJob.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defaults.removePersistentDomain(forName: suiteName)
+        return defaults
+    }
+
+    func testPendingBatchJobRecordRoundTripPreservesValues() throws {
+        let defaults = makePendingBatchJobTestDefaults()
+        var settings = RedactionSettings()
+        settings.model = "mistral:7b"
+        settings.enabledRules = [.email, .phone]
+        let record = PendingBatchJobRecord(
+            documentPaths: ["/Users/test/a.docx", "/Users/test/b.docx"],
+            settings: settings
+        )
+
+        PendingBatchJobStore.save(record, defaults: defaults)
+        let loaded = PendingBatchJobStore.load(defaults: defaults)
+
+        XCTAssertEqual(loaded?.documentPaths, record.documentPaths)
+        XCTAssertEqual(loaded?.settings, record.settings)
+        XCTAssertEqual(loaded?.schemaVersion, PendingBatchJobRecord.currentSchemaVersion)
+    }
+
+    func testPendingBatchJobStoreSaveNilClearsRecord() throws {
+        let defaults = makePendingBatchJobTestDefaults()
+        let record = PendingBatchJobRecord(documentPaths: ["/Users/test/a.docx"], settings: RedactionSettings())
+        PendingBatchJobStore.save(record, defaults: defaults)
+        XCTAssertNotNil(PendingBatchJobStore.load(defaults: defaults))
+
+        PendingBatchJobStore.save(nil, defaults: defaults)
+        XCTAssertNil(PendingBatchJobStore.load(defaults: defaults))
+    }
+
+    func testPendingBatchJobStoreDiscardsMalformedRecordWithoutCrashing() throws {
+        let defaults = makePendingBatchJobTestDefaults()
+        defaults.set(Data("{ this is not valid json".utf8), forKey: PendingBatchJobStore.defaultsKey)
+
+        XCTAssertNil(PendingBatchJobStore.load(defaults: defaults))
+        // The unreadable record should also be cleared so it doesn't keep failing to load.
+        XCTAssertNil(defaults.data(forKey: PendingBatchJobStore.defaultsKey))
+    }
+
+    func testPendingBatchJobStoreDiscardsUnsupportedSchemaVersionWithoutCrashing() throws {
+        let defaults = makePendingBatchJobTestDefaults()
+        var record = PendingBatchJobRecord(documentPaths: ["/Users/test/a.docx"], settings: RedactionSettings())
+        record.schemaVersion = PendingBatchJobRecord.currentSchemaVersion + 1
+        let data = try JSONEncoder().encode(record)
+        defaults.set(data, forKey: PendingBatchJobStore.defaultsKey)
+
+        XCTAssertNil(PendingBatchJobStore.load(defaults: defaults))
+        XCTAssertNil(defaults.data(forKey: PendingBatchJobStore.defaultsKey))
+    }
+
+    func testPendingBatchJobStoreDiscardsEmptyPathsRecord() throws {
+        let defaults = makePendingBatchJobTestDefaults()
+        let record = PendingBatchJobRecord(documentPaths: [], settings: RedactionSettings())
+        PendingBatchJobStore.save(record, defaults: defaults)
+
+        XCTAssertNil(PendingBatchJobStore.load(defaults: defaults))
+    }
+
+    // MARK: - Resume/Discard Flow Tests (issue #19 regression)
+    //
+    // `DocumentRedactionViewModel` persists pending-batch state via `PendingBatchJobStore`'s
+    // `.standard`-defaulted parameter with no injection seam, so these tests exercise the real
+    // `UserDefaults.standard` under `PendingBatchJobStore.defaultsKey`. Save/restore whatever was
+    // already there so the tests don't leak state into other tests or a developer's machine.
+
+    private func withPreservedStandardPendingBatchJobRecord(_ body: () throws -> Void) rethrows {
+        let existing = UserDefaults.standard.data(forKey: PendingBatchJobStore.defaultsKey)
+        defer {
+            if let existing {
+                UserDefaults.standard.set(existing, forKey: PendingBatchJobStore.defaultsKey)
+            } else {
+                UserDefaults.standard.removeObject(forKey: PendingBatchJobStore.defaultsKey)
+            }
+        }
+        try body()
+    }
+
+    /// Regression test for issue #19: choosing "Resume" must not wipe the persisted record.
+    ///
+    /// SwiftUI writes `isPresented = false` back through the alert's binding right after the
+    /// "Resume" button action runs, which calls the binding setter's `discardPendingJob()`. Before
+    /// the fix, that call unconditionally cleared the record `resumePendingJob()` had just
+    /// re-persisted, so a crash right after Resume would lose the resumed documents.
+    func testResumePendingJobSurvivesSubsequentDiscardCallFromBindingDismissal() throws {
+        try withPreservedStandardPendingBatchJobRecord {
+            let record = PendingBatchJobRecord(
+                documentPaths: ["/Users/test/a.docx", "/Users/test/b.docx"],
+                settings: RedactionSettings()
+            )
+            PendingBatchJobStore.save(record)
+
+            let viewModel = createTestViewModel()
+            viewModel.pendingResumeRecord = record
+
+            viewModel.resumePendingJob()
+            XCTAssertNil(viewModel.pendingResumeRecord)
+
+            // Simulates SwiftUI writing `isPresented = false` back through the alert's binding
+            // immediately after the "Resume" button action completes.
+            viewModel.discardPendingJob()
+
+            let persisted = PendingBatchJobStore.load()
+            XCTAssertNotNil(persisted, "Resume must not be undone by the alert's post-dismissal discard")
+            XCTAssertEqual(persisted?.documentPaths, record.documentPaths)
+
+            // The echo call must only be consumed once: a later, genuine Discard (e.g. from a
+            // subsequent resume-prompt cycle) must still clear the record.
+            viewModel.discardPendingJob()
+            XCTAssertNil(PendingBatchJobStore.load(), "A later explicit discard must still clear the record")
+        }
+    }
+
+    /// Companion to the above: the "Discard" button path must still clear the record.
+    func testDiscardPendingJobClearsRecordWhenNotResuming() throws {
+        try withPreservedStandardPendingBatchJobRecord {
+            let record = PendingBatchJobRecord(
+                documentPaths: ["/Users/test/a.docx"],
+                settings: RedactionSettings()
+            )
+            PendingBatchJobStore.save(record)
+
+            let viewModel = createTestViewModel()
+            viewModel.pendingResumeRecord = record
+
+            viewModel.discardPendingJob()
+
+            XCTAssertNil(viewModel.pendingResumeRecord)
+            XCTAssertNil(PendingBatchJobStore.load())
+        }
+    }
 }
 
 // MARK: - Test Extensions
