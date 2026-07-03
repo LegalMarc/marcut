@@ -227,6 +227,8 @@ Text is extracted from:
 ### Redaction Tags and Track Changes
 
 - Redactions are applied as track changes so you can accept or reject each change. The default DOCX is a review artifact, not a destructively sanitized final-share file.
+- Use **Send Final Redacted Copy** when you are ready to share a finalized document. Marcut creates a separate copy, accepts the redaction Track Changes in that copy, and runs maximum-privacy metadata scrubbing before opening the share sheet.
+- Use **Send Review Copy** only when you intentionally want to share the Track Changes proposal and preserve review metadata for the recipient.
 - Redaction tags appear as inserted text in red (for example `[NAME_1]`).
 - Original content appears as deletions.
 - Possessives are preserved (`[NAME_1]'s`).
@@ -1084,6 +1086,7 @@ Sandboxed builds resolve these inside the app container; use Reveal buttons in S
 - Model downloads require network access.
 - Inference uses a local Ollama server bound to `127.0.0.1` only.
 - `OLLAMA_HOST` and `MARCUT_OLLAMA_HOST` are sanitized to loopback; only the port may vary.
+- Public app runs ignore legacy remote-host overrides. Source developers can opt into remote Ollama only with `MARCUT_DEVELOPER_UNSAFE_ALLOW_REMOTE_OLLAMA=1`; do not use that unsafe mode with confidential documents.
 
 ### Metadata Reduction and Hardening
 
