@@ -26,8 +26,6 @@ final class DocumentRedactionViewModel: ObservableObject {
         }
         return relevant.map { String($0).lowercased() }.joined(separator: "/")
     }
-    private static let advancedModeKey = "MarcutApp.AdvancedModeEnabled"
-    private static let advancedAIModeKey = "MarcutApp.AdvancedAIMode"
 
     static func finalRedactedCopyURL(
         for sourceURL: URL,
@@ -55,9 +53,6 @@ final class DocumentRedactionViewModel: ObservableObject {
             ofItemAtPath: url.path
         )
     }
-    private static let advancedConfidenceKey = "MarcutApp.AdvancedLLMConfidence"
-    private static let advancedConfidenceMigrationKey = "MarcutApp.AdvancedLLMConfidenceMigratedTo99"
-    private static let outputSaveLocationKey = "MarcutApp.OutputSaveLocationPreference"
     @Published var items: [DocumentItem] = []
     @Published var hasDocuments: Bool = false
     @Published var hasValidDocuments: Bool = false
@@ -194,8 +189,6 @@ final class DocumentRedactionViewModel: ObservableObject {
     private var batchETASamples: [BatchETASample] = []
     private let heartbeatTimeout: TimeInterval = 30.0
     // Note: retryCounts was removed along with retry logic - heartbeat stalls now immediately fail
-    private let firstRunCompletedKey = "MarcutApp.hasCompletedFirstRun"
-    private let metadataScrubUsedKey = "MarcutApp.hasUsedMetadataScrub"
     private var hasPrefetchedModels = false
 
     enum FirstRunEntryPoint {
@@ -206,19 +199,19 @@ final class DocumentRedactionViewModel: ObservableObject {
     @Published var firstRunEntryPoint: FirstRunEntryPoint = .onboarding
 
     var hasCompletedFirstRun: Bool {
-        UserDefaults.standard.bool(forKey: firstRunCompletedKey)
+        UserDefaults.standard.bool(forKey: DefaultsKey.hasCompletedFirstRun.key)
     }
 
     func markFirstRunComplete() {
-        UserDefaults.standard.set(true, forKey: firstRunCompletedKey)
+        UserDefaults.standard.set(true, forKey: DefaultsKey.hasCompletedFirstRun.key)
     }
 
     var hasUsedMetadataScrub: Bool {
-        UserDefaults.standard.bool(forKey: metadataScrubUsedKey)
+        UserDefaults.standard.bool(forKey: DefaultsKey.hasUsedMetadataScrub.key)
     }
 
     private func markMetadataScrubUsed() {
-        UserDefaults.standard.set(true, forKey: metadataScrubUsedKey)
+        UserDefaults.standard.set(true, forKey: DefaultsKey.hasUsedMetadataScrub.key)
     }
     
     // MARK: - Document Management
@@ -666,7 +659,7 @@ final class DocumentRedactionViewModel: ObservableObject {
 
     var outputSaveLocationPreference: OutputSaveLocation {
         let defaults = UserDefaults.standard
-        let rawValue = defaults.object(forKey: Self.outputSaveLocationKey) as? Int ?? OutputSaveLocation.alwaysAsk.rawValue
+        let rawValue = defaults.object(forKey: DefaultsKey.outputSaveLocationPreference.key) as? Int ?? OutputSaveLocation.alwaysAsk.rawValue
         return OutputSaveLocation(rawValue: rawValue) ?? .alwaysAsk
     }
 
@@ -1052,9 +1045,9 @@ final class DocumentRedactionViewModel: ObservableObject {
 
     private func logAdvancedSettingsSnapshot(useEnhanced: Bool, modelName: String, backend: String) {
         let defaults = UserDefaults.standard
-        let advancedEnabled = defaults.bool(forKey: Self.advancedModeKey)
-        let advancedModeRaw = defaults.string(forKey: Self.advancedAIModeKey) ?? "unknown"
-        let advancedConfidence = defaults.integer(forKey: Self.advancedConfidenceKey)
+        let advancedEnabled = defaults.bool(forKey: DefaultsKey.advancedModeEnabled.key)
+        let advancedModeRaw = defaults.string(forKey: DefaultsKey.advancedAIMode.key) ?? "unknown"
+        let advancedConfidence = defaults.integer(forKey: DefaultsKey.advancedLLMConfidence.key)
         let timeoutSeconds = settings.processingTimeoutSeconds
         let timeoutLabel = timeoutSeconds <= 0 || timeoutSeconds == Int.max ? "no_limit" : "\(timeoutSeconds)s"
         DebugLogger.shared.log(
@@ -1065,9 +1058,9 @@ final class DocumentRedactionViewModel: ObservableObject {
 
     private func applyAdvancedSettingsEnvironment() {
         let defaults = UserDefaults.standard
-        let advancedEnabled = defaults.bool(forKey: Self.advancedModeKey)
-        let advancedModeRaw = defaults.string(forKey: Self.advancedAIModeKey) ?? RedactionMode.rulesOverride.rawValue
-        let advancedConfidence = defaults.integer(forKey: Self.advancedConfidenceKey)
+        let advancedEnabled = defaults.bool(forKey: DefaultsKey.advancedModeEnabled.key)
+        let advancedModeRaw = defaults.string(forKey: DefaultsKey.advancedAIMode.key) ?? RedactionMode.rulesOverride.rawValue
+        let advancedConfidence = defaults.integer(forKey: DefaultsKey.advancedLLMConfidence.key)
         setenv("MARCUT_ADVANCED_MODE_ENABLED", advancedEnabled ? "1" : "0", 1)
         setenv("MARCUT_ADVANCED_AI_MODE", advancedModeRaw, 1)
         setenv("MARCUT_ADVANCED_CONFIDENCE", "\(advancedConfidence)", 1)
@@ -1988,29 +1981,29 @@ final class DocumentRedactionViewModel: ObservableObject {
 
     private func applyAdvancedModeDefaultsIfNeeded() {
         let defaults = UserDefaults.standard
-        if defaults.object(forKey: Self.advancedModeKey) == nil {
-            defaults.set(hasCompletedFirstRun, forKey: Self.advancedModeKey)
+        if defaults.object(forKey: DefaultsKey.advancedModeEnabled.key) == nil {
+            defaults.set(hasCompletedFirstRun, forKey: DefaultsKey.advancedModeEnabled.key)
         }
-        if defaults.object(forKey: Self.advancedAIModeKey) == nil {
+        if defaults.object(forKey: DefaultsKey.advancedAIMode.key) == nil {
             let seedMode = settings.mode.usesLLM ? settings.mode : .rulesOverride
-            defaults.set(seedMode.rawValue, forKey: Self.advancedAIModeKey)
+            defaults.set(seedMode.rawValue, forKey: DefaultsKey.advancedAIMode.key)
         }
-        if defaults.object(forKey: Self.advancedConfidenceKey) == nil {
-            defaults.set(settings.llmConfidenceThreshold, forKey: Self.advancedConfidenceKey)
+        if defaults.object(forKey: DefaultsKey.advancedLLMConfidence.key) == nil {
+            defaults.set(settings.llmConfidenceThreshold, forKey: DefaultsKey.advancedLLMConfidence.key)
         }
-        if defaults.object(forKey: Self.advancedConfidenceMigrationKey) == nil {
-            if let storedConfidence = defaults.object(forKey: Self.advancedConfidenceKey) as? NSNumber,
+        if defaults.object(forKey: DefaultsKey.advancedLLMConfidenceMigratedTo99.key) == nil {
+            if let storedConfidence = defaults.object(forKey: DefaultsKey.advancedLLMConfidence.key) as? NSNumber,
                storedConfidence.intValue == 95 {
-                defaults.set(RedactionSettings.standardNormalModeConfidence, forKey: Self.advancedConfidenceKey)
+                defaults.set(RedactionSettings.standardNormalModeConfidence, forKey: DefaultsKey.advancedLLMConfidence.key)
             }
-            defaults.set(true, forKey: Self.advancedConfidenceMigrationKey)
+            defaults.set(true, forKey: DefaultsKey.advancedLLMConfidenceMigratedTo99.key)
         }
 
-        let advancedEnabled = defaults.bool(forKey: Self.advancedModeKey)
-        let storedModeRaw = defaults.string(forKey: Self.advancedAIModeKey) ?? RedactionMode.rulesOverride.rawValue
+        let advancedEnabled = defaults.bool(forKey: DefaultsKey.advancedModeEnabled.key)
+        let storedModeRaw = defaults.string(forKey: DefaultsKey.advancedAIMode.key) ?? RedactionMode.rulesOverride.rawValue
         let storedMode = RedactionMode(rawValue: storedModeRaw) ?? .rulesOverride
         let normalizedMode = storedMode == .rules ? .rulesOverride : storedMode
-        let storedConfidence = defaults.integer(forKey: Self.advancedConfidenceKey)
+        let storedConfidence = defaults.integer(forKey: DefaultsKey.advancedLLMConfidence.key)
         let resolvedConfidence = storedConfidence
 
         if advancedEnabled {

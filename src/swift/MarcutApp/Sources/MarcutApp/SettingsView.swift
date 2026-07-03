@@ -55,19 +55,12 @@ struct SettingsView: View {
     @State private var downloadsAccessError: String?
     @State private var profileErrorMessage: String?
     @State private var profileImportSucceeded = false
-    private static let advancedModeKey = "MarcutApp.AdvancedModeEnabled"
-    private static let advancedAIModeKey = "MarcutApp.AdvancedAIMode"
-    private static let advancedConfidenceKey = "MarcutApp.AdvancedLLMConfidence"
-    private static let advancedConfidenceMigrationKey = "MarcutApp.AdvancedLLMConfidenceMigratedTo99"
-    private static let outputSaveLocationKey = "MarcutApp.OutputSaveLocationPreference"
-    private static let legacyMetadataReportAlwaysSaveKey = "MarcutApp.MetadataReportAlwaysSaveToDownloads"
-    private static let unsavedReportQuitBehaviorKey = "MarcutApp.UnsavedReportQuitBehavior"
-    @AppStorage(Self.advancedModeKey) private var isAdvancedModeEnabled = true
-    @AppStorage(Self.advancedAIModeKey) private var advancedAIModeRaw = RedactionMode.rulesOverride.rawValue
-    @AppStorage(Self.advancedConfidenceKey) private var advancedLlmConfidence = RedactionSettings.standardNormalModeConfidence
-    @AppStorage(Self.outputSaveLocationKey) private var outputSaveLocationRaw = OutputSaveLocation.alwaysAsk.rawValue
-    @AppStorage(Self.unsavedReportQuitBehaviorKey) private var unsavedReportQuitBehaviorRaw = UnsavedReportQuitBehavior.warn.rawValue
-    @AppStorage("AppTheme") private var appThemeRaw = AppTheme.system.rawValue
+    @AppStorage(DefaultsKey.advancedModeEnabled.key) private var isAdvancedModeEnabled = true
+    @AppStorage(DefaultsKey.advancedAIMode.key) private var advancedAIModeRaw = RedactionMode.rulesOverride.rawValue
+    @AppStorage(DefaultsKey.advancedLLMConfidence.key) private var advancedLlmConfidence = RedactionSettings.standardNormalModeConfidence
+    @AppStorage(DefaultsKey.outputSaveLocationPreference.key) private var outputSaveLocationRaw = OutputSaveLocation.alwaysAsk.rawValue
+    @AppStorage(DefaultsKey.unsavedReportQuitBehavior.key) private var unsavedReportQuitBehaviorRaw = UnsavedReportQuitBehavior.warn.rawValue
+    @AppStorage(DefaultsKey.appTheme.key) private var appThemeRaw = AppTheme.system.rawValue
     @ObservedObject private var permissionManager = PermissionManager.shared
     private let overridesManager = UserOverridesManager.shared
 
@@ -173,40 +166,40 @@ struct SettingsView: View {
             initialSettings.model = first
         }
         let defaults = UserDefaults.standard
-        if defaults.object(forKey: Self.advancedModeKey) == nil {
-            defaults.set(viewModel.hasCompletedFirstRun, forKey: Self.advancedModeKey)
+        if defaults.object(forKey: DefaultsKey.advancedModeEnabled.key) == nil {
+            defaults.set(viewModel.hasCompletedFirstRun, forKey: DefaultsKey.advancedModeEnabled.key)
         }
-        if defaults.object(forKey: Self.advancedAIModeKey) == nil {
+        if defaults.object(forKey: DefaultsKey.advancedAIMode.key) == nil {
             let seedMode = initialSettings.mode.usesLLM ? initialSettings.mode : .rulesOverride
-            defaults.set(seedMode.rawValue, forKey: Self.advancedAIModeKey)
+            defaults.set(seedMode.rawValue, forKey: DefaultsKey.advancedAIMode.key)
         }
-        if defaults.object(forKey: Self.advancedConfidenceKey) == nil {
-            defaults.set(initialSettings.llmConfidenceThreshold, forKey: Self.advancedConfidenceKey)
+        if defaults.object(forKey: DefaultsKey.advancedLLMConfidence.key) == nil {
+            defaults.set(initialSettings.llmConfidenceThreshold, forKey: DefaultsKey.advancedLLMConfidence.key)
         }
-        if defaults.object(forKey: Self.advancedConfidenceMigrationKey) == nil {
-            if let storedConfidence = defaults.object(forKey: Self.advancedConfidenceKey) as? NSNumber,
+        if defaults.object(forKey: DefaultsKey.advancedLLMConfidenceMigratedTo99.key) == nil {
+            if let storedConfidence = defaults.object(forKey: DefaultsKey.advancedLLMConfidence.key) as? NSNumber,
                storedConfidence.intValue == 95 {
-                defaults.set(RedactionSettings.standardNormalModeConfidence, forKey: Self.advancedConfidenceKey)
+                defaults.set(RedactionSettings.standardNormalModeConfidence, forKey: DefaultsKey.advancedLLMConfidence.key)
             }
-            defaults.set(true, forKey: Self.advancedConfidenceMigrationKey)
+            defaults.set(true, forKey: DefaultsKey.advancedLLMConfidenceMigratedTo99.key)
         }
-        if defaults.object(forKey: Self.outputSaveLocationKey) == nil {
-            if let legacy = defaults.object(forKey: Self.legacyMetadataReportAlwaysSaveKey) as? Bool {
+        if defaults.object(forKey: DefaultsKey.outputSaveLocationPreference.key) == nil {
+            if let legacy = defaults.object(forKey: DefaultsKey.legacyMetadataReportAlwaysSaveToDownloads.key) as? Bool {
                 let mapped = legacy ? OutputSaveLocation.downloads.rawValue : OutputSaveLocation.alwaysAsk.rawValue
-                defaults.set(mapped, forKey: Self.outputSaveLocationKey)
+                defaults.set(mapped, forKey: DefaultsKey.outputSaveLocationPreference.key)
             } else {
-                defaults.set(OutputSaveLocation.alwaysAsk.rawValue, forKey: Self.outputSaveLocationKey)
+                defaults.set(OutputSaveLocation.alwaysAsk.rawValue, forKey: DefaultsKey.outputSaveLocationPreference.key)
             }
         }
-        if defaults.object(forKey: Self.unsavedReportQuitBehaviorKey) == nil {
-            defaults.set(UnsavedReportQuitBehavior.warn.rawValue, forKey: Self.unsavedReportQuitBehaviorKey)
+        if defaults.object(forKey: DefaultsKey.unsavedReportQuitBehavior.key) == nil {
+            defaults.set(UnsavedReportQuitBehavior.warn.rawValue, forKey: DefaultsKey.unsavedReportQuitBehavior.key)
         }
 
-        let advancedEnabled = defaults.bool(forKey: Self.advancedModeKey)
-        let storedModeRaw = defaults.string(forKey: Self.advancedAIModeKey) ?? RedactionMode.rulesOverride.rawValue
+        let advancedEnabled = defaults.bool(forKey: DefaultsKey.advancedModeEnabled.key)
+        let storedModeRaw = defaults.string(forKey: DefaultsKey.advancedAIMode.key) ?? RedactionMode.rulesOverride.rawValue
         let storedMode = RedactionMode(rawValue: storedModeRaw) ?? .rulesOverride
         let normalizedMode = storedMode == .rules ? .rulesOverride : storedMode
-        let storedConfidence = defaults.integer(forKey: Self.advancedConfidenceKey)
+        let storedConfidence = defaults.integer(forKey: DefaultsKey.advancedLLMConfidence.key)
         let resolvedConfidence = storedConfidence
 
         if advancedEnabled {

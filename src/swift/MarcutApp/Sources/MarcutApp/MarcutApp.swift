@@ -121,7 +121,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         let defaults = UserDefaults.standard
-        let behavior = UnsavedReportQuitBehavior(rawValue: defaults.integer(forKey: "MarcutApp.UnsavedReportQuitBehavior")) ?? .warn
+        let behavior = UnsavedReportQuitBehavior(rawValue: defaults.integer(forKey: DefaultsKey.unsavedReportQuitBehavior.key)) ?? .warn
         switch behavior {
         case .alwaysQuit:
             return .terminateNow
@@ -137,7 +137,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             alert.addButton(withTitle: "Always Quit")
             let response = alert.runModal()
             if response == .alertThirdButtonReturn {
-                defaults.set(UnsavedReportQuitBehavior.alwaysQuit.rawValue, forKey: "MarcutApp.UnsavedReportQuitBehavior")
+                defaults.set(UnsavedReportQuitBehavior.alwaysQuit.rawValue, forKey: DefaultsKey.unsavedReportQuitBehavior.key)
                 return .terminateNow
             }
             if response == .alertSecondButtonReturn {
@@ -600,7 +600,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 struct MarcutAppScene: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
     @StateObject private var viewModel = DocumentRedactionViewModel()
-    @AppStorage("AppTheme") private var appThemeRaw = AppTheme.system.rawValue
+    @AppStorage(DefaultsKey.appTheme.key) private var appThemeRaw = AppTheme.system.rawValue
 
     private var appTheme: AppTheme {
         AppTheme(rawValue: appThemeRaw) ?? .system

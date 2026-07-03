@@ -11,13 +11,13 @@ import UserNotifications
     // This allows the user to "Disable" them in-app without revoking OS permission.
     @Published var userEnabledNotifications: Bool {
         didSet {
-            UserDefaults.standard.set(userEnabledNotifications, forKey: "MarcutApp_UserEnabledNotifications")
+            UserDefaults.standard.set(userEnabledNotifications, forKey: DefaultsKey.userEnabledNotifications.key)
         }
     }
 
     private override init() {
         // Init local preference (Default to TRUE if not set)
-        let savedPref = UserDefaults.standard.object(forKey: "MarcutApp_UserEnabledNotifications") as? Bool
+        let savedPref = UserDefaults.standard.object(forKey: DefaultsKey.userEnabledNotifications.key) as? Bool
         self.userEnabledNotifications = savedPref ?? true
         
         super.init()

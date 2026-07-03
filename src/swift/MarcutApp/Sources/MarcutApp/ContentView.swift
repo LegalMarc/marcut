@@ -218,8 +218,8 @@ struct ContentView: View {
     @State private var hasCheckedEnvironment = false
     @State private var pendingDropLoads = 0
     @Environment(\.colorScheme) private var colorScheme
-    @AppStorage("MarcutApp.OutputSaveLocationPreference") private var outputSaveLocationRaw = OutputSaveLocation.alwaysAsk.rawValue
-    @AppStorage("MarcutApp.LastExplicitOutputDirectoryPath") private var lastExplicitOutputDirectoryPath = ""
+    @AppStorage(DefaultsKey.outputSaveLocationPreference.key) private var outputSaveLocationRaw = OutputSaveLocation.alwaysAsk.rawValue
+    @AppStorage(DefaultsKey.lastExplicitOutputDirectoryPath.key) private var lastExplicitOutputDirectoryPath = ""
     private let actionButtonHeight: CGFloat = 52
 
     private var outputSaveLocation: OutputSaveLocation {
@@ -228,7 +228,7 @@ struct ContentView: View {
 
     // Check if first run has been completed before
     private var hasCompletedFirstRun: Bool {
-        UserDefaults.standard.bool(forKey: "MarcutApp.hasCompletedFirstRun")
+        UserDefaults.standard.bool(forKey: DefaultsKey.hasCompletedFirstRun.key)
     }
     
     var body: some View {
