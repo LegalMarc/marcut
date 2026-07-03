@@ -70,7 +70,7 @@ fi
 cd "$REPO_ROOT"
 BUILD_STARTED_EPOCH="$(date +%s)"
 
-bash "${REPO_ROOT}/scripts/sh/build_appstore_release.sh" --skip-notarization "$@"
+MARCUT_ALLOW_NOTARIZATION_SKIP=1 bash "${REPO_ROOT}/scripts/sh/build_appstore_release.sh" --skip-notarization "$@"
 
 DMG_PATH=""
 if [ -f "${CONFIG_PATH}" ] && command -v python3 >/dev/null 2>&1; then
