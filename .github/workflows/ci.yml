@@ -17,10 +17,24 @@ jobs:
 
       - name: Network diagnostics
         run: |
-          echo "scutil dns:"; scutil --dns | head -20
-          echo "resolv.conf:"; cat /etc/resolv.conf
-          echo "curl pypi (5s timeout):"; curl -sS -m 5 -o /dev/null -w "http_code=%{http_code} time=%{time_total}\n" https://pypi.org || echo "curl FAILED rc=$?"
-          echo "dns lookup:"; (dscacheutil -q host -a name pypi.org &) ; sleep 3; echo done
+          echo "curl pypi.org:"; curl -sS -m 5 -o /dev/null -w "http_code=%{http_code} time=%{time_total}\n" https://pypi.org || echo "curl FAILED rc=$?"
+          echo "curl files.pythonhosted.org:"; curl -sS -m 5 -o /dev/null -w "http_code=%{http_code} time=%{time_total}\n" https://files.pythonhosted.org || echo "curl FAILED rc=$?"
+          echo "curl pypi simple index for pip:"; curl -sS -m 5 -o /dev/null -w "http_code=%{http_code} time=%{time_total}\n" https://pypi.org/simple/pip/ || echo "curl FAILED rc=$?"
+          echo "--- pip install -v -U pip with 15s self-timeout ---"
+          python3.11 -m pip install -v -U pip > /tmp/pip_verbose.log 2>&1 &
+          PIPPID=$!
+          for i in $(seq 1 15); do
+            if ! kill -0 $PIPPID 2>/dev/null; then break; fi
+            sleep 1
+          done
+          if kill -0 $PIPPID 2>/dev/null; then
+            echo "PIP STILL RUNNING AFTER 15s -- killing and dumping log"
+            kill -9 $PIPPID
+          else
+            echo "pip completed within 15s"
+          fi
+          echo "--- last 40 lines of verbose pip log ---"
+          tail -40 /tmp/pip_verbose.log
 
       - name: Install Python dependencies
         run: |
