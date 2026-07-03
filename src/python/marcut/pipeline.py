@@ -1880,7 +1880,7 @@ def run_redaction(
                         technical_details=f"Ollama service error: {str(e)}. Ensure Ollama is running and accessible.",
                         original_error=e
                     )
-                elif "timeout" in error_str:
+                elif "timeout" in error_str or "deadline" in error_str:
                     raise RedactionError(
                         message="AI processing timed out",
                         error_code="AI_PROCESSING_TIMEOUT",
