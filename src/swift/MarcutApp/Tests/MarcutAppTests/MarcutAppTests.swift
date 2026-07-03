@@ -229,6 +229,53 @@ final class MarcutAppTests: XCTestCase {
         XCTAssertEqual(button.accessibilityId, "document.openRedacted.test")
     }
 
+    func testFinalRedactedCopyURLUsesSeparateDocxCopy() throws {
+        let source = URL(fileURLWithPath: "/tmp/client-review.docx")
+
+        let finalURL = DocumentRedactionViewModel.finalRedactedCopyURL(for: source) { _ in false }
+
+        XCTAssertEqual(finalURL.path, "/tmp/client-review Final Redacted.docx")
+        XCTAssertNotEqual(finalURL, source)
+    }
+
+    func testFinalRedactedCopyURLAvoidsOverwrite() throws {
+        let source = URL(fileURLWithPath: "/tmp/client-review.docx")
+        let occupied = Set([
+            "/tmp/client-review Final Redacted.docx",
+            "/tmp/client-review Final Redacted 2.docx"
+        ])
+
+        let finalURL = DocumentRedactionViewModel.finalRedactedCopyURL(for: source) { occupied.contains($0) }
+
+        XCTAssertEqual(finalURL.path, "/tmp/client-review Final Redacted 3.docx")
+    }
+
+    func testSensitiveReportFilePrivacyHelperSetsOwnerOnlyMode() throws {
+        let reportURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("marcut-sensitive-report-\(UUID().uuidString)")
+            .appendingPathExtension("json")
+        try Data("{}".utf8).write(to: reportURL)
+        defer { try? FileManager.default.removeItem(at: reportURL) }
+
+        DocumentRedactionViewModel.makeSensitiveReportFilePrivate(reportURL)
+
+        let attrs = try FileManager.default.attributesOfItem(atPath: reportURL.path)
+        let permissions = attrs[.posixPermissions] as? NSNumber
+        XCTAssertEqual(permissions?.intValue, 0o600)
+    }
+
+    func testModelDownloadCLIIdleTimeoutConfiguration() {
+        XCTAssertEqual(PythonBridgeService.modelDownloadCLIIdleTimeout(from: [:]), 120.0)
+        XCTAssertEqual(
+            PythonBridgeService.modelDownloadCLIIdleTimeout(from: ["MARCUT_MODEL_DOWNLOAD_CLI_IDLE_TIMEOUT": "7.5"]),
+            7.5
+        )
+        XCTAssertEqual(
+            PythonBridgeService.modelDownloadCLIIdleTimeout(from: ["MARCUT_MODEL_DOWNLOAD_CLI_IDLE_TIMEOUT": "0.01"]),
+            0.1
+        )
+    }
+
     func testModelSelectionRowAccessibilityIdentifier() throws {
         let row = ModelSelectionRow(
             modelId: "llama3.1:8b",
