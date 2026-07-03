@@ -194,6 +194,74 @@ final class MarcutAppTests: XCTestCase {
         settings.model = originalModel
     }
 
+    // MARK: - Model Catalog Tests (ticket #22)
+
+    func testModelCatalogLoadsExpectedModelsAndParameters() throws {
+        // Exercises the same bundled `models.json` resource shipped with the
+        // app (kept in sync with `src/python/marcut/models.json` and
+        // `assets/models.json`), via the production loader `ModelCatalog`.
+        let catalog = ModelCatalog.shared
+
+        XCTAssertEqual(catalog.defaultModelId, "llama3.1:8b")
+        XCTAssertEqual(catalog.modelIds, ["llama3.1:8b", "mistral:7b", "llama3.2:3b"])
+
+        guard let llama31 = catalog.entry(for: "llama3.1:8b") else {
+            return XCTFail("llama3.1:8b missing from catalog")
+        }
+        XCTAssertEqual(llama31.displayName, "Llama 3.1 8B")
+        XCTAssertEqual(llama31.description, "Gold standard. The most accurate model tested.")
+        XCTAssertEqual(llama31.setupDescription, "Gold standard. The most accurate model tested. Recommended.")
+        XCTAssertEqual(llama31.processingTime, "~45s")
+        XCTAssertEqual(llama31.sizeLabel, "4.7 GB")
+        XCTAssertEqual(llama31.badge, "Best")
+        XCTAssertEqual(llama31.temperature, 0.1, accuracy: 0.0001)
+        XCTAssertEqual(llama31.skipConfidence, 0.95, accuracy: 0.0001)
+
+        guard let mistral = catalog.entry(for: "mistral:7b") else {
+            return XCTFail("mistral:7b missing from catalog")
+        }
+        XCTAssertEqual(mistral.badge, "Balanced")
+        XCTAssertEqual(mistral.accentColor, "orange")
+
+        guard let llama32 = catalog.entry(for: "llama3.2:3b") else {
+            return XCTFail("llama3.2:3b missing from catalog")
+        }
+        XCTAssertEqual(llama32.badge, "Fast")
+        XCTAssertEqual(llama32.accentColor, "green")
+
+        XCTAssertNil(catalog.entry(for: "not-a-real-model:1b"))
+    }
+
+    func testModelCatalogDefaultModelIsListedAndIsSettingsDefault() throws {
+        let catalog = ModelCatalog.shared
+        XCTAssertTrue(catalog.modelIds.contains(catalog.defaultModelId))
+        XCTAssertEqual(RedactionSettings().model, catalog.defaultModelId)
+    }
+
+    func testModelCatalogResourceCopiesStaySynced() throws {
+        // The three shipped copies of models.json must be byte-identical,
+        // the same way excluded-words.txt is verified in
+        // testExcludedWordMatcherAgainstBundledExcludedWordsResource.
+        let repoRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent() // MarcutAppTests.swift -> MarcutAppTests/
+            .deletingLastPathComponent() // MarcutAppTests -> Tests/
+            .deletingLastPathComponent() // Tests -> MarcutApp/ (swift package root)
+            .deletingLastPathComponent() // MarcutApp -> swift/
+            .deletingLastPathComponent() // swift -> src/
+            .deletingLastPathComponent() // src -> repo root
+        let swiftResourceCopy = repoRoot
+            .appendingPathComponent("src/swift/MarcutApp/Sources/MarcutApp/Resources/models.json")
+        let pythonCopy = repoRoot.appendingPathComponent("src/python/marcut/models.json")
+        let assetsCopy = repoRoot.appendingPathComponent("assets/models.json")
+
+        let swiftContents = try String(contentsOf: swiftResourceCopy, encoding: .utf8)
+        let pythonContents = try String(contentsOf: pythonCopy, encoding: .utf8)
+        let assetsContents = try String(contentsOf: assetsCopy, encoding: .utf8)
+
+        XCTAssertEqual(swiftContents, pythonContents, "Swift Resources/models.json has drifted from src/python/marcut/models.json")
+        XCTAssertEqual(swiftContents, assetsContents, "Swift Resources/models.json has drifted from assets/models.json")
+    }
+
     // MARK: - Progress Indicator Tests (Task 1.6)
 
     func testPreparingStateLogic() throws {

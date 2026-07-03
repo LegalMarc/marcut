@@ -18,6 +18,7 @@ import time
 import requests
 from marcut.network_utils import normalize_ollama_base_url, ollama_cli_host_arg
 from marcut.model_naming import find_matching_model
+from marcut.model_config import default_model_id
 
 # Add parent directory to path for imports when running standalone
 if __name__ == "__main__":
@@ -76,7 +77,7 @@ class MarcutGUI:
         # Variables
         self.file_path = None
         self.ollama_process = None
-        self.model_name = "llama3.1:8b"
+        self.model_name = default_model_id()
         
         self.setup_ui()
         # Defer setup so the window can render first

@@ -5,6 +5,7 @@ from .unified_redactor import run_unified_redaction
 from .preflight import ensure_ollama_ready
 from .progress import create_progress_callback, ProgressUpdate
 from .docx_io import CLI_ARG_PAIRS
+from .model_config import default_model_id, default_temperature, default_skip_confidence
 
 
 def _parse_mode(value: str) -> str:
@@ -34,14 +35,14 @@ def build():
         help="rules (rules-only), enhanced/rules_override (rules + AI), constrained_overrides, llm_overrides.",
     )
     r.add_argument("--backend", choices=["ollama", "llama_cpp", "mock"], default="ollama")
-    r.add_argument("--model", default="llama3.1:8b")
+    r.add_argument("--model", default=default_model_id())
     r.add_argument("--llama-gguf", default=None)
     r.add_argument("--threads", type=int, default=4)
     r.add_argument("--chunk-tokens", type=int, default=1000)
     r.add_argument("--overlap", type=int, default=150)
-    r.add_argument("--temp", type=float, default=0.1)
+    r.add_argument("--temp", type=float, default=default_temperature())
     r.add_argument("--seed", type=int, default=42)
-    r.add_argument("--llm-skip-confidence", type=float, default=0.95)
+    r.add_argument("--llm-skip-confidence", type=float, default=default_skip_confidence())
     r.add_argument("--no-qa", action="store_true")
     r.add_argument("--debug", action="store_true")
     r.add_argument("--timing", action="store_true", help="Show detailed phase timing breakdown")

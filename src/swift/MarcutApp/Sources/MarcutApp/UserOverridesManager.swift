@@ -138,46 +138,7 @@ Your entire response must be a single, valid JSON object inside a ```json code b
     // MARK: - Helpers
 
     private func resolveDefaultResourceURL(named name: String, ext: String) -> URL? {
-        // 1. Check App Bundle
-        if let url = Bundle.main.url(forResource: name, withExtension: ext) {
-            return url
-        }
-        
-        // 2. Check Package Bundle (e.g. if we are inside a Swift Package structure)
-        if let packageURL = Bundle.main.url(forResource: "MarcutApp_MarcutApp", withExtension: "bundle"),
-           let packageBundle = Bundle(url: packageURL) {
-            if let url = packageBundle.url(forResource: name, withExtension: ext) {
-                return url
-            }
-            if let url = packageBundle.url(forResource: name, withExtension: ext, subdirectory: "Resources") {
-                return url
-            }
-        }
-        
-        #if SWIFT_PACKAGE && DEBUG
-        if let url = Bundle.module.url(forResource: name, withExtension: ext) ??
-            Bundle.module.url(forResource: name, withExtension: ext, subdirectory: "Resources") {
-            return url
-        }
-        #endif
-
-        // 3. Check development paths (relative to CWD or known locations)
-        let candidatePaths = [
-            "Resources/\(name).\(ext)",
-            "\(name).\(ext)",
-            "MarcutApp/Sources/MarcutApp/Resources/\(name).\(ext)",
-            "src/swift/MarcutApp/Sources/MarcutApp/Resources/\(name).\(ext)",
-            "marcut/\(name).\(ext)"
-        ]
-
-        for path in candidatePaths {
-            let url = URL(fileURLWithPath: path)
-            if fileManager.fileExists(atPath: url.path) {
-                return url
-            }
-        }
-
-        return nil
+        BundleResourceLocator.resolveDefaultResourceURL(named: name, ext: ext, fileManager: fileManager)
     }
 
     private static func resolveOverridesDirectory(fileManager: FileManager) -> URL {

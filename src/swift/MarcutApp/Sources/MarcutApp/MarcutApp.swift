@@ -396,13 +396,16 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             }()
             let modelName: String = {
                 if let mIdx = args.firstIndex(of: "--model"), mIdx + 1 < args.count { return args[mIdx + 1] }
-                return "llama3.1:8b"
+                return ModelCatalog.shared.defaultModelId
             }()
             let llmSkipConfidence: Double = {
+                let fallback = ModelCatalog.shared.entry(for: modelName)?.skipConfidence
+                    ?? ModelCatalog.shared.entry(for: ModelCatalog.shared.defaultModelId)?.skipConfidence
+                    ?? 0.95
                 if let cIdx = args.firstIndex(of: "--llm-skip-confidence"), cIdx + 1 < args.count {
-                    return Double(args[cIdx + 1]) ?? 0.95
+                    return Double(args[cIdx + 1]) ?? fallback
                 }
-                return 0.95
+                return fallback
             }()
 
             // Generate output file paths
@@ -531,7 +534,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             print("\n4️⃣ Skipping model download (MARCUT_DIAG_SKIP_MODEL_DOWNLOAD=1)")
         } else {
             print("\n4️⃣ Testing model download...")
-            let success = await bridge.downloadModel("llama3.1:8b") { progress in
+            let success = await bridge.downloadModel(ModelCatalog.shared.defaultModelId) { progress in
                 print("   Progress: \(Int(progress))%")
             }
             print("   Download result: \(success ? "✅ Success" : "❌ Failed")")

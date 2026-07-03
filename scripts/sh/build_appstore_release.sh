@@ -1212,6 +1212,16 @@ EOF
     if [ -n "$system_prompt_source" ]; then
         cp "$system_prompt_source" "${APP_BUNDLE}/Contents/Resources/system-prompt.txt"
     fi
+    local models_json_source=""
+    for candidate in "assets/models.json" "src/python/marcut/models.json" "models.json"; do
+        if [ -f "$candidate" ]; then
+            models_json_source="$candidate"
+            break
+        fi
+    done
+    if [ -n "$models_json_source" ]; then
+        cp "$models_json_source" "${APP_BUNDLE}/Contents/Resources/models.json"
+    fi
     local assets_dir="${ASSETS_DIR:-${ROOT_DIR}/assets}"
     local swift_resources_dir="${SWIFT_PROJECT_DIR}/Sources/MarcutApp/Resources"
     local help_md_source=""

@@ -678,22 +678,18 @@ struct SettingsView: View {
                     .font(.system(size: 14, weight: .medium))
                     .foregroundColor(CustomColors.primaryText(for: colorScheme))
 
-                ForEach([
-                    ("llama3.1:8b", "Llama 3.1 8B", "Gold standard. The most accurate model tested.", "~45s", CustomColors.accentColor(for: colorScheme)),
-                    ("mistral:7b", "Mistral 7B", "Solid alternative, but less consistent than Llama 3.1.", "~35s", Color.orange),
-                    ("llama3.2:3b", "Llama 3.2 3B", "Very fast, but frequently misses entities. Use with caution.", "~20s", Color.green)
-                ], id: \.0) { model in
+                ForEach(ModelCatalog.shared.models) { model in
                     ModelSelectionRow(
-                        modelId: model.0,
-                        displayName: model.1,
-                        description: model.2,
-                        processingTime: model.3,
-                        accentColor: model.4,
-                        isSelected: localSettings.model == model.0,
-                        isInstalled: viewModel.availableModels.contains(model.0),
-                        accessibilityId: "settings.model.\(model.0)"
+                        modelId: model.id,
+                        displayName: model.displayName,
+                        description: model.description,
+                        processingTime: model.processingTime,
+                        accentColor: model.resolvedAccentColor(for: colorScheme),
+                        isSelected: localSettings.model == model.id,
+                        isInstalled: viewModel.availableModels.contains(model.id),
+                        accessibilityId: "settings.model.\(model.id)"
                     ) {
-                        localSettings.model = model.0
+                        localSettings.model = model.id
                     }
                     .padding(.horizontal, 12)
                 }
@@ -1508,9 +1504,9 @@ struct FirstRunSetupView: View {
         self.onComplete = onComplete
         let initialStep: SetupStep = viewModel.firstRunEntryPoint == .manageModels ? .modelSelection : .welcome
         _setupStep = State(initialValue: initialStep)
-        let supportedModelIds = ["llama3.1:8b", "mistral:7b", "llama3.2:3b"]
+        let supportedModelIds = ModelCatalog.shared.modelIds
         let preferred = viewModel.availableModels.first ?? viewModel.settings.model
-        let resolved = supportedModelIds.contains(preferred) ? preferred : "llama3.1:8b"
+        let resolved = supportedModelIds.contains(preferred) ? preferred : ModelCatalog.shared.defaultModelId
         _selectedModel = State(initialValue: resolved)
     }
 
@@ -1663,22 +1659,18 @@ struct FirstRunSetupView: View {
 
             // Model selection cards
             VStack(spacing: 12) {
-                ForEach([
-                    ("llama3.1:8b", "Llama 3.1 8B", "Gold standard. The most accurate model tested. Recommended.", "4.7 GB", "Best"),
-                    ("mistral:7b", "Mistral 7B", "Solid alternative, but less consistent than Llama 3.1.", "4.1 GB", "Balanced"),
-                    ("llama3.2:3b", "Llama 3.2 3B", "Very fast, but frequently misses entities. Use with caution.", "2.0 GB", "Fast")
-                ], id: \.0) { model in
+                ForEach(ModelCatalog.shared.models) { model in
                     ModelSelectionRow(
-                        modelId: model.0,
-                        displayName: model.1,
-                        description: model.2,
-                        size: model.3,
-                        badge: model.4,
-                        isSelected: selectedModel == model.0,
-                        isInstalled: viewModel.availableModels.contains(model.0),
-                        accessibilityId: "setup.model.\(model.0)"
+                        modelId: model.id,
+                        displayName: model.displayName,
+                        description: model.setupDescription,
+                        size: model.sizeLabel,
+                        badge: model.badge,
+                        isSelected: selectedModel == model.id,
+                        isInstalled: viewModel.availableModels.contains(model.id),
+                        accessibilityId: "setup.model.\(model.id)"
                     ) {
-                        selectedModel = model.0
+                        selectedModel = model.id
                     }
                     .padding(.horizontal, 12)
                 }

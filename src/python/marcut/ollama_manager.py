@@ -16,7 +16,9 @@ import hashlib
 from pathlib import Path
 from typing import Optional, Dict, Any, Callable, TextIO
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+
+from .model_config import default_model_id
 
 # Setup logging
 logger = logging.getLogger(__name__)
@@ -29,7 +31,7 @@ class OllamaConfig:
     host: str = "127.0.0.1"
     port: int = 11434
     binary_path: Optional[str] = None
-    model_name: str = "llama3.1:8b"
+    model_name: str = field(default_factory=default_model_id)
     
     @property
     def url(self) -> str:
@@ -618,7 +620,7 @@ def create_ollama_manager() -> OllamaManager:
     config = OllamaConfig(
         home_dir=marcut_home,
         models_dir=marcut_home / "models",
-        model_name="llama3.1:8b"
+        model_name=default_model_id()
     )
     
     return OllamaManager(config)
@@ -659,18 +661,18 @@ if __name__ == "__main__":
             print(f"Health: {json.dumps(health, indent=2)}")
             
             # Download model if needed
-            if not manager.is_model_available("llama3.1:8b"):
+            if not manager.is_model_available(default_model_id()):
                 print("Downloading model...")
                 downloader = ModelDownloader(manager)
-                
+
                 def progress_cb(percent, speed):
                     print(f"Progress: {percent:.1f}% {speed}")
-                
+
                 def completion_cb(success, message):
                     print(f"Download {'completed' if success else 'failed'}: {message}")
-                
+
                 downloader.download_with_progress(
-                    "llama3.1:8b", 
+                    default_model_id(),
                     progress_callback=progress_cb,
                     completion_callback=completion_cb
                 )

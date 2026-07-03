@@ -9,11 +9,7 @@ enum ProcessingState {
 
 @MainActor
 final class DocumentRedactionViewModel: ObservableObject {
-    private static let supportedModelIdentifiers: Set<String> = [
-        "llama3.1:8b",
-        "mistral:7b",
-        "llama3.2:3b"
-    ]
+    private static let supportedModelIdentifiers: Set<String> = ModelCatalog.shared.modelIds
     private static func normalizeModelIdentifier(_ modelName: String) -> String {
         let trimmed = modelName.trimmingCharacters(in: .whitespacesAndNewlines)
         let parts = trimmed.split(separator: "/")

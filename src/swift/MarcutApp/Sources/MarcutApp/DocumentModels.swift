@@ -979,7 +979,7 @@ struct RedactionSettings: Codable, Equatable {
     static let standardNormalModeOverlap: Int = 200
 
     var mode: RedactionMode = RedactionSettings.standardNormalMode
-    var model: String = "llama3.1:8b"
+    var model: String = ModelCatalog.shared.defaultModelId
     var backend: String = "ollama" // 'ollama' or 'mock' (for fast tests)
     var debug: Bool = false  // Default to false for production
     var temperature: Double = RedactionSettings.standardNormalModeTemperature

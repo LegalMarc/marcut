@@ -382,6 +382,9 @@ sync_rule_assets() {
     local dest_resources="${SWIFT_PROJECT_DIR}/Sources/MarcutApp/Resources/excluded-words.txt"
     local system_prompt_source=""
     local dest_system_prompt="${SWIFT_PROJECT_DIR}/Sources/MarcutApp/Resources/system-prompt.txt"
+    local models_json_source=""
+    local dest_models_json_py="${SWIFT_PROJECT_DIR}/Sources/MarcutApp/python_site/marcut/models.json"
+    local dest_models_json_resources="${SWIFT_PROJECT_DIR}/Sources/MarcutApp/Resources/models.json"
 
     for candidate in "assets/excluded-words.txt" "src/python/marcut/excluded-words.txt" "excluded-words.txt"; do
         if [ -f "$candidate" ]; then
@@ -412,7 +415,24 @@ sync_rule_assets() {
     fi
 
     rsync -a "$system_prompt_source" "$dest_system_prompt"
-    echo -e "${BLUE}🔄 Synced excluded-words + system-prompt assets into app resources${NC}"
+
+    for candidate in "assets/models.json" "src/python/marcut/models.json" "models.json"; do
+        if [ -f "$candidate" ]; then
+            models_json_source="$candidate"
+            break
+        fi
+    done
+
+    if [ -z "$models_json_source" ]; then
+        echo -e "${RED}❌ Cannot find models.json (checked assets/ and src/python/marcut)${NC}"
+        exit 1
+    fi
+
+    mkdir -p "$(dirname "$dest_models_json_py")" "$(dirname "$dest_models_json_resources")"
+    rsync -a "$models_json_source" "$dest_models_json_py"
+    rsync -a "$models_json_source" "$dest_models_json_resources"
+
+    echo -e "${BLUE}🔄 Synced excluded-words + system-prompt + models.json assets into app resources${NC}"
 }
 
 step_cleanup() {
