@@ -227,6 +227,8 @@ Text is extracted from:
 ### Redaction Tags and Track Changes
 
 - Redactions are applied as track changes so you can accept or reject each change. The default DOCX is a review artifact, not a destructively sanitized final-share file.
+- Use **Send Final Redacted Copy** when you are ready to share a finalized document. Marcut creates a separate copy, accepts the redaction Track Changes in that copy, and runs maximum-privacy metadata scrubbing before opening the share sheet.
+- Use **Send Review Copy** only when you intentionally want to share the Track Changes proposal and preserve review metadata for the recipient.
 - Redaction tags appear as inserted text in red (for example `[NAME_1]`).
 - Original content appears as deletions.
 - Possessives are preserved (`[NAME_1]'s`).

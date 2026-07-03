@@ -28,6 +28,33 @@ final class DocumentRedactionViewModel: ObservableObject {
     }
     private static let advancedModeKey = "MarcutApp.AdvancedModeEnabled"
     private static let advancedAIModeKey = "MarcutApp.AdvancedAIMode"
+
+    static func finalRedactedCopyURL(
+        for sourceURL: URL,
+        fileExists: (String) -> Bool = { FileManager.default.fileExists(atPath: $0) }
+    ) -> URL {
+        let directory = sourceURL.deletingLastPathComponent()
+        let baseName = sourceURL.deletingPathExtension().lastPathComponent
+        let ext = sourceURL.pathExtension.isEmpty ? "docx" : sourceURL.pathExtension
+        var candidate = directory
+            .appendingPathComponent("\(baseName) Final Redacted")
+            .appendingPathExtension(ext)
+        var index = 2
+        while fileExists(candidate.path) {
+            candidate = directory
+                .appendingPathComponent("\(baseName) Final Redacted \(index)")
+                .appendingPathExtension(ext)
+            index += 1
+        }
+        return candidate
+    }
+
+    static func makeSensitiveReportFilePrivate(_ url: URL) {
+        try? FileManager.default.setAttributes(
+            [.posixPermissions: NSNumber(value: Int16(0o600))],
+            ofItemAtPath: url.path
+        )
+    }
     private static let advancedConfidenceKey = "MarcutApp.AdvancedLLMConfidence"
     private static let advancedConfidenceMigrationKey = "MarcutApp.AdvancedLLMConfidenceMigratedTo99"
     private static let outputSaveLocationKey = "MarcutApp.OutputSaveLocationPreference"
@@ -1395,6 +1422,117 @@ final class DocumentRedactionViewModel: ObservableObject {
     func openRedactedDocument(_ item: DocumentItem) -> Bool {
         guard let url = item.redactedOutputURL else { return false }
         return NSWorkspace.shared.open(url)
+    }
+
+    @discardableResult
+    func shareDocument(_ item: DocumentItem) -> Bool {
+        guard item.redactedOutputURL != nil || item.scrubOutputURL != nil else {
+            item.errorMessage = "No DOCX output is available to send."
+            return false
+        }
+
+        let alert = NSAlert()
+        alert.messageText = "Send Document"
+        alert.informativeText = """
+        Choose the DOCX you want to send.
+
+        Final redacted copy accepts Marcut's redaction Track Changes in a new copy and scrubs metadata before sending.
+
+        Review copy sends the current review artifact with Track Changes and metadata exactly as they are in that file.
+        """
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: "Send Final Redacted Copy")
+        alert.addButton(withTitle: "Send Review Copy")
+        alert.addButton(withTitle: "Cancel")
+
+        switch alert.runModal() {
+        case .alertFirstButtonReturn:
+            Task { [weak self, weak item] in
+                guard let self, let item else { return }
+                await self.shareFinalRedactedCopy(item)
+            }
+            return true
+        case .alertSecondButtonReturn:
+            return confirmAndShareReviewCopy(item)
+        default:
+            return false
+        }
+    }
+
+    private func confirmAndShareReviewCopy(_ item: DocumentItem) -> Bool {
+        guard let url = item.redactedOutputURL ?? item.scrubOutputURL else { return false }
+
+        let alert = NSAlert()
+        alert.messageText = "Send Review Copy?"
+        alert.informativeText = """
+        This sends the current DOCX review artifact. It may contain recoverable original text in Track Changes and document metadata. Use this only when the recipient should review proposed redactions with full context.
+        """
+        alert.alertStyle = .critical
+        alert.addButton(withTitle: "Send Review Copy")
+        alert.addButton(withTitle: "Cancel")
+
+        guard alert.runModal() == .alertFirstButtonReturn else { return false }
+        return presentSharePicker(for: url)
+    }
+
+    private func shareFinalRedactedCopy(_ item: DocumentItem) async {
+        guard let sourceURL = item.redactedOutputURL ?? item.scrubOutputURL else {
+            item.errorMessage = "No DOCX output is available to finalize."
+            return
+        }
+        guard let runner = AppDelegate.pythonRunner else {
+            item.errorMessage = "The Python runtime is not available to finalize this document."
+            return
+        }
+
+        let finalURL = Self.finalRedactedCopyURL(for: sourceURL)
+        let previousPreset = getenv("MARCUT_METADATA_PRESET").map { String(cString: $0) }
+        let previousArgs = getenv("MARCUT_METADATA_ARGS").map { String(cString: $0) }
+        let previousSettingsJSON = getenv("MARCUT_METADATA_SETTINGS_JSON").map { String(cString: $0) }
+
+        applyMetadataSettingsEnvironment(.maximumPrivacy, context: "final share copy")
+        defer {
+            restoreEnvironmentValue(previousPreset, forKey: "MARCUT_METADATA_PRESET")
+            restoreEnvironmentValue(previousArgs, forKey: "MARCUT_METADATA_ARGS")
+            restoreEnvironmentValue(previousSettingsJSON, forKey: "MARCUT_METADATA_SETTINGS_JSON")
+        }
+
+        do {
+            let result = try await runner.scrubMetadataOnlyAsync(
+                inputPath: sourceURL.path,
+                outputPath: finalURL.path
+            )
+            guard result.success else {
+                item.errorMessage = result.error ?? "Unable to create the final redacted copy."
+                try? FileManager.default.removeItem(at: finalURL)
+                return
+            }
+            item.errorMessage = nil
+            _ = presentSharePicker(for: finalURL)
+        } catch {
+            item.errorMessage = "Unable to create the final redacted copy: \(error.localizedDescription)"
+            try? FileManager.default.removeItem(at: finalURL)
+        }
+    }
+
+    private func restoreEnvironmentValue(_ value: String?, forKey key: String) {
+        if let value {
+            setenv(key, value, 1)
+        } else {
+            unsetenv(key)
+        }
+    }
+
+    @discardableResult
+    private func presentSharePicker(for url: URL) -> Bool {
+        guard FileManager.default.fileExists(atPath: url.path) else { return false }
+        guard let view = NSApp.keyWindow?.contentView else {
+            NSWorkspace.shared.activateFileViewerSelecting([url])
+            return true
+        }
+        let picker = NSSharingServicePicker(items: [url])
+        picker.show(relativeTo: .zero, of: view, preferredEdge: .minY)
+        return true
     }
     
     @discardableResult

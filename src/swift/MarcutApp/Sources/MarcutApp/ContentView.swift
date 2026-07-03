@@ -1379,19 +1379,14 @@ struct DocumentRow: View {
                         accessibilityId: "document.openScrubReport.\(item.id.uuidString)"
                     )
 
-                    // Share Button
-                    if #available(macOS 13.0, *), let shareURL = item.redactedOutputURL ?? item.scrubOutputURL {
-                        ShareLink(item: shareURL) {
-                            Image(systemName: "square.and.arrow.up")
-                                .font(.system(size: 16, weight: .medium))
-                                .foregroundColor(CustomColors.accentColor(for: colorScheme))
-                                .frame(width: 28, height: 28)
-                                .contentShape(Rectangle())
-                        }
-                        .buttonStyle(.plain)
-                        .help("Share Document")
-                        .accessibilityIdentifier("document.share.\(item.id.uuidString)")
-                    }
+                    TooltipButton(
+                        action: { performUserAction(failureMessage: "The document is not available yet.") { viewModel.shareDocument(item) } },
+                        icon: "square.and.arrow.up",
+                        tooltip: "Send Document",
+                        description: "Choose between a final redacted copy or a review copy with Track Changes",
+                        isEnabled: item.redactedOutputURL != nil || item.scrubOutputURL != nil,
+                        accessibilityId: "document.share.\(item.id.uuidString)"
+                    )
                 }
                 } else if metadataReportAvailable {
                     VStack(alignment: .trailing, spacing: 6) {

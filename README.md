@@ -17,7 +17,7 @@ Marcut is a native macOS application for legal and professional document redacti
 *   **Dual-Engine Power:**
     *   **Rules Engine:** Instant, regex-based detection for structured data (SSN, Phone, Email, etc.).
     *   **AI Engine:** Context-aware entity recognition (Names, Organizations) using local Ollama models.
-*   **Professional Output:** Generates standard DOCX review artifacts with redacting edits marked as "Track Changes"; review and accept changes before external sharing.
+*   **Professional Output:** Generates standard DOCX review artifacts with redacting edits marked as "Track Changes"; use **Send Final Redacted Copy** to accept Marcut redaction changes and scrub metadata in a separate share copy, or intentionally send a review copy after confirming Track Changes and metadata may remain recoverable.
 *   **Audit Ready:** Produces JSON redaction reports and metadata scrub reports for verification; reports may include raw detected text and document metadata.
 *   **App Store Ready:** Fully sandboxed and code-signed architecture.
 
