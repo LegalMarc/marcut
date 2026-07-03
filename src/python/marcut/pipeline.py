@@ -102,6 +102,15 @@ import regex as re  # For consistency pass boundaries
 
 logger = logging.getLogger(__name__)
 
+def _metadata_env_enabled(name: str) -> bool:
+    return os.environ.get(name, "").strip().lower() in {"1", "true", "yes", "on"}
+
+def _metadata_env_int(name: str, default: int) -> int:
+    try:
+        return max(0, int(os.environ.get(name, str(default))))
+    except (TypeError, ValueError):
+        return default
+
 class Span(TypedDict, total=False):
     start: int
     end: int
@@ -563,8 +572,16 @@ def _apply_consistency_pass(
     # Also keep full candidate objects for strict checks or fuzzy scan
     all_candidates: List[Dict[str, Any]] = []
     seen_candidate_keys = set()
+    max_candidates = _metadata_env_int("MARCUT_CONSISTENCY_MAX_CANDIDATES", 1500)
+    max_fuzzy_org_candidates = _metadata_env_int("MARCUT_CONSISTENCY_MAX_FUZZY_ORG_CANDIDATES", 250)
+    max_pattern_chars = _metadata_env_int("MARCUT_CONSISTENCY_MAX_PATTERN_CHARS", 120_000)
 
     for sp in spans:
+        if max_candidates and len(all_candidates) >= max_candidates:
+            if debug:
+                print(f"Consistency Pass: Candidate limit reached ({max_candidates}); skipping remaining candidates.")
+            break
+
         lbl = sp["label"]
         txt = sp["text"].strip()
 
@@ -640,62 +657,86 @@ def _apply_consistency_pass(
 
     # 2. Batched Rescan (Exact Matches)
 
+    def _bounded_patterns(values) -> List[str]:
+        patterns = sorted(values, key=len, reverse=True)
+        if not max_pattern_chars:
+            return patterns
+        bounded: List[str] = []
+        total_chars = 0
+        for pattern in patterns:
+            escaped_len = len(re.escape(pattern))
+            if bounded and total_chars + escaped_len > max_pattern_chars:
+                if debug:
+                    print(f"Consistency Pass: Pattern budget reached ({max_pattern_chars} chars); skipping remaining exact candidates.")
+                break
+            bounded.append(pattern)
+            total_chars += escaped_len
+        return bounded
+
     # Build regex for case-sensitive
     if case_sensitive_map:
         # Sort by length descending to match longest first
-        patterns = sorted(case_sensitive_map.keys(), key=len, reverse=True)
+        patterns = _bounded_patterns(case_sensitive_map.keys())
         # Escape and join
-        pattern_str = r"\b(?:" + "|".join(re.escape(p) for p in patterns) + r")\b"
-        try:
-            for match in re.finditer(pattern_str, text):
-                matched_text = match.group(0)
-                label = case_sensitive_map.get(matched_text)
-                if not label: continue
+        if patterns:
+            pattern_str = r"\b(?:" + "|".join(re.escape(p) for p in patterns) + r")\b"
+            try:
+                for match in re.finditer(pattern_str, text):
+                    matched_text = match.group(0)
+                    label = case_sensitive_map.get(matched_text)
+                    if not label: continue
 
-                s, e = match.span()
-                if _overlaps_existing(s, e, label, matched_text):
-                    continue
-                key = (s, e, label)
-                if key in existing_keys or key in new_keys: continue
+                    s, e = match.span()
+                    if _overlaps_existing(s, e, label, matched_text):
+                        continue
+                    key = (s, e, label)
+                    if key in existing_keys or key in new_keys: continue
 
-                new_spans.append({
-                    "start": s, "end": e, "label": label, "text": matched_text,
-                    "confidence": 0.95, "source": "consistency_pass"
-                })
-                new_keys.add(key)
-        except Exception as e:
-            if debug: print(f"Consistency Pass Error (CS): {e}")
+                    new_spans.append({
+                        "start": s, "end": e, "label": label, "text": matched_text,
+                        "confidence": 0.95, "source": "consistency_pass"
+                    })
+                    new_keys.add(key)
+            except Exception as e:
+                if debug: print(f"Consistency Pass Error (CS): {e}")
 
     # Build regex for case-insensitive (ORGs)
     if case_insensitive_map:
-        patterns = sorted(case_insensitive_map.keys(), key=len, reverse=True)
-        pattern_str = r"\b(?:" + "|".join(re.escape(p) for p in patterns) + r")\b"
-        try:
-            for match in re.finditer(pattern_str, text, flags=re.IGNORECASE):
-                matched_text = match.group(0)
-                # Lookup by lowercase
-                label = case_insensitive_map.get(matched_text.lower())
-                if not label: continue
+        patterns = _bounded_patterns(case_insensitive_map.keys())
+        if patterns:
+            pattern_str = r"\b(?:" + "|".join(re.escape(p) for p in patterns) + r")\b"
+            try:
+                for match in re.finditer(pattern_str, text, flags=re.IGNORECASE):
+                    matched_text = match.group(0)
+                    # Lookup by lowercase
+                    label = case_insensitive_map.get(matched_text.lower())
+                    if not label: continue
 
-                s, e = match.span()
-                if _overlaps_existing(s, e, label, matched_text):
-                    continue
-                key = (s, e, label)
-                if key in existing_keys or key in new_keys: continue
+                    s, e = match.span()
+                    if _overlaps_existing(s, e, label, matched_text):
+                        continue
+                    key = (s, e, label)
+                    if key in existing_keys or key in new_keys: continue
 
-                new_spans.append({
-                    "start": s, "end": e, "label": label, "text": matched_text,
-                    "confidence": 0.95, "source": "consistency_pass_ci"
-                })
-                new_keys.add(key)
-        except Exception as e:
-             if debug: print(f"Consistency Pass Error (CI): {e}")
+                    new_spans.append({
+                        "start": s, "end": e, "label": label, "text": matched_text,
+                        "confidence": 0.95, "source": "consistency_pass_ci"
+                    })
+                    new_keys.add(key)
+            except Exception as e:
+                 if debug: print(f"Consistency Pass Error (CI): {e}")
 
     # 3. Fuzzy Scan for ORGs (Per-candidate, expensive but necessary for complex forms)
     # Only iterate ORG candidates
+    fuzzy_org_count = 0
     for cand in all_candidates:
         if cand["label"] != "ORG":
             continue
+        if max_fuzzy_org_candidates and fuzzy_org_count >= max_fuzzy_org_candidates:
+            if debug:
+                print(f"Consistency Pass: Fuzzy ORG candidate limit reached ({max_fuzzy_org_candidates}).")
+            break
+        fuzzy_org_count += 1
 
         norm_tokens = cand.get("tokens") or []
         if len(norm_tokens) < 2:
