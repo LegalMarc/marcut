@@ -15,6 +15,13 @@ jobs:
       - name: Set up Python
         run: python3.11 --version
 
+      - name: Network diagnostics
+        run: |
+          echo "scutil dns:"; scutil --dns | head -20
+          echo "resolv.conf:"; cat /etc/resolv.conf
+          echo "curl pypi (5s timeout):"; curl -sS -m 5 -o /dev/null -w "http_code=%{http_code} time=%{time_total}\n" https://pypi.org || echo "curl FAILED rc=$?"
+          echo "dns lookup:"; (dscacheutil -q host -a name pypi.org &) ; sleep 3; echo done
+
       - name: Install Python dependencies
         run: |
           python3.11 -m pip install -U pip
