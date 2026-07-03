@@ -1555,6 +1555,9 @@ def _collect_enhanced_spans(
     progress_callback=None,
     warnings: Optional[List[Dict[str, Any]]] = None,
     suppressed: Optional[List[Dict[str, Any]]] = None,
+    backend: str = "ollama",
+    llama_gguf: str = "",
+    threads: int = 4,
     think_mode: bool = False,
     format_schema: Optional[Dict] = None,
 ) -> List[Dict[str, Any]]:
@@ -1570,13 +1573,15 @@ def _collect_enhanced_spans(
 
     chunks = make_chunks(text, max_len=chunk_tokens * 4, overlap=overlap * 4)
 
-    if model_id.endswith(".gguf") or ("/" in model_id and model_id.startswith("/")):
+    model_path = llama_gguf or model_id
+    if backend == "llama_cpp" or model_path.endswith(".gguf") or ("/" in model_path and model_path.startswith("/")):
         if debug:
-            print(f"Using LlamaCpp backend with model: {model_id}")
+            print(f"Using LlamaCpp backend with model: {model_path}")
         pipeline = LlamaCppRedactionPipeline(
-            model_path=model_id,
+            model_path=model_path,
             temperature=temperature,
             seed=seed,
+            threads=threads,
         )
         model_spans = pipeline.process_document(
             text, chunks, progress_callback=progress_callback
