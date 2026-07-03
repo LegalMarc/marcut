@@ -2111,6 +2111,37 @@ def _read_metadata_values(dm) -> dict:
     values = {}
     binary_parts: List[Dict[str, Any]] = []
     text_parts: Dict[str, List[str]] = {}
+    capture_warnings: List[Dict[str, Any]] = []
+    forensic_exports_enabled = (
+        _metadata_env_enabled("MARCUT_ENABLE_FORENSIC_EXPORTS")
+        or _metadata_env_enabled("MARCUT_ENABLE_BINARY_EXPORTS")
+    )
+    max_capture_string_chars = _metadata_env_int("MARCUT_METADATA_CAPTURE_MAX_STRING_CHARS", 20_000)
+    max_binary_capture_part_bytes = _metadata_env_int("MARCUT_REPORT_EXPORT_MAX_PART_BYTES", 2 * 1024 * 1024)
+    max_binary_capture_total_bytes = _metadata_env_int("MARCUT_REPORT_EXPORT_MAX_BYTES", 10 * 1024 * 1024)
+    captured_binary_bytes = 0
+
+    def _add_capture_warning(code: str, message: str, details: str = "") -> None:
+        warning = {"code": code, "message": message}
+        if details:
+            warning["details"] = details
+        capture_warnings.append(warning)
+
+    def _bounded_text(value: str, source: str) -> str | Dict[str, Any]:
+        text = value or ""
+        if max_capture_string_chars and len(text) > max_capture_string_chars:
+            _add_capture_warning(
+                "METADATA_CAPTURE_TEXT_TRUNCATED",
+                "A metadata text/XML preview was truncated before report retention.",
+                f"{source}: {len(text)} chars > {max_capture_string_chars} chars",
+            )
+            return {
+                "preview": text[:max_capture_string_chars],
+                "truncated": True,
+                "original_chars": len(text),
+                "limit_chars": max_capture_string_chars,
+            }
+        return text
 
     def _extract_text_from_part(part_blob) -> str:
         try:
@@ -2666,7 +2697,7 @@ def _read_metadata_values(dm) -> dict:
                         'part': name,
                         'root_tag': root_tag,
                         'namespace': root_ns,
-                        'xml': xml_content,
+                        'xml': _bounded_text(xml_content, name),
                     })
                 except Exception:
                     custom_xml_parts.append({'part': name})
@@ -2954,14 +2985,30 @@ def _read_metadata_values(dm) -> dict:
             else:
                 part_type = "other"
 
-            binary_parts.append({
+            entry = {
                 "name": name.strip("/"),
                 "type": part_type,
                 "size": len(data),
                 "content_type": getattr(part, "content_type", "") or "",
                 "extension": os.path.splitext(name)[1].lower(),
-                "data": data,
-            })
+            }
+            if forensic_exports_enabled:
+                if max_binary_capture_part_bytes and len(data) > max_binary_capture_part_bytes:
+                    _add_capture_warning(
+                        "METADATA_BINARY_CAPTURE_PART_LIMIT",
+                        "An embedded binary part was summarized instead of retained because it exceeded the per-part export limit.",
+                        f"{name}: {len(data)} bytes > {max_binary_capture_part_bytes} bytes",
+                    )
+                elif max_binary_capture_total_bytes and captured_binary_bytes + len(data) > max_binary_capture_total_bytes:
+                    _add_capture_warning(
+                        "METADATA_BINARY_CAPTURE_TOTAL_LIMIT",
+                        "Additional embedded binary parts were summarized instead of retained because the export byte limit was reached.",
+                        f"limit={max_binary_capture_total_bytes}",
+                    )
+                else:
+                    entry["data"] = data
+                    captured_binary_bytes += len(data)
+            binary_parts.append(entry)
 
         # ========== EXTERNAL RELATIONSHIPS ==========
         external_targets = []
@@ -3082,7 +3129,7 @@ def _read_metadata_values(dm) -> dict:
                 fast_save_entries.append({
                     "tag": tag_name,
                     "attributes": dict(el.attrib) if el.attrib else {},
-                    "xml": etree.tostring(el, encoding='unicode'),
+                    "xml": _bounded_text(etree.tostring(el, encoding='unicode'), tag_name),
                 })
             values['fast_save'] = fast_save_entries
 
@@ -3124,9 +3171,9 @@ def _read_metadata_values(dm) -> dict:
                             'part': name,
                             'namespace': ns,
                             'element': local_name,
-                            'text': (el.text or '').strip(),
+                            'text': _bounded_text((el.text or '').strip(), f"{name}/{local_name}"),
                             'attributes': dict(el.attrib) if el.attrib else {},
-                            'xml': etree.tostring(el, encoding='unicode'),
+                            'xml': _bounded_text(etree.tostring(el, encoding='unicode'), f"{name}/{local_name}"),
                         }
                         if ns in known_namespaces:
                             continue
@@ -3140,9 +3187,10 @@ def _read_metadata_values(dm) -> dict:
                         continue
                 # Alternate content blocks
                 for ac in root.findall(".//mc:AlternateContent", namespaces={"mc": "http://schemas.openxmlformats.org/markup-compatibility/2006"}):
+                    ac_xml = etree.tostring(ac, encoding='unicode')
                     alternate_content.append({
                         "part": name,
-                        "xml": etree.tostring(ac, encoding='unicode'),
+                        "xml": _bounded_text(ac_xml, f"{name}/AlternateContent"),
                     })
             except Exception:
                 continue
@@ -3155,6 +3203,8 @@ def _read_metadata_values(dm) -> dict:
 
     if binary_parts:
         values["_binary_parts"] = binary_parts
+    if capture_warnings:
+        values["_metadata_capture_warnings"] = capture_warnings
     return values
 
 
@@ -3380,17 +3430,65 @@ def _build_scrub_report(
         except Exception:
             return {"status": "unknown"}
 
-    def _serialize_value(val):
+    max_report_string_chars = _metadata_env_int("MARCUT_METADATA_REPORT_MAX_STRING_CHARS", 20_000)
+    max_report_list_items = _metadata_env_int("MARCUT_METADATA_REPORT_MAX_LIST_ITEMS", 200)
+    max_report_dict_items = _metadata_env_int("MARCUT_METADATA_REPORT_MAX_DICT_ITEMS", 200)
+
+    def _serialize_value(val, path: str = "metadata"):
         """Serialize complex values for JSON report while preserving structure."""
         if val is None:
             return None
-        if isinstance(val, (str, int, float, bool)):
+        if isinstance(val, str):
+            if max_report_string_chars and len(val) > max_report_string_chars:
+                _add_report_warning(
+                    "METADATA_REPORT_VALUE_TRUNCATED",
+                    "A metadata report value was truncated to keep the JSON/HTML report within budget.",
+                    f"{path}: {len(val)} chars > {max_report_string_chars} chars",
+                )
+                return {
+                    "preview": val[:max_report_string_chars],
+                    "truncated": True,
+                    "original_chars": len(val),
+                    "limit_chars": max_report_string_chars,
+                }
+            return val
+        if isinstance(val, (int, float, bool)):
             return val
         if isinstance(val, (list, tuple)):
-            return [_serialize_value(v) for v in val]
+            items = list(val)
+            limit = max_report_list_items
+            if limit and len(items) > limit:
+                _add_report_warning(
+                    "METADATA_REPORT_LIST_TRUNCATED",
+                    "A metadata report list was truncated to keep the JSON/HTML report within budget.",
+                    f"{path}: {len(items)} items > {limit} items",
+                )
+                return {
+                    "items": [_serialize_value(v, f"{path}[{idx}]") for idx, v in enumerate(items[:limit])],
+                    "truncated": True,
+                    "original_count": len(items),
+                    "limit_count": limit,
+                }
+            return [_serialize_value(v, f"{path}[{idx}]") for idx, v in enumerate(items)]
         if isinstance(val, dict):
             # Remove binary data, keep metadata
-            return {k: _serialize_value(v) for k, v in val.items() if k != 'data' and not k.startswith('_')}
+            visible_items = [(k, v) for k, v in val.items() if k != 'data' and not str(k).startswith('_')]
+            limit = max_report_dict_items
+            if limit and len(visible_items) > limit:
+                _add_report_warning(
+                    "METADATA_REPORT_DICT_TRUNCATED",
+                    "A metadata report dictionary was truncated to keep the JSON/HTML report within budget.",
+                    f"{path}: {len(visible_items)} entries > {limit} entries",
+                )
+                result = {
+                    k: _serialize_value(v, f"{path}.{k}")
+                    for k, v in visible_items[:limit]
+                }
+                result["_truncated"] = True
+                result["_original_count"] = len(visible_items)
+                result["_limit_count"] = limit
+                return result
+            return {k: _serialize_value(v, f"{path}.{k}") for k, v in visible_items}
         return str(val)
 
     def _summarize_parts(parts, label):
@@ -3539,6 +3637,11 @@ def _build_scrub_report(
         if details:
             warning["details"] = details
         report_warnings.append(warning)
+
+    for source_values in (before, after):
+        for warning in source_values.get("_metadata_capture_warnings") or []:
+            if isinstance(warning, dict):
+                report_warnings.append(warning)
 
     # ========== STRUCTURED BINARY EXPORT ==========
     binary_exports = []
@@ -3886,8 +3989,8 @@ def _build_scrub_report(
                 after_val = _summarize_parts(after_val, "ink parts")
 
             # Serialize for JSON output
-            before_serialized = _serialize_value(before_val)
-            after_serialized = _serialize_value(after_val)
+            before_serialized = _serialize_value(before_val, f"{group_name}.{field_name}.before")
+            after_serialized = _serialize_value(after_val, f"{group_name}.{field_name}.after")
 
             # Determine actual status based on whether values changed
             if was_enabled:
