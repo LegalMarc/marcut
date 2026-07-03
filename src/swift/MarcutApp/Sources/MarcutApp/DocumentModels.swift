@@ -1047,6 +1047,10 @@ class DebugLogger {
     var logURL: URL { logDirectoryURL.appendingPathComponent("marcut.log") }
     var logPath: String { logURL.path }
 
+    /// Directory containing this instance's log files (`~/Library/Application Support/MarcutApp/logs`,
+    /// or a fallback under the temporary directory if Application Support is unavailable/sandboxed).
+    var logsDirectoryURL: URL { logDirectoryURL }
+
     private init() {
         logDirectoryURL = DebugLogger.resolveLogDirectory()
         // Initialize log asynchronously to avoid blocking main thread
@@ -1174,5 +1178,32 @@ class DebugLogger {
 
     func clearLog() {
         try? FileManager.default.removeItem(at: logURL)
+    }
+
+    /// Discovers log files (`.log` extension) in `directory`, most-recently-modified first.
+    ///
+    /// Pure/testable: takes an explicit directory rather than reaching for `shared.logsDirectoryURL`,
+    /// so tests can point it at a temporary fixture directory. Returns an empty array if the
+    /// directory doesn't exist or contains no `.log` files.
+    static func discoverLogFiles(in directory: URL, fileManager: FileManager = .default) -> [URL] {
+        guard let entries = try? fileManager.contentsOfDirectory(
+            at: directory,
+            includingPropertiesForKeys: [.contentModificationDateKey],
+            options: [.skipsHiddenFiles]
+        ) else {
+            return []
+        }
+
+        let logFiles = entries.filter { $0.pathExtension.lowercased() == "log" }
+
+        return logFiles.sorted { lhs, rhs in
+            let lhsDate = (try? lhs.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate ?? .distantPast
+            let rhsDate = (try? rhs.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate ?? .distantPast
+            if lhsDate != rhsDate {
+                return lhsDate > rhsDate
+            }
+            // Stable tiebreaker for files with identical mtimes (e.g. fixtures created in the same instant).
+            return lhs.lastPathComponent < rhs.lastPathComponent
+        }
     }
 }

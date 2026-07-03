@@ -578,6 +578,48 @@ final class MarcutAppTests: XCTestCase {
         XCTAssertTrue(viewModel.hasFailedDocuments, "A failed document should flip the flag on")
     }
 
+    // MARK: - Log Viewer Tests
+
+    func testDiscoverLogFilesReturnsMostRecentlyModifiedFirst() throws {
+        let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let olderLog = tempDir.appendingPathComponent("marcut.log")
+        let newerLog = tempDir.appendingPathComponent("marcut-2.log")
+        let notALog = tempDir.appendingPathComponent("notes.txt")
+
+        try "older".write(to: olderLog, atomically: true, encoding: .utf8)
+        try "not a log".write(to: notALog, atomically: true, encoding: .utf8)
+        try "newer".write(to: newerLog, atomically: true, encoding: .utf8)
+
+        // Force distinct modification times so ordering is deterministic regardless of write speed.
+        let fm = FileManager.default
+        try fm.setAttributes([.modificationDate: Date(timeIntervalSinceNow: -60)], ofItemAtPath: olderLog.path)
+        try fm.setAttributes([.modificationDate: Date()], ofItemAtPath: newerLog.path)
+
+        // Compare by last path component rather than full URL: FileManager.contentsOfDirectory(at:)
+        // may return paths through a resolved symlink (e.g. /var vs /private/var on macOS), which
+        // is an irrelevant implementation detail for this test.
+        let discoveredNames = DebugLogger.discoverLogFiles(in: tempDir).map(\.lastPathComponent)
+
+        XCTAssertEqual(discoveredNames, ["marcut-2.log", "marcut.log"], "Log files should be sorted most-recently-modified first, and non-.log files excluded")
+    }
+
+    func testDiscoverLogFilesReturnsEmptyArrayWhenNoLogsExist() throws {
+        let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        XCTAssertTrue(DebugLogger.discoverLogFiles(in: tempDir).isEmpty, "Empty directory should yield no log files")
+    }
+
+    func testDiscoverLogFilesReturnsEmptyArrayWhenDirectoryMissing() throws {
+        let missingDir = FileManager.default.temporaryDirectory.appendingPathComponent("does-not-exist-\(UUID().uuidString)")
+
+        XCTAssertTrue(DebugLogger.discoverLogFiles(in: missingDir).isEmpty, "Nonexistent directory should yield no log files, not throw")
+    }
+
     // MARK: - Performance Tests
 
     func testRedactionStatusPerformance() throws {

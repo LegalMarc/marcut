@@ -42,6 +42,7 @@ struct SettingsView: View {
     @State private var showingExcludedWordsEditor = false
     @State private var showingSystemPromptEditor = false
     @State private var showingMetadataEditor = false
+    @State private var showingLogViewer = false
     @State private var metadataSettings = MetadataCleaningSettings.load()
     @State private var isCustomExcludedWords = UserOverridesManager.shared.hasCustomExcludedWords
     @State private var isCustomSystemPrompt = UserOverridesManager.shared.hasCustomSystemPrompt
@@ -123,7 +124,7 @@ struct SettingsView: View {
             "Chunk Size", "Chunk Overlap", "Processing Timeout", "Random Seed"
         ],
         .debug: [
-            "Debug", "Enable Debug Logging", "Open App Log", "Open Ollama Log", "Clear Logs"
+            "Debug", "Enable Debug Logging", "View Logs", "Open App Log", "Open Ollama Log", "Clear Logs"
         ]
     ]
 
@@ -281,6 +282,9 @@ struct SettingsView: View {
         }
         .sheet(isPresented: $showingMetadataEditor) {
             MetadataCleaningSheet(settings: $metadataSettings)
+        }
+        .sheet(isPresented: $showingLogViewer) {
+            LogViewerSheet()
         }
         .alert("Override Error", isPresented: overrideErrorBinding, presenting: overrideErrorMessage) { _ in
             Button("OK", role: .cancel) { }
@@ -929,6 +933,14 @@ struct SettingsView: View {
                 .padding(.top, 4)
 
             HStack(spacing: 12) {
+                Button("View Logs") {
+                    DebugLogger.shared.ensureLogInitialized()
+                    showingLogViewer = true
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                .accessibilityIdentifier("settings.debug.viewLogs")
+
                 Button("Open App Log") {
                     DebugLogger.shared.ensureLogInitialized()
                     let logURL = DebugLogger.shared.logURL
