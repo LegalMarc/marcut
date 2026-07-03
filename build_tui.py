@@ -292,13 +292,19 @@ def stream_pipe(pipe, prefix: str, buffer: List[str]) -> None:
     pipe.close()
 
 
-def run_with_live_output(label: str, cmd: Sequence[str], cwd: Path | None = None) -> None:
+def run_with_live_output(
+    label: str,
+    cmd: Sequence[str],
+    cwd: Path | None = None,
+    env: Optional[Dict[str, str]] = None,
+) -> None:
     """Run a command streaming its output live."""
     cwd = cwd or REPO_ROOT
 
     process = subprocess.Popen(
         list(cmd),
         cwd=str(cwd),
+        env={**os.environ, **(env or {})},
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
@@ -560,6 +566,7 @@ def run_appstore_release() -> None:
     run_with_live_output(
         "App Store Release Build",
         ["bash", str(script_path), "--skip-notarization"],
+        env={"MARCUT_ALLOW_NOTARIZATION_SKIP": "1"},
     )
     CONFIG = load_config()
 
