@@ -2288,6 +2288,16 @@ final class PythonBridgeService: ObservableObject {
             item.progress = 0.0
         }
 
+        if !usingMockBackend && settings.mode != .rules {
+            let ready = await waitForModelReadiness(modelName: settings.model)
+            if !ready {
+                logToFile(logPath, "❌ Model not ready after availability check: \(settings.model)")
+                item.status = .failed
+                item.errorMessage = "Model \(settings.model) is installed but not ready. Please try again."
+                return false
+            }
+        }
+
         // Prepare working directory inside App Support (sandbox-safe for child process)
         let inputURL = URL(fileURLWithPath: item.path)
         let baseName = inputURL.deletingPathExtension().lastPathComponent
@@ -2777,6 +2787,15 @@ CLI Error: Input file '\(displayInput)' is outside the sandboxed Application Sup
         return fallbackTriggers.contains(where: { lowered.contains($0) })
     }
 
+    static func modelDownloadCLIIdleTimeout(from environment: [String: String] = ProcessInfo.processInfo.environment) -> TimeInterval {
+        guard let raw = environment["MARCUT_MODEL_DOWNLOAD_CLI_IDLE_TIMEOUT"],
+              let value = Double(raw),
+              value > 0 else {
+            return 120.0
+        }
+        return max(0.1, value)
+    }
+
     func downloadModel(_ modelName: String, progress: @escaping (Double) -> Void) async -> Bool {
         lastModelDownloadError = nil
         modelDownloadCancelled = false
@@ -2831,9 +2850,15 @@ CLI Error: Input file '\(displayInput)' is outside the sandboxed Application Sup
                     // VERIFICATION: Check if the model is actually in the list
                     // We check for partial match because "llama3.2" might become "llama3.2:latest"
                     if isModelAvailable(modelName) {
-                        bridgeLog("✅ Model \(modelName) verified on disk.", component: "MODEL_DOWNLOAD")
-                        updateProgress(100.0)
-                        return true
+                        bridgeLog("✅ Model \(modelName) verified on disk; waiting for readiness.", component: "MODEL_DOWNLOAD")
+                        if await waitForModelReadiness(modelName: modelName, maxAttempts: 12) {
+                            updateProgress(100.0)
+                            return true
+                        }
+                        let message = "Download completed but model \(modelName) was not ready to serve requests."
+                        lastModelDownloadError = message
+                        bridgeLog("❌ \(message)", component: "MODEL_DOWNLOAD")
+                        return false
                     } else {
                         let message = "Download completed but model \(modelName) was not found on disk after refresh."
                         lastModelDownloadError = message
@@ -2880,10 +2905,14 @@ CLI Error: Input file '\(displayInput)' is outside the sandboxed Application Sup
                     bridgeLog("Download completed via CLI, refreshing model list...", component: "MODEL_DOWNLOAD")
                     await loadInstalledModels()
                     if isModelAvailable(modelName) {
-                        updateProgress(100.0)
-                        return true
+                        if await waitForModelReadiness(modelName: modelName, maxAttempts: 12) {
+                            updateProgress(100.0)
+                            return true
+                        }
+                        lastErrorMessage = "Download completed but model \(modelName) was not ready to serve requests."
+                    } else {
+                        lastErrorMessage = "Download completed but model \(modelName) was not found on disk after refresh."
                     }
-                    lastErrorMessage = "Download completed but model \(modelName) was not found on disk after refresh."
                 } else {
                     lastErrorMessage = "Model download failed via CLI. Please try again."
                 }
@@ -3042,16 +3071,58 @@ CLI Error: Input file '\(displayInput)' is outside the sandboxed Application Sup
 
         let outputQueue = DispatchQueue(label: "com.marcut.ollama.pull")
         final class OutputState: @unchecked Sendable {
+            private let lock = NSLock()
             var data = Data()
             var buffer = ""
+            var lastOutputAt = Date()
+            var stallMessage: String?
+            var didResume = false
+
+            func markOutput() {
+                lock.lock()
+                lastOutputAt = Date()
+                lock.unlock()
+            }
+
+            func secondsSinceOutput() -> TimeInterval {
+                lock.lock()
+                let elapsed = Date().timeIntervalSince(lastOutputAt)
+                lock.unlock()
+                return elapsed
+            }
+
+            func setStallMessage(_ message: String) {
+                lock.lock()
+                stallMessage = message
+                lock.unlock()
+            }
+
+            func takeStallMessage() -> String? {
+                lock.lock()
+                let message = stallMessage
+                lock.unlock()
+                return message
+            }
+
+            func tryMarkResumed() -> Bool {
+                lock.lock()
+                defer { lock.unlock() }
+                if didResume {
+                    return false
+                }
+                didResume = true
+                return true
+            }
         }
         let outputState = OutputState()
+        let idleTimeout = Self.modelDownloadCLIIdleTimeout()
 
         return try await withCheckedThrowingContinuation { continuation in
             pipe.fileHandleForReading.readabilityHandler = { handle in
                 let data = handle.availableData
                 guard !data.isEmpty else { return }
                 outputQueue.async { [outputState] in
+                    outputState.markOutput()
                     outputState.data.append(data)
                     guard let chunk = String(data: data, encoding: .utf8) else { return }
                     outputState.buffer.append(chunk)
@@ -3073,7 +3144,22 @@ CLI Error: Input file '\(displayInput)' is outside the sandboxed Application Sup
                 }
             }
 
+            let idleTimer = DispatchSource.makeTimerSource(queue: outputQueue)
+            let repeatMilliseconds = max(100, Int(min(idleTimeout / 4.0, 10.0) * 1000))
+            idleTimer.schedule(deadline: .now() + idleTimeout, repeating: .milliseconds(repeatMilliseconds))
+            idleTimer.setEventHandler { [outputState, process] in
+                guard process.isRunning else { return }
+                let idleFor = outputState.secondsSinceOutput()
+                guard idleFor >= idleTimeout else { return }
+                let message = "Ollama pull stalled with no output for \(Int(idleFor)) seconds. Please try again."
+                outputState.setStallMessage(message)
+                bridgeLog("MODEL_DOWNLOAD CLI stalled; terminating process PID \(process.processIdentifier): \(message)", component: "MODEL_DOWNLOAD")
+                process.terminate()
+            }
+            idleTimer.resume()
+
             process.terminationHandler = { _ in
+                idleTimer.cancel()
                 pipe.fileHandleForReading.readabilityHandler = nil
                 Task { @MainActor [weak self] in
                     if self?.activeModelDownloadProcess === process {
@@ -3096,7 +3182,12 @@ CLI Error: Input file '\(displayInput)' is outside the sandboxed Application Sup
 
                 let output = String(data: outputState.data, encoding: .utf8) ?? ""
                 let sanitizedOutput = removeANSIEscapeCodes(output).trimmingCharacters(in: .whitespacesAndNewlines)
-                if process.terminationStatus == 0 {
+                guard outputState.tryMarkResumed() else {
+                    return
+                }
+                if let stallMessage = outputState.takeStallMessage() {
+                    continuation.resume(throwing: NSError(domain: "Ollama", code: -4, userInfo: [NSLocalizedDescriptionKey: stallMessage]))
+                } else if process.terminationStatus == 0 {
                     continuation.resume(returning: true)
                 } else {
                     let message = sanitizedOutput.isEmpty
@@ -3110,11 +3201,14 @@ CLI Error: Input file '\(displayInput)' is outside the sandboxed Application Sup
                 self.activeModelDownloadProcess = process
                 try process.run()
             } catch {
+                idleTimer.cancel()
                 if self.activeModelDownloadProcess === process {
                     self.activeModelDownloadProcess = nil
                 }
                 pipe.fileHandleForReading.readabilityHandler = nil
-                continuation.resume(throwing: error)
+                if outputState.tryMarkResumed() {
+                    continuation.resume(throwing: error)
+                }
             }
         }
     }
