@@ -17,6 +17,7 @@ from datetime import datetime
 import time
 import requests
 from marcut.network_utils import normalize_ollama_base_url, ollama_cli_host_arg
+from marcut.model_naming import find_matching_model
 
 # Add parent directory to path for imports when running standalone
 if __name__ == "__main__":
@@ -283,8 +284,7 @@ class MarcutGUI:
                 return False
             data = r.json() or {}
             names = [m.get('name','') for m in data.get('models', [])]
-            base = self.model_name.split(':')[0]
-            return any(self.model_name in n or n.startswith(base) for n in names)
+            return find_matching_model(self.model_name, names)
         except Exception:
             return False
         
@@ -644,12 +644,9 @@ class MarcutGUI:
                 models_data = response.json()
                 available_models = [model['name'] for model in models_data.get('models', [])]
                 print(f"[DEBUG] Available models: {available_models}")
-                
-                # Check for exact match or prefix match
-                model_found = any(
-                    self.model_name in model or model.startswith(self.model_name.split(':')[0]) 
-                    for model in available_models
-                )
+
+                # Exact (library/model/tag) match -- see marcut.model_naming for rules
+                model_found = find_matching_model(self.model_name, available_models)
                 
                 if model_found:
                     self.model_status.config(text=f"✅ Model {self.model_name} ready")

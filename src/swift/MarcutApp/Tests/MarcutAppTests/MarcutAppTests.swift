@@ -276,6 +276,47 @@ final class MarcutAppTests: XCTestCase {
         )
     }
 
+    // MARK: - Model Name Normalization Parity Tests (ticket #21)
+    //
+    // `PythonBridgeService.normalizedModelIdentifier` is the Swift half of the
+    // model-name-parsing rules; `marcut.model_naming.parse_model_identifier` /
+    // `models_match` in `src/python/marcut/model_naming.py` is the Python (authoritative)
+    // half. There's no synchronous Swift->Python call path for a utility this small, so
+    // per ticket #21 option (b) we keep both implementations and cover them with mirrored
+    // fixture cases -- this test's cases correspond 1:1 with
+    // `tests/test_model_naming.py::TestParseModelIdentifier` /
+    // `TestModelsMatch::test_bare_name_matches_latest_tag`. If you change a case in one,
+    // update the other so drift is caught by CI.
+
+    func testNormalizedModelIdentifierMatchesPythonModelNaming() {
+        // Bare name: library prefix is implicit, so normalization is a no-op.
+        XCTAssertEqual(PythonBridgeService.normalizedModelIdentifier("llama3.2"), "llama3.2")
+
+        // Explicit tag is preserved as-is (tag resolution happens in manifestInfo, not here).
+        XCTAssertEqual(PythonBridgeService.normalizedModelIdentifier("llama3.2:3b"), "llama3.2:3b")
+
+        // Non-default library prefix is preserved.
+        XCTAssertEqual(PythonBridgeService.normalizedModelIdentifier("user/llama3.2:3b"), "user/llama3.2:3b")
+
+        // Default "library/" prefix collapses away.
+        XCTAssertEqual(PythonBridgeService.normalizedModelIdentifier("library/llama3.2:3b"), "llama3.2:3b")
+
+        // Registry host prefix is dropped, then the explicit "library/" segment collapses.
+        XCTAssertEqual(
+            PythonBridgeService.normalizedModelIdentifier("registry.ollama.ai/library/llama3.2:3b"),
+            "llama3.2:3b"
+        )
+
+        // Registry host prefix with a non-default library: only the last two segments survive.
+        XCTAssertEqual(
+            PythonBridgeService.normalizedModelIdentifier("registry.ollama.ai/user/llama3.2:3b"),
+            "user/llama3.2:3b"
+        )
+
+        // Surrounding whitespace is trimmed.
+        XCTAssertEqual(PythonBridgeService.normalizedModelIdentifier("  llama3.2:3b  "), "llama3.2:3b")
+    }
+
     // MARK: - Model Download Notification Tests
     //
     // NOTE: These tests inject fake closures for `modelDownloadAuthorizationRequester` and

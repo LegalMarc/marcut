@@ -799,7 +799,19 @@ final class PythonBridgeService: ObservableObject {
         ModelPromotion.canonicalExists(modelName: modelName, root: modelsDirectory)
     }
 
-    private func normalizedModelIdentifier(_ modelName: String) -> String {
+    /// Collapses a registry-host-prefixed or `library/`-prefixed model identifier down to
+    /// its canonical `[library/]model[:tag]` form (dropping the default `"library"` registry
+    /// namespace). Exposed as `static` (rather than `private`) so it is directly unit-testable,
+    /// matching the `modelDownloadCLIIdleTimeout(from:)` pattern used elsewhere in this file.
+    ///
+    /// This is the Swift-side half of the model-name-parsing rules. The Python-side
+    /// authoritative implementation lives in `marcut/model_naming.py`
+    /// (`parse_model_identifier` / `models_match`); the two are kept in sync via matching
+    /// fixture cases in `MarcutAppTests.testNormalizedModelIdentifierMatchesPythonModelNaming`
+    /// and `tests/test_model_naming.py` (see ticket #21 -- no synchronous Swift->Python call
+    /// path exists for this small a utility, so parity is enforced by mirrored test fixtures
+    /// rather than a single shared implementation).
+    static func normalizedModelIdentifier(_ modelName: String) -> String {
         let trimmed = modelName.trimmingCharacters(in: .whitespacesAndNewlines)
         let parts = trimmed.split(separator: "/")
         var relevant = Array(parts)
@@ -813,7 +825,7 @@ final class PythonBridgeService: ObservableObject {
     }
 
     func isModelAvailable(_ modelName: String) -> Bool {
-        let normalized = normalizedModelIdentifier(modelName)
+        let normalized = PythonBridgeService.normalizedModelIdentifier(modelName)
         return ModelPromotion.isModelAvailable(modelName: normalized, root: modelsDirectory)
     }
 
