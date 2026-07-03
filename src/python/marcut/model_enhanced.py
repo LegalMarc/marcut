@@ -33,6 +33,7 @@ import threading
 import concurrent.futures
 from dataclasses import dataclass, asdict
 import hashlib
+from .cancellation import ProcessingDeadlineExceeded, check_processing_deadline, remaining_seconds
 from .model import (
     parse_llm_response,
     _valid_candidate,
@@ -497,6 +498,7 @@ def ollama_validate_batch(
     full_text: str,
     doc_context: DocumentContext,
     temperature: float = 0.1,
+    seed: Optional[int] = None,
     skip_confidence: float = 0.95,
     warnings: Optional[List[Dict[str, Any]]] = None,
     think_mode: bool = False,
@@ -522,6 +524,8 @@ def ollama_validate_batch(
             "num_predict": 2048 # Increased for batch response
         }
     }
+    if seed is not None:
+        body["options"]["seed"] = seed
     if format_schema is not None:
         body["format"] = format_schema
 
@@ -535,7 +539,8 @@ def ollama_validate_batch(
     # Execute Request
     for attempt in retry_plan:
         try:
-            resp = requests.post(url, json=body, timeout=attempt["timeout"])
+            check_processing_deadline()
+            resp = requests.post(url, json=body, timeout=remaining_seconds(attempt["timeout"]))
             if resp.status_code == 200:
                 try:
                     res = resp.json()
@@ -687,6 +692,7 @@ def apply_llm_overrides_to_rule_spans(
                 text,
                 doc_context,
                 temperature,
+                seed=seed,
                 skip_confidence=skip_confidence,
                 think_mode=kwargs.get("think_mode", False),
                 format_schema=kwargs.get("format_schema", None),
@@ -741,6 +747,7 @@ def ollama_validate(
     full_text: str,
     doc_context: DocumentContext,
     temperature: float = 0.1,
+    seed: Optional[int] = None,
     think_mode: bool = False,
     format_schema: Optional[Dict] = None,
 ) -> Dict:
@@ -761,6 +768,8 @@ def ollama_validate(
             "num_predict": 500
         }
     }
+    if seed is not None:
+        body["options"]["seed"] = seed
     if format_schema is not None:
         body["format"] = format_schema
 
@@ -773,7 +782,8 @@ def ollama_validate(
 
     for attempt_idx, attempt in enumerate(retry_plan, 1):
         try:
-            resp = requests.post(url, json=body, timeout=attempt["timeout"])
+            check_processing_deadline()
+            resp = requests.post(url, json=body, timeout=remaining_seconds(attempt["timeout"]))
             status = resp.status_code
             if 500 <= status <= 599:
                 raise requests.exceptions.HTTPError(f"{status} Server Error", response=resp)
@@ -810,9 +820,10 @@ def ollama_validate(
 class IntelligentRedactionPipeline:
     """Main pipeline for intelligent entity extraction and validation."""
 
-    def __init__(self, model_id: str = "qwen2.5:14b", temperature: float = 0.1, skip_confidence: float = 0.95, llm_concurrency: int = 2, think_mode: bool = False, format_schema: Optional[Dict] = None):
+    def __init__(self, model_id: str = "qwen2.5:14b", temperature: float = 0.1, seed: Optional[int] = None, skip_confidence: float = 0.95, llm_concurrency: int = 2, think_mode: bool = False, format_schema: Optional[Dict] = None):
         self.model_id = model_id
         self.temperature = temperature
+        self.seed = seed
         self.skip_confidence = skip_confidence
         try:
             requested_concurrency = int(llm_concurrency)
@@ -901,6 +912,7 @@ class IntelligentRedactionPipeline:
         validation_lock = threading.Lock()
         current_chunk = 0
         total_chunks = len(chunks)
+        cancel_event = threading.Event()
 
         executor = concurrent.futures.ThreadPoolExecutor(max_workers=self.llm_concurrency)
         futures = []
@@ -922,12 +934,16 @@ class IntelligentRedactionPipeline:
 
             def do_validate(entities_to_proc):
                 try:
+                    if cancel_event.is_set():
+                        raise ProcessingDeadlineExceeded("Processing deadline exceeded")
+                    check_processing_deadline()
                     results = ollama_validate_batch(
                         self.model_id,
                         entities_to_proc,
                         text,
                         self.doc_context,
                         self.temperature,
+                        seed=self.seed,
                         skip_confidence=self.skip_confidence,
                         warnings=warnings,
                         think_mode=self.think_mode,
@@ -1019,15 +1035,23 @@ class IntelligentRedactionPipeline:
             extract_error = None
             for attempt_idx, wait_s in enumerate((0, 2), start=1):
                 try:
+                    if cancel_event.is_set():
+                        raise ProcessingDeadlineExceeded("Processing deadline exceeded")
+                    check_processing_deadline()
                     simple_spans = ollama_extract(
                         self.model_id,
                         chunk_text,
                         self.temperature,
-                        seed=42,
+                        seed=self.seed,
                         context=prompt_context
                     )
+                    if cancel_event.is_set():
+                        raise ProcessingDeadlineExceeded("Processing deadline exceeded")
+                    check_processing_deadline()
                     extract_error = None
                     break
+                except ProcessingDeadlineExceeded:
+                    raise
                 except Exception as e:
                     extract_error = e
                     print(f"Extraction attempt {attempt_idx} failed for chunk {chunk_idx}: {e}")
@@ -1035,6 +1059,9 @@ class IntelligentRedactionPipeline:
                         time.sleep(wait_s)
 
             with result_lock:
+                if cancel_event.is_set():
+                    raise ProcessingDeadlineExceeded("Processing deadline exceeded")
+                check_processing_deadline()
                 with chunk_lock:
                     current_chunk += 1
 
@@ -1117,6 +1144,7 @@ class IntelligentRedactionPipeline:
 
         try:
             for chunk_idx, chunk in enumerate(chunks):
+                check_processing_deadline()
                 # Emit chunk start immediately
                 emit_mass_event({
                     "type": "chunk_start",
@@ -1126,18 +1154,42 @@ class IntelligentRedactionPipeline:
 
                 futures.append(executor.submit(process_single_chunk, chunk_idx, chunk))
 
-            # Wait for all extraction chunks to complete
-            concurrent.futures.wait(futures)
+            # Wait for all extraction chunks to complete, polling so deadlines interrupt promptly.
+            pending = set(futures)
+            while pending:
+                check_processing_deadline()
+                done, pending = concurrent.futures.wait(
+                    pending,
+                    timeout=min(1.0, remaining_seconds(1.0)),
+                    return_when=concurrent.futures.FIRST_COMPLETED,
+                )
+                for future in done:
+                    future.result()
 
             # Final flush of validaton buffer
+            check_processing_deadline()
             val_futures = flush_validation(force=True, execute_async=True)
             validation_futures.extend(val_futures)
 
-            # Wait for all validation requests to complete
-            concurrent.futures.wait(validation_futures)
+            # Wait for all validation requests to complete, polling so deadlines interrupt promptly.
+            pending_validation = set(validation_futures)
+            while pending_validation:
+                check_processing_deadline()
+                done, pending_validation = concurrent.futures.wait(
+                    pending_validation,
+                    timeout=min(1.0, remaining_seconds(1.0)),
+                    return_when=concurrent.futures.FIRST_COMPLETED,
+                )
+                for future in done:
+                    future.result()
+        except (KeyboardInterrupt, ProcessingDeadlineExceeded):
+            cancel_event.set()
+            for future in futures + validation_futures:
+                future.cancel()
+            raise
 
         finally:
-            executor.shutdown(wait=True)
+            executor.shutdown(wait=False, cancel_futures=True)
             if stop_progress:
                 stop_progress.set()
             if progress_thread:
@@ -1196,6 +1248,7 @@ def run_enhanced_model(
         pipeline = IntelligentRedactionPipeline(
             model_id,
             temperature,
+            seed=seed,
             skip_confidence=skip_confidence,
             llm_concurrency=llm_concurrency,
             think_mode=think_mode,
@@ -1211,7 +1264,7 @@ def run_enhanced_model(
     elif backend == "llama_cpp":
         if not model_path:
             raise ValueError("model_path required for llama_cpp backend")
-        pipeline = LlamaCppRedactionPipeline(model_path, temperature, seed)
+        pipeline = LlamaCppRedactionPipeline(model_path, temperature, seed, threads=kwargs.get("threads", 4))
         return pipeline.process_document(text, chunks, progress_callback=progress_callback)
     else:
         raise ValueError(f"Unsupported backend: {backend}. Use 'ollama' or 'llama_cpp'")
@@ -1225,10 +1278,11 @@ _llama_model_path = None
 class LlamaCppRedactionPipeline:
     """LLama.cpp-based redaction pipeline using direct GGUF model loading."""
 
-    def __init__(self, model_path: str, temperature: float = 0.1, seed: Optional[int] = None):
+    def __init__(self, model_path: str, temperature: float = 0.1, seed: Optional[int] = None, threads: int = 4):
         self.model_path = model_path
         self.temperature = temperature
         self.seed = seed or 42
+        self.threads = max(1, int(threads or 4))
         self._llama_model = None
 
     def _get_model(self):
@@ -1250,6 +1304,7 @@ class LlamaCppRedactionPipeline:
                 _llama_model = Llama(
                     model_path=self.model_path,
                     n_ctx=8192,  # Context window
+                    n_threads=self.threads,
                     n_gpu_layers=-1,  # Offload all layers to GPU if available
                     seed=self.seed,
                     verbose=False

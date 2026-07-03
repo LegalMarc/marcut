@@ -156,6 +156,8 @@ def main():
             temperature=a.temp,
             seed=a.seed,
             llm_skip_confidence=a.llm_skip_confidence,
+            llama_gguf=a.llama_gguf,
+            threads=a.threads,
             log_path=f"/tmp/marcut_cli_{a.mode}_{a.model.replace(':', '_')}.log" if a.debug else None,
             timing=getattr(a, 'timing', False) or getattr(a, 'llm_detail', False),
             llm_detail=getattr(a, 'llm_detail', False),

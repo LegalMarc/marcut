@@ -158,6 +158,8 @@ def run_unified_redaction(
     timing: bool = False,
     llm_detail: bool = False,
     llm_skip_confidence: float = 0.95,
+    llama_gguf: Optional[str] = None,
+    threads: int = 4,
     progress_callback=None,
 ) -> Dict[str, Any]:
     """
@@ -191,6 +193,11 @@ def run_unified_redaction(
         mode = "rules"
         model = "mock"
         backend = "mock"
+    elif backend == "llama_cpp":
+        if llama_gguf:
+            model = llama_gguf
+        elif not (model and (model.endswith(".gguf") or os.path.sep in model)):
+            raise ValueError("llama_cpp backend requires --llama-gguf or a GGUF model path")
 
     # Initialize logging
     setup_logging(debug, log_path)
@@ -236,6 +243,8 @@ def run_unified_redaction(
             timing=timing,
             llm_detail=llm_detail,
             llm_skip_confidence=llm_skip_confidence,
+            llama_gguf=llama_gguf or "",
+            threads=threads,
             progress_callback=progress_callback,
         )
         
