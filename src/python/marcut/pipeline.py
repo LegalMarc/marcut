@@ -83,6 +83,7 @@ import traceback
 import warnings
 import time
 import os
+import tempfile
 from typing import List, Dict, Any, Tuple, Optional, Callable, TypedDict
 from .docx_io import DocxMap, MetadataCleaningSettings
 from .docx_revisions import accept_revisions_in_docx_bytes
@@ -1247,6 +1248,35 @@ def _build_report_settings(
     return settings
 
 
+def _sibling_temp_path(final_path: str) -> str:
+    directory = os.path.dirname(final_path) or "."
+    basename = os.path.basename(final_path)
+    stem, ext = os.path.splitext(basename)
+    fd, temp_path = tempfile.mkstemp(prefix=f".{stem}.", suffix=f".tmp{ext}", dir=directory)
+    os.close(fd)
+    try:
+        os.unlink(temp_path)
+    except FileNotFoundError:
+        pass
+    return temp_path
+
+
+def _replace_existing_temp(temp_path: Optional[str], final_path: Optional[str]) -> None:
+    if temp_path and final_path and os.path.exists(temp_path):
+        os.replace(temp_path, final_path)
+
+
+def _cleanup_temp_artifacts(paths: List[Optional[str]]) -> None:
+    for path in paths:
+        if not path:
+            continue
+        try:
+            if os.path.exists(path):
+                os.remove(path)
+        except OSError:
+            pass
+
+
 def _finalize_and_write(
     dm: DocxMap,
     text: str,
@@ -1374,29 +1404,45 @@ def _finalize_and_write(
     # Scrub metadata using user-configured settings
     dm.scrub_metadata(metadata_settings)
 
-    dm.save(output_path)
+    output_temp_path = _sibling_temp_path(output_path)
+    report_temp_path = _sibling_temp_path(report_path)
+    report_html_temp_path = os.path.splitext(report_temp_path)[0] + ".html"
+    scrub_report_temp_path: Optional[str] = None
+    scrub_html_temp_path: Optional[str] = None
+    scrub_html_final_path: Optional[str] = None
+    temp_paths: List[Optional[str]] = [output_temp_path, report_temp_path, report_html_temp_path]
 
-    redaction_changes_created = bool(replacements)
-    if metadata_settings.clean_track_changes and not redaction_changes_created:
-        try:
-            cleaned_bytes, changed = accept_revisions_in_docx_bytes(output_path, debug=debug)
-            if changed and cleaned_bytes:
-                with open(output_path, "wb") as fh:
-                    fh.write(cleaned_bytes)
-                warnings.append({
-                    "code": "TRACK_CHANGES_REMOVED",
-                    "message": "Track changes were accepted and removed per settings."
-                })
-        except Exception as e:
-            warnings.append({
-                "code": "TRACK_CHANGES_REMOVE_FAILED",
-                "message": "Unable to remove track changes after redaction.",
-                "details": str(e)
-            })
-    if scrub_report_path and scrub_before_values is not None:
-        try:
+    try:
+        dm.save(output_temp_path)
+
+        redaction_changes_created = bool(replacements)
+        if metadata_settings.clean_track_changes and not redaction_changes_created:
             try:
-                dm_after = DocxMap.load(output_path)
+                cleaned_bytes, changed = accept_revisions_in_docx_bytes(output_temp_path, debug=debug)
+                if changed and cleaned_bytes:
+                    with open(output_temp_path, "wb") as fh:
+                        fh.write(cleaned_bytes)
+                    warnings.append({
+                        "code": "TRACK_CHANGES_REMOVED",
+                        "message": "Track changes were accepted and removed per settings."
+                    })
+            except Exception as e:
+                warnings.append({
+                    "code": "TRACK_CHANGES_REMOVE_FAILED",
+                    "message": "Unable to remove track changes after redaction.",
+                    "details": str(e)
+                })
+
+        if scrub_report_path and scrub_before_values is not None:
+            scrub_report_temp_path = _sibling_temp_path(scrub_report_path)
+            scrub_html_temp_path = os.path.splitext(scrub_report_temp_path)[0] + ".html"
+            scrub_html_final_path = os.path.splitext(scrub_report_path)[0] + ".html"
+            temp_paths.extend([scrub_report_temp_path, scrub_html_temp_path])
+            report_dir = os.path.dirname(scrub_report_path)
+            if report_dir:
+                os.makedirs(report_dir, exist_ok=True)
+            try:
+                dm_after = DocxMap.load(output_temp_path)
                 scrub_after_values = _read_metadata_values(dm_after)
             except Exception:
                 scrub_after_values = _read_metadata_values(dm)
@@ -1411,15 +1457,12 @@ def _finalize_and_write(
                 report_dir=os.path.dirname(scrub_report_path),
                 warnings=warnings,
             )
-            report_dir = os.path.dirname(scrub_report_path)
-            if report_dir:
-                os.makedirs(report_dir, exist_ok=True)
-            write_json_file(scrub_report_path, report)
+            write_json_file(scrub_report_temp_path, report)
 
             # Generate HTML report alongside JSON
             try:
                 from .report_html import generate_report_from_json_file
-                html_report_path = generate_report_from_json_file(scrub_report_path)
+                html_report_path = generate_report_from_json_file(scrub_report_temp_path)
                 if not html_report_path or not os.path.exists(html_report_path):
                     raise RuntimeError("HTML report generation did not produce a file")
                 make_private_file(html_report_path)
@@ -1434,49 +1477,56 @@ def _finalize_and_write(
                     "message": "Scrub report HTML generation failed.",
                     "details": str(html_err)
                 })
-                try:
-                    write_json_file(scrub_report_path, report)
-                except Exception:
-                    pass
+                write_json_file(scrub_report_temp_path, report)
+
+        # Generate audit report
+        audit = [{
+            "start": sp["start"],
+            "end": sp["end"],
+            "label": sp["label"],
+            "entity_id": sp.get("entity_id"),
+            "confidence": sp.get("confidence", 0.0),
+            "source": sp.get("source", ""),
+            "text": sp.get("text", "")[:120],
+            "validated": sp.get("validated"),
+            "validation_result": sp.get("validation_result")
+        } for sp in spans]
+
+        try:
+            write_report(
+                report_temp_path,
+                input_path,
+                model_info,
+                audit,
+                settings=report_settings,
+                warnings=warnings,
+                suppressed=suppressed,
+            )
         except Exception as e:
-            warnings.append({
-                "code": "SCRUB_REPORT_WRITE_FAILED",
-                "message": "Scrub report could not be written.",
-                "details": str(e)
-            })
-            if debug:
-                print(f"[MARCUT_PIPELINE] Failed to write scrub report: {e}")
+            raise RedactionError(
+                message="Failed to write audit report",
+                error_code="REPORT_SAVE_FAILED",
+                technical_details=f"Report path: {report_path}, Error: {str(e)}",
+                original_error=e
+            )
 
-    # Generate audit report
-    audit = [{
-        "start": sp["start"],
-        "end": sp["end"],
-        "label": sp["label"],
-        "entity_id": sp.get("entity_id"),
-        "confidence": sp.get("confidence", 0.0),
-        "source": sp.get("source", ""),
-        "text": sp.get("text", "")[:120],
-        "validated": sp.get("validated"),
-        "validation_result": sp.get("validation_result")
-    } for sp in spans]
-
-    try:
-        write_report(
-            report_path,
-            input_path,
-            model_info,
-            audit,
-            settings=report_settings,
-            warnings=warnings,
-            suppressed=suppressed,
-        )
+        _replace_existing_temp(report_temp_path, report_path)
+        _replace_existing_temp(report_html_temp_path, os.path.splitext(report_path)[0] + ".html")
+        _replace_existing_temp(scrub_report_temp_path, scrub_report_path)
+        _replace_existing_temp(scrub_html_temp_path, scrub_html_final_path)
+        _replace_existing_temp(output_temp_path, output_path)
+    except RedactionError:
+        _cleanup_temp_artifacts(temp_paths)
+        raise
     except Exception as e:
+        _cleanup_temp_artifacts(temp_paths)
         raise RedactionError(
-            message="Failed to write audit report",
-            error_code="REPORT_SAVE_FAILED",
-            technical_details=f"Report path: {report_path}, Error: {str(e)}",
-            original_error=e
+            message="Failed to finalize output artifacts",
+            error_code="ARTIFACT_FINALIZE_FAILED",
+            technical_details=str(e),
+            original_error=e,
         )
+    _cleanup_temp_artifacts(temp_paths)
     return 0
 
 def _collect_rule_spans(text: str, debug: bool) -> List[Dict[str, Any]]:
