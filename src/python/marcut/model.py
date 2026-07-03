@@ -6,6 +6,7 @@ import sys
 import re
 import time
 from .network_utils import normalize_ollama_base_url
+from .cancellation import check_processing_deadline, remaining_seconds
 
 DEFAULT_EXTRACT_SYSTEM = """Extract entities for legal document redaction. Output JSON only.
 
@@ -602,6 +603,7 @@ def ollama_extract(
         num_predict = 2048
 
     def _request(prompt: str, format_value) -> str:
+        check_processing_deadline()
         resp = requests.post(
             f"{base_url}/api/generate",
             json={
@@ -617,7 +619,7 @@ def ollama_extract(
                     "top_p": 0.9
                 },
                 },
-            timeout=request_timeout
+            timeout=remaining_seconds(request_timeout)
         )
         resp.raise_for_status()
         payload = resp.json()

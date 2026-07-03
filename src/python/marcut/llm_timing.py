@@ -7,6 +7,7 @@ import sys
 import os
 import requests
 from typing import List, Dict, Any, Tuple, Optional
+from .cancellation import check_processing_deadline, remaining_seconds
 
 from .model import (
     get_ollama_base_url,
@@ -50,6 +51,7 @@ def ollama_extract_with_timing(
     # Make HTTP request
     t1 = time.perf_counter()
     try:
+        check_processing_deadline()
         body = {
             "model": model, "prompt": base_prompt, "stream": False, "think": think_mode,
             "options": {"temperature": max(temperature, 0.1), "seed": seed, "num_ctx": 12288, "num_predict": num_predict, "top_p": 0.9}
@@ -60,7 +62,7 @@ def ollama_extract_with_timing(
         resp = requests.post(
             f"{base_url}/api/generate",
             json=body,
-            timeout=request_timeout
+            timeout=remaining_seconds(request_timeout)
         )
         resp.raise_for_status()
     except requests.exceptions.RequestException as e:
