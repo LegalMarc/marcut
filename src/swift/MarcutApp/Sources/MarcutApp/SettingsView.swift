@@ -1,5 +1,6 @@
 import SwiftUI
 import AppKit
+import UniformTypeIdentifiers
 
 /// App appearance theme preference
 enum AppTheme: String, CaseIterable {
@@ -52,6 +53,8 @@ struct SettingsView: View {
     @State private var systemPromptBaseline = ""
     @State private var overrideErrorMessage: String?
     @State private var downloadsAccessError: String?
+    @State private var profileErrorMessage: String?
+    @State private var profileImportSucceeded = false
     private static let advancedModeKey = "MarcutApp.AdvancedModeEnabled"
     private static let advancedAIModeKey = "MarcutApp.AdvancedAIMode"
     private static let advancedConfidenceKey = "MarcutApp.AdvancedLLMConfidence"
@@ -108,7 +111,9 @@ struct SettingsView: View {
             "Choose light, dark, or follow system appearance.", "Metadata Cleaning",
             "Remove hidden document properties during redaction.", "Configure Cleaning…",
             "Excluded Terms", "Phrases that should never be redacted.", "Customize…",
-            "Edit Custom List…", "Reset to Defaults", "Advanced Mode",
+            "Edit Custom List…", "Reset to Defaults", "Settings Profile",
+            "Share this configuration with your team as a JSON file, or load one someone else exported.",
+            "Export Profile…", "Import Profile…", "Advanced Mode",
             "Show advanced AI controls and override modes."
         ],
         .rulesEngine: [
@@ -291,6 +296,18 @@ struct SettingsView: View {
                 .accessibilityIdentifier("settings.overrideError.ok")
         } message: { message in
             Text(message)
+        }
+        .alert("Import Failed", isPresented: profileErrorBinding, presenting: profileErrorMessage) { _ in
+            Button("OK", role: .cancel) { }
+                .accessibilityIdentifier("settings.profile.importError.ok")
+        } message: { message in
+            Text(message)
+        }
+        .alert("Profile Imported", isPresented: $profileImportSucceeded) {
+            Button("OK", role: .cancel) { }
+                .accessibilityIdentifier("settings.profile.importSuccess.ok")
+        } message: {
+            Text("Settings were replaced with the imported profile. Click Save Settings to apply.")
         }
     }
 
@@ -573,6 +590,32 @@ struct SettingsView: View {
                             .controlSize(.small)
                             .accessibilityIdentifier("settings.excludedWords.reset")
                         }
+                    }
+                }
+
+                Divider()
+
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("Settings Profile")
+                        .font(.system(size: 14, weight: .medium))
+                    Text("Share this configuration with your team as a JSON file, or load one someone else exported.")
+                        .font(.system(size: 12))
+                        .foregroundColor(CustomColors.secondaryText(for: colorScheme))
+
+                    HStack(spacing: 8) {
+                        Button("Export Profile…") {
+                            exportSettingsProfile()
+                        }
+                        .buttonStyle(.bordered)
+                        .controlSize(.small)
+                        .accessibilityIdentifier("settings.profile.export")
+
+                        Button("Import Profile…") {
+                            importSettingsProfile()
+                        }
+                        .buttonStyle(.bordered)
+                        .controlSize(.small)
+                        .accessibilityIdentifier("settings.profile.import")
                     }
                 }
 
@@ -996,6 +1039,81 @@ struct SettingsView: View {
             get: { overrideErrorMessage != nil },
             set: { if !$0 { overrideErrorMessage = nil } }
         )
+    }
+
+    private var profileErrorBinding: Binding<Bool> {
+        Binding(
+            get: { profileErrorMessage != nil },
+            set: { if !$0 { profileErrorMessage = nil } }
+        )
+    }
+
+    // MARK: - Settings Profile Export/Import
+
+    private func exportSettingsProfile() {
+        let profile = RedactionProfile(metadataCleaningSettings: metadataSettings, redactionSettings: localSettings)
+
+        let data: Data
+        do {
+            data = try profile.encoded()
+        } catch {
+            profileErrorMessage = "Could not prepare the profile for export: \(error.localizedDescription)"
+            return
+        }
+
+        let panel = NSSavePanel()
+        panel.title = "Export Settings Profile"
+        panel.nameFieldStringValue = "Marcut Settings Profile.json"
+        panel.allowedContentTypes = [UTType.json]
+        panel.canCreateDirectories = true
+        panel.directoryURL = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first
+
+        guard panel.runModal() == .OK, let destinationURL = panel.url else { return }
+
+        let securityScopedURL = destinationURL.deletingLastPathComponent()
+        let didStartAccess = securityScopedURL.startAccessingSecurityScopedResource()
+        defer {
+            if didStartAccess {
+                securityScopedURL.stopAccessingSecurityScopedResource()
+            }
+        }
+
+        do {
+            try data.write(to: destinationURL, options: .atomic)
+        } catch {
+            profileErrorMessage = "Could not write the profile file: \(error.localizedDescription)"
+        }
+    }
+
+    private func importSettingsProfile() {
+        let panel = NSOpenPanel()
+        panel.title = "Import Settings Profile"
+        panel.canChooseDirectories = false
+        panel.canChooseFiles = true
+        panel.allowsMultipleSelection = false
+        panel.allowedContentTypes = [UTType.json]
+        panel.directoryURL = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first
+
+        guard panel.runModal() == .OK, let sourceURL = panel.url else { return }
+
+        let didStartAccess = sourceURL.startAccessingSecurityScopedResource()
+        defer {
+            if didStartAccess {
+                sourceURL.stopAccessingSecurityScopedResource()
+            }
+        }
+
+        do {
+            let data = try Data(contentsOf: sourceURL)
+            let profile = try RedactionProfile.decoded(from: data)
+            // Replace current values wholesale — no merging with existing settings.
+            localSettings = profile.redactionSettings
+            metadataSettings = profile.metadataCleaningSettings
+            metadataSettings.save()
+            profileImportSucceeded = true
+        } catch {
+            profileErrorMessage = error.localizedDescription
+        }
     }
 
     private var appThemeBinding: Binding<AppTheme> {

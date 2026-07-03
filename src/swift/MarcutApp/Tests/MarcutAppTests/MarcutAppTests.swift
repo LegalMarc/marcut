@@ -373,6 +373,84 @@ final class MarcutAppTests: XCTestCase {
     // to materialize its search field on macOS); reviewers with an Xcode/app-bundle build should
     // confirm visually as a follow-up.
 
+    // MARK: - Settings Profile Export/Import Tests
+
+    /// Builds a non-default settings pair so a round-trip test can't trivially pass by
+    /// coincidentally matching struct defaults on both sides.
+    private func nonDefaultMetadataCleaningSettings() -> MetadataCleaningSettings {
+        var settings = MetadataCleaningSettings.none
+        settings.cleanAuthor = true
+        settings.cleanCreatedDate = true
+        settings.cleanCustomXMLParts = true
+        return settings
+    }
+
+    private func nonDefaultRedactionSettings() -> RedactionSettings {
+        var settings = RedactionSettings()
+        settings.mode = .llmOverrides
+        settings.model = "mistral:7b"
+        settings.backend = "mock"
+        settings.debug = true
+        settings.temperature = 0.42
+        settings.seed = 7
+        settings.chunkTokens = 900
+        settings.overlap = 50
+        settings.llmConcurrency = 4
+        settings.processingTimeoutSeconds = 1800
+        settings.enabledRules = [.email, .phone, .ssn]
+        settings.llmConfidenceThreshold = 75
+        return settings
+    }
+
+    func testRedactionProfileRoundTripPreservesValues() throws {
+        let metadata = nonDefaultMetadataCleaningSettings()
+        let redaction = nonDefaultRedactionSettings()
+        let original = RedactionProfile(metadataCleaningSettings: metadata, redactionSettings: redaction)
+
+        let data = try original.encoded()
+        let decoded = try RedactionProfile.decoded(from: data)
+
+        XCTAssertEqual(decoded.schemaVersion, RedactionProfile.currentSchemaVersion)
+        XCTAssertEqual(decoded.metadataCleaningSettings, metadata)
+        XCTAssertEqual(decoded.redactionSettings, redaction)
+        XCTAssertEqual(decoded, original)
+    }
+
+    func testRedactionProfileDecodeRejectsMalformedJSONWithoutMutatingState() throws {
+        let malformed = Data("{ this is not valid json".utf8)
+
+        let existingSettings = nonDefaultRedactionSettings()
+
+        XCTAssertThrowsError(try RedactionProfile.decoded(from: malformed)) { error in
+            XCTAssertTrue(error is RedactionProfile.ProfileError)
+        }
+
+        // Decoding a bad payload must never touch state the caller already has in hand.
+        XCTAssertEqual(existingSettings, nonDefaultRedactionSettings())
+    }
+
+    func testRedactionProfileDecodeRejectsUnrecognizedSchemaVersionWithoutMutatingState() throws {
+        let metadata = nonDefaultMetadataCleaningSettings()
+        let redaction = nonDefaultRedactionSettings()
+        var futureProfile = RedactionProfile(metadataCleaningSettings: metadata, redactionSettings: redaction)
+        futureProfile.schemaVersion = RedactionProfile.currentSchemaVersion + 1
+        let data = try futureProfile.encoded()
+
+        let existingSettings = nonDefaultRedactionSettings()
+
+        XCTAssertThrowsError(try RedactionProfile.decoded(from: data)) { error in
+            guard case RedactionProfile.ProfileError.unsupportedSchemaVersion(let found, let supported) = error else {
+                XCTFail("Expected unsupportedSchemaVersion, got \(error)")
+                return
+            }
+            XCTAssertEqual(found, RedactionProfile.currentSchemaVersion + 1)
+            XCTAssertEqual(supported, RedactionProfile.currentSchemaVersion)
+        }
+
+        // Import must reject the whole file before applying anything — no partial application.
+        XCTAssertEqual(existingSettings, nonDefaultRedactionSettings())
+    }
+
     // MARK: - Mass Progress Tests
 
     func testMassTotalDeferredUntilEnhancedStage() throws {

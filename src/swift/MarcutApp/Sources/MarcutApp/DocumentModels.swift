@@ -845,7 +845,7 @@ enum DocumentOperation: String, Sendable {
     case scrub
 }
 
-enum RedactionMode: String, CaseIterable {
+enum RedactionMode: String, CaseIterable, Codable {
     case rules = "rules"
     case rulesOverride = "rules_override"
     case constrainedOverrides = "constrained_overrides"
@@ -971,7 +971,7 @@ enum RedactionRule: String, CaseIterable, Identifiable, Codable, Hashable {
     }
 }
 
-struct RedactionSettings {
+struct RedactionSettings: Codable, Equatable {
     static let standardNormalMode: RedactionMode = .rulesOverride
     static let standardNormalModeConfidence: Int = 99
     static let standardNormalModeTemperature: Double = 0.0
@@ -1003,6 +1003,71 @@ struct RedactionSettings {
 
     var llmConfidenceThresholdValue: Double {
         Double(llmConfidenceThreshold) / 100.0
+    }
+}
+
+// MARK: - Shareable Settings Profile (Export/Import)
+
+/// A JSON-serializable bundle of `MetadataCleaningSettings` and `RedactionSettings` that a user
+/// can export to a file and share with a legal team, or import to replace their current settings.
+struct RedactionProfile: Codable, Equatable {
+    /// Bump this whenever the profile's on-disk shape changes in a way older/newer clients can't
+    /// safely round-trip (e.g. removing a field, changing its meaning). Additive fields with
+    /// `decodeIfPresent` + defaults do not require a bump.
+    static let currentSchemaVersion = 1
+
+    var schemaVersion: Int
+    var metadataCleaningSettings: MetadataCleaningSettings
+    var redactionSettings: RedactionSettings
+
+    init(metadataCleaningSettings: MetadataCleaningSettings, redactionSettings: RedactionSettings) {
+        self.schemaVersion = Self.currentSchemaVersion
+        self.metadataCleaningSettings = metadataCleaningSettings
+        self.redactionSettings = redactionSettings
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case schemaVersion
+        case metadataCleaningSettings
+        case redactionSettings
+    }
+
+    enum ProfileError: LocalizedError {
+        case unsupportedSchemaVersion(found: Int, supported: Int)
+        case malformed(String)
+
+        var errorDescription: String? {
+            switch self {
+            case .unsupportedSchemaVersion(let found, let supported):
+                return "This profile was created with an unsupported schema version (\(found)). This version of Marcut supports schema version \(supported)."
+            case .malformed(let detail):
+                return "This profile file could not be read: \(detail)"
+            }
+        }
+    }
+
+    /// Encodes this profile to JSON data (sorted keys for stable, diffable output).
+    func encoded() throws -> Data {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        return try encoder.encode(self)
+    }
+
+    /// Decodes and validates a profile from JSON data. Throws `ProfileError` on malformed JSON
+    /// or an unrecognized schema version rather than partially applying any values.
+    static func decoded(from data: Data) throws -> RedactionProfile {
+        let profile: RedactionProfile
+        do {
+            profile = try JSONDecoder().decode(RedactionProfile.self, from: data)
+        } catch {
+            throw ProfileError.malformed(error.localizedDescription)
+        }
+
+        guard profile.schemaVersion == currentSchemaVersion else {
+            throw ProfileError.unsupportedSchemaVersion(found: profile.schemaVersion, supported: currentSchemaVersion)
+        }
+
+        return profile
     }
 }
 
