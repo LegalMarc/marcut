@@ -711,6 +711,125 @@ final class MarcutAppTests: XCTestCase {
             }
         }
     }
+
+    // MARK: - Excluded-Word Match Preview Tests
+    //
+    // Ground truth for these expectations was captured by running the production
+    // matcher directly (`marcut.rules._is_excluded`) against the same phrases, e.g.:
+    //   PYTHONPATH=src/python python3 -c "from marcut.rules import _is_excluded; ..."
+    // so this exercises the exact same rule (case-insensitivity, determiner
+    // stripping, plural/singular equivalence, trailing punctuation, regex support)
+    // used by `ExcludedWordMatchPreview` in SettingsView.swift.
+
+    private func excludedWordEntries(fromLines lines: [String]) -> [ExcludedWordMatcher.CompiledEntry] {
+        ExcludedWordMatcher.baseEntries + ExcludedWordMatcher.compileEntries(fromLines: lines)
+    }
+
+    func testExcludedWordMatcherMatchesExactLiteral() throws {
+        let entries = excludedWordEntries(fromLines: ["Non-Disclosure Agreement", "Acme Widgets"])
+        let result = ExcludedWordMatcher.match("Non-Disclosure Agreement", entries: entries)
+        XCTAssertTrue(result.matched)
+        XCTAssertEqual(result.matchedEntry, "Non-Disclosure Agreement")
+    }
+
+    func testExcludedWordMatcherIsCaseInsensitive() throws {
+        let entries = excludedWordEntries(fromLines: ["Confidential Information"])
+        XCTAssertTrue(ExcludedWordMatcher.match("confidential information", entries: entries).matched)
+        XCTAssertTrue(ExcludedWordMatcher.match("CONFIDENTIAL INFORMATION", entries: entries).matched)
+    }
+
+    func testExcludedWordMatcherStripsLeadingDeterminer() throws {
+        let entries = excludedWordEntries(fromLines: ["Board of Directors"])
+        XCTAssertTrue(ExcludedWordMatcher.match("the Board of Directors", entries: entries).matched)
+        XCTAssertTrue(ExcludedWordMatcher.match("Board of Directors", entries: entries).matched)
+        XCTAssertTrue(ExcludedWordMatcher.match("certain Board of Directors", entries: entries).matched)
+    }
+
+    /// Regression test for two STACKED leading determiners (e.g. "all such Notices"
+    /// -> strip "all" -> "such Notices" -> strip "such" -> "Notices"). Mirrors
+    /// `marcut.rules._is_excluded` (rules.py:112-117), which re-normalizes the
+    /// already determiner-stripped text and matches a second time. Ground-truth
+    /// verified against `marcut.rules._is_excluded` for each phrase below — all
+    /// return `True` in production, so the Swift preview must match them too.
+    func testExcludedWordMatcherStripsTwoStackedLeadingDeterminers() throws {
+        let entries = excludedWordEntries(fromLines: [])
+        XCTAssertTrue(ExcludedWordMatcher.match("all such Notices", entries: entries).matched)
+        XCTAssertTrue(ExcludedWordMatcher.match("both the Parties", entries: entries).matched)
+        XCTAssertTrue(ExcludedWordMatcher.match("any such Agreement", entries: entries).matched)
+        XCTAssertTrue(ExcludedWordMatcher.match("all the Members", entries: entries).matched)
+        XCTAssertTrue(ExcludedWordMatcher.match("both such Stockholders", entries: entries).matched)
+        XCTAssertTrue(ExcludedWordMatcher.match("either such Party", entries: entries).matched)
+    }
+
+    func testExcludedWordMatcherIgnoresTrailingPunctuationAndWhitespace() throws {
+        let entries = excludedWordEntries(fromLines: ["Non-Disclosure Agreement"])
+        XCTAssertTrue(ExcludedWordMatcher.match("Non-Disclosure Agreement.", entries: entries).matched)
+        XCTAssertTrue(ExcludedWordMatcher.match("Non-Disclosure Agreement,", entries: entries).matched)
+        XCTAssertTrue(ExcludedWordMatcher.match("  Non-Disclosure Agreement  ", entries: entries).matched)
+    }
+
+    func testExcludedWordMatcherTreatsSimplePluralsAsEquivalent() throws {
+        let entries = excludedWordEntries(fromLines: ["Agreement"])
+        XCTAssertTrue(ExcludedWordMatcher.match("Agreement", entries: entries).matched)
+        XCTAssertTrue(ExcludedWordMatcher.match("Agreements", entries: entries).matched)
+
+        let iesEntries = excludedWordEntries(fromLines: ["Company"])
+        XCTAssertTrue(ExcludedWordMatcher.match("Company", entries: iesEntries).matched)
+        XCTAssertTrue(ExcludedWordMatcher.match("Companies", entries: iesEntries).matched)
+    }
+
+    func testExcludedWordMatcherSupportsRegexEntries() throws {
+        let entries = excludedWordEntries(fromLines: ["Article [A-Z0-9]+"])
+        XCTAssertTrue(ExcludedWordMatcher.match("Article IV", entries: entries).matched)
+        XCTAssertTrue(ExcludedWordMatcher.match("Article 5", entries: entries).matched)
+        XCTAssertFalse(ExcludedWordMatcher.match("Preamble", entries: entries).matched)
+    }
+
+    func testExcludedWordMatcherNoMatchForUnrelatedPhrase() throws {
+        let entries = excludedWordEntries(fromLines: ["Confidential Information", "Board of Directors"])
+        XCTAssertFalse(ExcludedWordMatcher.match("John Smith", entries: entries).matched)
+        XCTAssertFalse(ExcludedWordMatcher.match("Acme Corp", entries: entries).matched)
+    }
+
+    func testExcludedWordMatcherEmptyPhraseDoesNotMatch() throws {
+        let entries = excludedWordEntries(fromLines: ["Company"])
+        XCTAssertFalse(ExcludedWordMatcher.match("", entries: entries).matched)
+        XCTAssertFalse(ExcludedWordMatcher.match("   ", entries: entries).matched)
+    }
+
+    func testExcludedWordMatcherHonorsAlwaysOnBaseTerms() throws {
+        // "Company", "Board of Directors", "Purchaser", etc. are excluded
+        // unconditionally (marcut.model._get_base_excluded_literals) even though
+        // they never appear in the user-editable excluded-words text.
+        let entries = excludedWordEntries(fromLines: [])
+        XCTAssertTrue(ExcludedWordMatcher.match("Company", entries: entries).matched)
+        XCTAssertTrue(ExcludedWordMatcher.match("the Board of Directors", entries: entries).matched)
+        XCTAssertTrue(ExcludedWordMatcher.match("Purchaser", entries: entries).matched)
+        XCTAssertFalse(ExcludedWordMatcher.match("John Smith", entries: entries).matched)
+    }
+
+    func testExcludedWordMatcherAgainstBundledExcludedWordsResource() throws {
+        // Exercises the exact code path the live preview uses
+        // (`ExcludedWordMatcher.compileAllEntries(editorText:)`) against the same
+        // excluded-words.txt content shipped with the app, which is kept in sync
+        // with `src/python/marcut/excluded-words.txt` (the production source of
+        // truth loaded by `get_exclusion_data()`).
+        let resourceURL = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent("Sources/MarcutApp/Resources/excluded-words.txt")
+        let contents = try String(contentsOf: resourceURL, encoding: .utf8)
+        let entries = ExcludedWordMatcher.compileAllEntries(editorText: contents)
+
+        XCTAssertTrue(ExcludedWordMatcher.match("Non-Disclosure Agreement", entries: entries).matched)
+        XCTAssertTrue(ExcludedWordMatcher.match("a Non-Disclosure Agreement", entries: entries).matched)
+        XCTAssertTrue(ExcludedWordMatcher.match("Article IV", entries: entries).matched)
+        XCTAssertTrue(ExcludedWordMatcher.match("U.S. Person", entries: entries).matched)
+        XCTAssertTrue(ExcludedWordMatcher.match("Class A Common Stock", entries: entries).matched)
+        XCTAssertFalse(ExcludedWordMatcher.match("John Smith", entries: entries).matched)
+        XCTAssertFalse(ExcludedWordMatcher.match("Acme Corp", entries: entries).matched)
+    }
 }
 
 // MARK: - Test Extensions
