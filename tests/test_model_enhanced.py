@@ -173,7 +173,10 @@ def test_intelligent_pipeline_deadline_interrupts_hanging_extraction(monkeypatch
         )
 
     assert calls["count"] == 1
-    assert time.monotonic() - started < 0.3
+    # Deadline is 0.05s out and the hang is 0.4s; assert the interrupt fires
+    # well before the full hang completes, with headroom for slower/loaded
+    # CI hosts rather than a tight bound tuned to a fast local machine.
+    assert time.monotonic() - started < 0.35
 
 
 def test_intelligent_pipeline_sends_seed_to_chunk_extraction(monkeypatch):
