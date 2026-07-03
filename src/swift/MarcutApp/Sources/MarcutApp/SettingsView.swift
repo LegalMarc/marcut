@@ -37,6 +37,7 @@ struct SettingsView: View {
     @State private var localSettings: RedactionSettings
     @Environment(\.dismiss) private var dismiss
     @Environment(\.colorScheme) private var colorScheme
+    @State private var searchQuery = ""
     @State private var pendingManageModels = false
     @State private var showingExcludedWordsEditor = false
     @State private var showingSystemPromptEditor = false
@@ -79,7 +80,84 @@ struct SettingsView: View {
             set: { unsavedReportQuitBehaviorRaw = $0.rawValue }
         )
     }
-    
+
+    /// Identifies each top-level settings Section so search can gate its visibility (including header).
+    private enum SettingsSection {
+        case processingMode
+        case sharedSettings
+        case rulesEngine
+        case aiModel
+        case advancedAI
+        case debug
+    }
+
+    /// Static, human-visible row labels for each section, used to decide whether a search
+    /// query matches anything inside that section. Kept in sync with the Text labels rendered
+    /// in the corresponding `*Section` view builder below.
+    private static let sectionLabels: [SettingsSection: [String]] = [
+        .processingMode: [
+            "Processing Mode", "Rules Only", "Fast rule-based detection for structured PII.",
+            "Rules + AI"
+        ],
+        .sharedSettings: [
+            "Shared Settings", "System Notifications", "Enable Completion Banners",
+            "Show banner when redaction finishes.", "Output Location",
+            "Choose where redactions and reports are saved.", "Quit Warning",
+            "Warn if unsaved reports would be deleted when quitting.", "Appearance",
+            "Choose light, dark, or follow system appearance.", "Metadata Cleaning",
+            "Remove hidden document properties during redaction.", "Configure Cleaning…",
+            "Excluded Terms", "Phrases that should never be redacted.", "Customize…",
+            "Edit Custom List…", "Reset to Defaults", "Advanced Mode",
+            "Show advanced AI controls and override modes."
+        ],
+        .rulesEngine: [
+            "Rules Engine", "Select which deterministic rules run.", "Invert Selection"
+        ],
+        .aiModel: [
+            "AI Model", "Select AI Model", "Llama 3.1 8B", "Mistral 7B", "Llama 3.2 3B",
+            "AI System Prompt", "Customize Prompt…", "Manage Models…", "Reveal Models…"
+        ],
+        .advancedAI: [
+            "Advanced AI Settings", "Rules + AI Behavior", "Rules Override",
+            "Constrained LLM Overrides", "LLM Overrides", "LLM Confidence", "Temperature",
+            "Chunk Size", "Chunk Overlap", "Processing Timeout", "Random Seed"
+        ],
+        .debug: [
+            "Debug", "Enable Debug Logging", "Open App Log", "Open Ollama Log", "Clear Logs"
+        ]
+    ]
+
+    /// Pure, testable predicate: does `label` match `query`? Empty query always matches.
+    /// Matching is a case-insensitive substring match.
+    static func matchesSearch(_ label: String, query: String) -> Bool {
+        let trimmedQuery = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmedQuery.isEmpty { return true }
+        return label.range(of: trimmedQuery, options: [.caseInsensitive, .diacriticInsensitive]) != nil
+    }
+
+    /// Whether a whole section (including its header) should be shown given the current search query.
+    private func isSectionVisible(_ section: SettingsSection) -> Bool {
+        guard !searchQuery.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return true }
+        if section == .rulesEngine {
+            // Rules Engine has dynamic, per-rule rows in addition to its static labels.
+            let ruleMatches = RedactionRule.allCases.contains { rule in
+                Self.matchesSearch(rule.displayName, query: searchQuery)
+            }
+            if ruleMatches { return true }
+        }
+        let labels = Self.sectionLabels[section] ?? []
+        return labels.contains { Self.matchesSearch($0, query: searchQuery) }
+    }
+
+    /// Whether an individual redaction rule row should be shown given the current search query.
+    private func isRuleVisible(_ rule: RedactionRule) -> Bool {
+        guard !searchQuery.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return true }
+        // If the section header itself matches (e.g. "Rules Engine"), show all rows.
+        let sectionLabels = Self.sectionLabels[.rulesEngine] ?? []
+        if sectionLabels.contains(where: { Self.matchesSearch($0, query: searchQuery) }) { return true }
+        return Self.matchesSearch(rule.displayName, query: searchQuery)
+    }
+
     init(viewModel: DocumentRedactionViewModel) {
         self.viewModel = viewModel
         var initialSettings = viewModel.settings
@@ -141,19 +219,30 @@ struct SettingsView: View {
         VStack(spacing: 24) {
             headerView
 
-            Form {
-                processingModeSection
-                sharedSettingsSection
-                rulesEngineSection
-                if localSettings.mode.usesLLM {
-                    aiModelSection
+            NavigationStack {
+                Form {
+                    if isSectionVisible(.processingMode) {
+                        processingModeSection
+                    }
+                    if isSectionVisible(.sharedSettings) {
+                        sharedSettingsSection
+                    }
+                    if isSectionVisible(.rulesEngine) {
+                        rulesEngineSection
+                    }
+                    if localSettings.mode.usesLLM && isSectionVisible(.aiModel) {
+                        aiModelSection
+                    }
+                    if isAdvancedModeEnabled && isSectionVisible(.advancedAI) {
+                        advancedAISection
+                    }
+                    if isSectionVisible(.debug) {
+                        debugSection
+                    }
                 }
-                if isAdvancedModeEnabled {
-                    advancedAISection
-                }
-                debugSection
+                .formStyle(.grouped)
+                .searchable(text: $searchQuery, placement: .automatic, prompt: "Search settings")
             }
-            .formStyle(.grouped)
 
             Spacer()
 
@@ -523,7 +612,7 @@ struct SettingsView: View {
                     Spacer()
                 }
 
-                ForEach(RedactionRule.allCases.sorted { $0.displayName < $1.displayName }) { rule in
+                ForEach(RedactionRule.allCases.sorted { $0.displayName < $1.displayName }.filter(isRuleVisible)) { rule in
                     Toggle(isOn: binding(for: rule)) {
                         VStack(alignment: .leading, spacing: 2) {
                             Text(rule.displayName)

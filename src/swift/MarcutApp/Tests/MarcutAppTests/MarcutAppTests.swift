@@ -291,6 +291,40 @@ final class MarcutAppTests: XCTestCase {
         XCTAssertEqual(row.accessibilityId, "settings.model.llama3.1:8b")
     }
 
+    // MARK: - Settings Search Tests
+
+    func testSettingsSearchMatchesCaseInsensitiveSubstring() throws {
+        XCTAssertTrue(SettingsView.matchesSearch("Excluded Terms", query: "exclud"))
+        XCTAssertTrue(SettingsView.matchesSearch("Excluded Terms", query: "TERMS"))
+        XCTAssertTrue(SettingsView.matchesSearch("Chunk Overlap", query: "chunk overlap"))
+    }
+
+    func testSettingsSearchEmptyQueryMatchesEverything() throws {
+        XCTAssertTrue(SettingsView.matchesSearch("Excluded Terms", query: ""))
+        XCTAssertTrue(SettingsView.matchesSearch("Excluded Terms", query: "   "))
+    }
+
+    func testSettingsSearchRejectsNonMatchingQuery() throws {
+        XCTAssertFalse(SettingsView.matchesSearch("Excluded Terms", query: "zzz-not-present"))
+        XCTAssertFalse(SettingsView.matchesSearch("Chunk Overlap", query: "temperature"))
+    }
+
+    // NOTE: A view-rendering test that instantiates `SettingsView` (e.g. via `NSHostingView`) to
+    // assert an `NSSearchField` is present was attempted here but had to be removed: constructing
+    // `SettingsView` transitively initializes `PermissionManager.shared`, which calls
+    // `UNUserNotificationCenter.current()`. Under the `swift test` CLI runner (no host app
+    // bundle), that call raises an uncaught `NSInternalInconsistencyException`
+    // ("bundleProxyForCurrentProcess is nil") and aborts the entire test process, taking every
+    // other test down with it. This is a pre-existing environment limitation, not something
+    // introduced by the `.searchable`/`NavigationStack` fix below. This repo builds via Swift
+    // Package Manager only (no .app bundle/Xcode project is produced), so there is no way to
+    // manually launch the packaged app to visually confirm the search field either. The fix
+    // itself — `SettingsView.body` now wraps its `Form` in a `NavigationStack` so `.searchable`
+    // renders under both the `Settings {}` scene and the `.sheet` presentation — is standard,
+    // documented SwiftUI/AppKit behavior (`.searchable` requires a navigation container ancestor
+    // to materialize its search field on macOS); reviewers with an Xcode/app-bundle build should
+    // confirm visually as a follow-up.
+
     // MARK: - Mass Progress Tests
 
     func testMassTotalDeferredUntilEnhancedStage() throws {
