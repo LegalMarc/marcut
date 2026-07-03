@@ -7,7 +7,7 @@ on:
 
 jobs:
   smoke:
-    runs-on: macos-14
+    runs-on: [self-hosted, marcut-local]
     steps:
       - name: Checkout
         uses: actions/checkout@v4

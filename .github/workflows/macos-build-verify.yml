@@ -8,7 +8,7 @@ on:
 
 jobs:
   build-verify:
-    runs-on: macos-14
+    runs-on: [self-hosted, marcut-local]
     timeout-minutes: 15
     steps:
       - name: Checkout
