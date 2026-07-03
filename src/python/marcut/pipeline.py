@@ -1841,55 +1841,33 @@ def run_redaction(
             # Enhanced error handling for AI processing
             try:
                 with timed("LLM"):
-                    if llm_detail and not (model_id.endswith(".gguf") or model_id.startswith("/")):
-                        # Use timing-instrumented extraction for detailed profiling
-                        from .llm_timing import ollama_extract_with_timing
-                        prompt_context = None
-                        try:
-                            doc_context = DocumentContext()
-                            doc_context.analyze_document(text)
-                            prompt_context = build_prompt_context(doc_context)
-                        except Exception:
-                            prompt_context = None
-                        model_spans = []
-                        llm_error = None
-                        for attempt_idx, wait_s in enumerate((0, 2), start=1):
-                            try:
-                                model_spans, llm_timing_detail = ollama_extract_with_timing(
-                                    model_id, text, temperature, seed, context=prompt_context,
-                                    think_mode=think_mode, format_schema=format_schema
-                                )
-                                llm_error = None
-                                # Store in phase_timings for return
-                                phase_timings['llm_timing'] = llm_timing_detail
-                                break
-                            except Exception as e:
-                                llm_error = e
-                                if wait_s:
-                                    time.sleep(wait_s)
-                        if llm_error is not None:
-                            warnings.append({
-                                "code": "LLM_EXTRACTION_FAILED",
-                                "message": "AI extraction failed during detailed timing run after retries. Continuing with rules-only spans.",
-                                "details": str(llm_error)
-                            })
-                    else:
-                        model_spans = _collect_enhanced_spans(
-                            text,
-                            model_id,
-                            chunk_tokens,
-                            overlap,
-                            temperature,
-                            seed,
-                            llm_skip_confidence,
-                            debug,
-                            llm_concurrency=llm_concurrency,
-                            progress_callback=progress_callback,
-                            warnings=warnings,
-                            suppressed=suppressed,
-                            think_mode=think_mode,
-                            format_schema=format_schema,
-                        )
+                    detail_start = time.perf_counter()
+                    model_spans = _collect_enhanced_spans(
+                        text,
+                        model_id,
+                        chunk_tokens,
+                        overlap,
+                        temperature,
+                        seed,
+                        llm_skip_confidence,
+                        debug,
+                        llm_concurrency=llm_concurrency,
+                        progress_callback=progress_callback,
+                        warnings=warnings,
+                        suppressed=suppressed,
+                        backend=backend,
+                        llama_gguf=llama_gguf,
+                        threads=threads,
+                        think_mode=think_mode,
+                        format_schema=format_schema,
+                    )
+                    if llm_detail:
+                        llm_timing_detail = {
+                            "enhanced_extraction": time.perf_counter() - detail_start,
+                            "chunks_enabled": True,
+                            "instrumentation": "production_enhanced_path",
+                        }
+                        phase_timings["llm_timing"] = llm_timing_detail
                 if debug:
                     print(f"Enhanced AI processing found {len(model_spans)} spans")
             except Exception as e:
