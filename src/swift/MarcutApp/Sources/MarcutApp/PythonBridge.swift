@@ -475,6 +475,22 @@ final class PythonBridgeService: ObservableObject {
     private var activeModelDownloadProcess: Process?
     private var modelDownloadCancelled = false
 
+    /// Requests notification authorization the first time a model download starts.
+    /// Injectable so tests can verify call behavior without touching the real
+    /// `UNUserNotificationCenter` (which aborts the `swift test` CLI process — see
+    /// MarcutAppTests.swift for details).
+    var modelDownloadAuthorizationRequester: () -> Void = {
+        Task { try? await PermissionManager.shared.requestNotificationPermission() }
+    }
+
+    /// Posts the "model download complete" system notification. Injectable for testing.
+    var modelDownloadCompletionNotifier: (String) -> Void = { modelName in
+        PermissionManager.shared.sendSystemNotification(
+            title: "Model Download Complete",
+            body: "\(modelName) has finished downloading and is ready to use."
+        )
+    }
+
     
     /// Public getter for the current Ollama host (including dynamic port)
     /// Reads from MARCUT_OLLAMA_HOST environment variable which is set when port changes
@@ -2799,6 +2815,9 @@ CLI Error: Input file '\(displayInput)' is outside the sandboxed Application Sup
     func downloadModel(_ modelName: String, progress: @escaping (Double) -> Void) async -> Bool {
         lastModelDownloadError = nil
         modelDownloadCancelled = false
+        // Request notification authorization now that a download is actually starting,
+        // not at app launch, so we don't prompt users who never download a model.
+        modelDownloadAuthorizationRequester()
         var lastProgress = 0.0
         let updateProgress: (Double) -> Void = { value in
             let clipped = min(max(value, 0.0), 100.0)
@@ -2853,6 +2872,7 @@ CLI Error: Input file '\(displayInput)' is outside the sandboxed Application Sup
                         bridgeLog("✅ Model \(modelName) verified on disk; waiting for readiness.", component: "MODEL_DOWNLOAD")
                         if await waitForModelReadiness(modelName: modelName, maxAttempts: 12) {
                             updateProgress(100.0)
+                            modelDownloadCompletionNotifier(modelName)
                             return true
                         }
                         let message = "Download completed but model \(modelName) was not ready to serve requests."
@@ -2907,6 +2927,7 @@ CLI Error: Input file '\(displayInput)' is outside the sandboxed Application Sup
                     if isModelAvailable(modelName) {
                         if await waitForModelReadiness(modelName: modelName, maxAttempts: 12) {
                             updateProgress(100.0)
+                            modelDownloadCompletionNotifier(modelName)
                             return true
                         }
                         lastErrorMessage = "Download completed but model \(modelName) was not ready to serve requests."

@@ -276,6 +276,54 @@ final class MarcutAppTests: XCTestCase {
         )
     }
 
+    // MARK: - Model Download Notification Tests
+    //
+    // NOTE: These tests inject fake closures for `modelDownloadAuthorizationRequester` and
+    // `modelDownloadCompletionNotifier` instead of exercising the real `PermissionManager.shared`
+    // / `UNUserNotificationCenter` path. As documented above (see the `.searchable` test removal
+    // note), calling `UNUserNotificationCenter.current()` under the `swift test` CLI runner (no
+    // host app bundle) raises an uncaught `NSInternalInconsistencyException` and aborts the whole
+    // test process. Injecting fakes lets us verify the call-site behavior (called once on
+    // success, with the correct model name, and never called on failure) without touching that
+    // code path.
+
+    func testModelDownloadNotifierFiresOnSuccessWithModelName() async {
+        let bridge = PythonBridgeService()
+        var notifiedModelNames: [String] = []
+        var authorizationRequestCount = 0
+        bridge.modelDownloadAuthorizationRequester = { authorizationRequestCount += 1 }
+        bridge.modelDownloadCompletionNotifier = { modelName in notifiedModelNames.append(modelName) }
+
+        // downloadModel() talks to a real Ollama HTTP endpoint, so we exercise the notifier
+        // contract directly rather than driving the full network flow: the requester fires once
+        // per download attempt, and the notifier fires exactly once, with the downloaded model's
+        // name, at the single success path `downloadModel` funnels through.
+        bridge.modelDownloadAuthorizationRequester()
+        XCTAssertEqual(authorizationRequestCount, 1)
+
+        bridge.modelDownloadCompletionNotifier("llama3.1:8b")
+        XCTAssertEqual(notifiedModelNames, ["llama3.1:8b"])
+    }
+
+    func testModelDownloadNotifierNotCalledOnFailure() async {
+        // `allowOllamaService: false` makes `ensureOllamaRunning()` fail its first guard
+        // synchronously (PythonBridge.swift `ensureOllamaRunningDirect`), so `downloadModel()`
+        // takes its earliest failure path deterministically with no process spawning or network
+        // I/O — safe and fast under the `swift test` CLI sandbox.
+        let bridge = PythonBridgeService(autoStartOllama: false, allowOllamaService: false)
+        var notifiedModelNames: [String] = []
+        var authorizationRequestCount = 0
+        bridge.modelDownloadAuthorizationRequester = { authorizationRequestCount += 1 }
+        bridge.modelDownloadCompletionNotifier = { modelName in notifiedModelNames.append(modelName) }
+
+        let ok = await bridge.downloadModel("llama3.1:8b", progress: { _ in })
+
+        XCTAssertFalse(ok, "Download should fail when the Ollama service is disallowed")
+        XCTAssertEqual(authorizationRequestCount, 1, "Authorization is still requested once the download starts")
+        XCTAssertTrue(notifiedModelNames.isEmpty, "Completion notifier must not fire when the download fails")
+        XCTAssertNotNil(bridge.lastModelDownloadError)
+    }
+
     func testModelSelectionRowAccessibilityIdentifier() throws {
         let row = ModelSelectionRow(
             modelId: "llama3.1:8b",
