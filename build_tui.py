@@ -447,6 +447,77 @@ def run_preset(name: str) -> None:
     execute_steps(preset["steps"], preset["label"])
 
 
+def configured_app_bundle() -> Path:
+    return resolve_config_path(
+        CONFIG.get("build_dir"),
+        REPO_ROOT / ".marcut_artifacts" / "ignored-resources" / "builds" / "build_swift",
+    ) / f"{CONFIG.get('app_name', 'MarcutApp')}.app"
+
+
+def configured_final_dmg() -> Path:
+    return resolve_config_path(
+        CONFIG.get("final_dmg"),
+        REPO_ROOT / ".marcut_artifacts" / "ignored-resources" / "MarcutApp.dmg",
+    )
+
+
+def run_release_evidence_checks(app_bundle: Path, dmg_path: Optional[Path] = None) -> None:
+    """Run post-build evidence checks that close the public-beta release loop."""
+    if app_bundle.exists():
+        entitlements_script = REPO_ROOT / "scripts" / "verify_entitlements.sh"
+        if entitlements_script.exists():
+            run_with_live_output(
+                "Final app/helper entitlement verification",
+                ["bash", str(entitlements_script), str(app_bundle)],
+            )
+
+        sbom_path = REPO_ROOT / "docs" / "release" / "python-sbom.json"
+        run_with_live_output(
+            "Release-bundle SBOM generation",
+            [
+                "python3",
+                str(REPO_ROOT / "scripts" / "generate_python_sbom.py"),
+                "--bundle-root",
+                str(app_bundle),
+                "--output",
+                str(sbom_path),
+            ],
+        )
+        run_with_live_output(
+            "Release-bundle SBOM check",
+            [
+                "python3",
+                str(REPO_ROOT / "scripts" / "generate_python_sbom.py"),
+                "--bundle-root",
+                str(app_bundle),
+                "--check",
+            ],
+        )
+        run_with_live_output(
+            "Release-bundle dependency vulnerability check",
+            [
+                "python3",
+                str(REPO_ROOT / "scripts" / "check_dependency_vulnerabilities.py"),
+                "--sbom",
+                str(sbom_path),
+            ],
+        )
+    else:
+        print(colorize(f"Skipping bundle evidence checks; app bundle not found: {app_bundle}", "33"))
+
+    if dmg_path and dmg_path.exists():
+        run_with_live_output(
+            "Stapler validation",
+            ["xcrun", "stapler", "validate", str(dmg_path)],
+        )
+        run_with_live_output(
+            "Gatekeeper assessment",
+            ["spctl", "-a", "-t", "open", "--context", "context:primary-signature", "-v", str(dmg_path)],
+        )
+    elif dmg_path:
+        print(colorize(f"Skipping notarization evidence checks; DMG not found: {dmg_path}", "33"))
+
+
 def build_menu() -> None:
     options = [
         (
@@ -602,6 +673,7 @@ def run_developer_id_dmg() -> None:
     os.chmod(script_path, 0o755)
     print(colorize(f"🚀 Running Developer ID Notarized DMG: {script_path.name}", "34"))
     run_with_live_output("Developer ID Notarized DMG", ["bash", str(script_path)])
+    run_release_evidence_checks(configured_app_bundle(), configured_final_dmg())
 
 
 def run_appstore_archive() -> None:
@@ -636,6 +708,7 @@ def notarize_existing_dmg() -> None:
         return
 
     run_with_live_output("Notarize DMG", ["bash", str(script), str(dmg)])
+    run_release_evidence_checks(configured_app_bundle(), dmg)
 
 
 def distribution_menu() -> None:
