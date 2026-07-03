@@ -942,6 +942,7 @@ final class PythonBridgeService: ObservableObject {
 
     private func sanitizedProcessEnvironment() -> [String: String] {
         var env = ProcessInfo.processInfo.environment
+        stripUnsafeRemoteOllamaOverrides(from: &env)
         let proxyKeys = [
             "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY",
             "http_proxy", "https_proxy", "all_proxy", "no_proxy"
@@ -987,6 +988,11 @@ final class PythonBridgeService: ObservableObject {
 
         env["MARCUT_RULE_FILTER"] = ruleFilterValue
         return env
+    }
+
+    private func stripUnsafeRemoteOllamaOverrides(from env: inout [String: String]) {
+        env.removeValue(forKey: "MARCUT_ALLOW_REMOTE_OLLAMA")
+        env.removeValue(forKey: "MARCUT_DEVELOPER_UNSAFE_ALLOW_REMOTE_OLLAMA")
     }
 
     private func getOllamaEnvironment() -> [String: String] {
@@ -3374,6 +3380,7 @@ extension PythonBridgeService {
 
         // Set up environment for subprocess
         var environment = ProcessInfo.processInfo.environment
+        stripUnsafeRemoteOllamaOverrides(from: &environment)
         environment["MARCUT_RULE_FILTER"] = ruleFilterValue
         environment["PYTHONUNBUFFERED"] = "1"
         if debug {
