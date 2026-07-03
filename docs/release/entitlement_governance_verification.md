@@ -1,8 +1,8 @@
 # Entitlement And Governance Verification
 
-Date: 2026-05-14
+Date: 2026-07-03
 Branch: `codex/prebeta-stack-a-docx-sharing`
-Status: source-level review and GitHub governance setup complete; final artifact verification blocked until the Developer ID beta DMG exists
+Status: source-level review, GitHub governance setup, and final Developer ID artifact verification all complete
 
 ## Entitlement Sources Reviewed
 
@@ -48,6 +48,26 @@ The script prints the app and helper entitlements and fails if forbidden debug/r
 - `Distribution & Notarization` -> `Build Developer ID DMG`
 - `Distribution & Notarization` -> `Notarize Existing DMG`
 
+## Final Artifact Verification (2026-07-03)
+
+Ran `bash scripts/sh/build_devid_release.sh` end-to-end against a freshly-provisioned BeeWare `Python.framework` (`bash build-scripts/setup_beeware_framework.sh`), producing `MarcutApp-v0.5.96-AppStore.dmg` (194 MB), signed with `Developer ID Application: Marc Mandel (QG85EMCQ75)`, then notarized via `scripts/notarize_macos.sh` using credentials stored in `~/.config/marcut/notarize.env` (owner-only, `chmod 600`; not committed).
+
+- Apple notary service: submission `5a2c8f87-038d-4ada-866d-5bf17d01b4dd`, status `Accepted`.
+- `xcrun stapler validate`: "The validate action worked!"
+- `spctl -a -t open --context context:primary-signature -v`: `accepted`, `source=Notarized Developer ID`.
+- `bash scripts/verify_entitlements.sh` against the built `MarcutApp.app`: `ENTITLEMENTS: OK` -- no forbidden debug/runtime-bypass entitlements present, matching the source-level review below.
+- App entitlements (`codesign -d --entitlements :-`):
+  ```
+  com.apple.security.app-sandbox
+  com.apple.security.files.bookmarks.app-scope
+  com.apple.security.files.user-selected.read-write
+  com.apple.security.network.client
+  com.apple.security.network.server
+  ```
+- Ollama helper entitlements: `com.apple.security.app-sandbox`, `com.apple.security.inherit` -- matches the source-level review.
+- SBOM regenerated directly from the built bundle (`--bundle-root`): 23 shipped components; `check_dependency_vulnerabilities.py --sbom` passed for 20 shipped PyPI packages, with `Ollama` flagged for the expected manual review (binary version not scannable via PyPI/OSV).
+- DMG SHA256: `727af809372cee425529aeb82dd92095244d9b88d2089d803e8801c119dcd856`
+
 ## Governance Evidence
 
 Repository-local evidence:
@@ -76,4 +96,4 @@ GitHub ruleset evidence:
 
 ## Public-Beta Blockers
 
-- Capture or retain `scripts/verify_entitlements.sh` output from the final Developer ID signed app and helper.
+None remaining from this ticket. The final Developer ID signed, notarized, stapled, Gatekeeper-verified `0.5.96` DMG now exists with `verify_entitlements.sh` output captured above. The DMG itself is a local build artifact (`.marcut_artifacts/ignored-resources/`, gitignored) and is not part of this repository; it must be re-produced (or retained separately) for actual distribution.

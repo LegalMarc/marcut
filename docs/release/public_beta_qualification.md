@@ -13,8 +13,8 @@ This qualification refresh supersedes the 2026-05-12 `0.5.95` ad-hoc artifact no
 
 - Source/config version: `0.5.96`
 - Public DMG target from `build-scripts/config.json`: `.marcut_artifacts/ignored-resources/MarcutApp-v0.5.96-AppStore.dmg`
-- Developer ID notarized DMG: not produced in this local pass
-- External public-beta distribution status: blocked until a Developer ID signed DMG is built, notarized, stapled, and Gatekeeper-verified
+- Developer ID notarized DMG: produced 2026-07-03 via `scripts/sh/build_devid_release.sh` -- signed with `Developer ID Application: Marc Mandel (QG85EMCQ75)`, notarized (Apple submission `5a2c8f87-038d-4ada-866d-5bf17d01b4dd`, status `Accepted`), stapled, and Gatekeeper-verified (`spctl` reports `accepted`, `source=Notarized Developer ID`). SHA256: `727af809372cee425529aeb82dd92095244d9b88d2089d803e8801c119dcd856`. Full evidence in `docs/release/entitlement_governance_verification.md`.
+- External public-beta distribution status: the notarization/signing blocker is resolved. The DMG itself is a local build artifact (gitignored, not committed) -- remaining steps are the manual RELEASE_CHECKLIST.md steps (Quick Look app launch, functionality testing, tagging, GitHub release, post-release download verification on a fresh machine) plus a final `scripts/release_preflight.sh` run before tagging.
 
 ## Verification Results
 
@@ -83,10 +83,11 @@ The configured `0.5.96` public DMG must still be built with a real Developer ID 
 
 ## Remaining Release Blockers
 
-- Run final full Python, Swift, markdown, SBOM, and release-script verification after all open remediation tickets are closed.
-- Produce the Developer ID signed `0.5.96` DMG from the final stack.
-- Notarize with real credentials, staple the accepted ticket, and run Gatekeeper assessment on the notarized DMG.
-- Review unsupported SBOM components for the exact release bundle: BeeWare `Python.framework` and embedded Ollama.
+- Run `bash scripts/release_preflight.sh` immediately before tagging, on the exact commit being released.
+- Complete the manual RELEASE_CHECKLIST.md steps: Quick Look app launch, functionality testing (Rules-Only and Enhanced redaction, `excluded-words.txt` overrides), and post-release download verification on a fresh machine.
+- Review unsupported SBOM components for the exact release bundle: BeeWare `Python.framework` and embedded Ollama (both remain explicit manual-review items; the PyPI-package gate is automated and passing).
+
+Resolved 2026-07-03: the Developer ID signed `0.5.96` DMG was produced, notarized with real credentials, stapled, and Gatekeeper-verified. See `docs/release/entitlement_governance_verification.md` for full evidence.
 
 ## Acceptable Based On This Pass
 
