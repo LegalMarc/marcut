@@ -76,6 +76,12 @@ final class DocumentRedactionViewModel: ObservableObject {
     // XPC removed - CLI subprocess only
     // @Published var executionStrategy: OllamaExecutionStrategy = .direct
 
+    /// Rough estimated time remaining for the current batch run, or `nil` when there isn't
+    /// yet enough data (fewer than `BatchETACalculator.minimumSamples` documents completed
+    /// in this run) to produce a meaningful estimate. Reset at the start of every
+    /// `processAllDocuments` run — estimates never persist across runs or app launches.
+    @Published var batchETA: TimeInterval? = nil
+
     // MARK: - Initialization & Cleanup
     private var pythonInitObservers: [NSObjectProtocol] = []
 
@@ -157,6 +163,14 @@ final class DocumentRedactionViewModel: ObservableObject {
     private let pythonBridge: PythonBridgeService = .shared
     private var processingTasks: [UUID: Task<Void, Never>] = [:]
     private var heartbeatTasks: [UUID: Task<Void, Never>] = [:]
+
+    // MARK: - Batch ETA Tracking
+    /// Wall-clock time each document started processing in the current run, keyed by item id.
+    /// Used to compute a per-document duration sample once the document reaches a terminal state.
+    private var batchProcessingStartTimes: [UUID: Date] = [:]
+    /// (duration, size) samples for documents completed so far in the current run. Reset at the
+    /// start of every `processAllDocuments` call.
+    private var batchETASamples: [BatchETASample] = []
     private let heartbeatTimeout: TimeInterval = 30.0
     // Note: retryCounts was removed along with retry logic - heartbeat stalls now immediately fail
     private let firstRunCompletedKey = "MarcutApp.hasCompletedFirstRun"
@@ -271,6 +285,11 @@ final class DocumentRedactionViewModel: ObservableObject {
     func processAllDocuments(to destination: URL? = nil, includeRetryItems: Bool = false) async {
         // Clear any lingering cancellation flags from previous operations
         AppDelegate.pythonRunner?.clearCancellationRequest()
+
+        // Fresh ETA estimation for every run — never persisted across runs or app launches.
+        batchProcessingStartTimes.removeAll()
+        batchETASamples.removeAll()
+        batchETA = nil
 
         let shouldLog = DebugPreferences.isEnabled()
         let logPath = DebugLogger.shared.logPath
@@ -924,6 +943,7 @@ final class DocumentRedactionViewModel: ObservableObject {
             item.status = .processing
             item.lastOperation = .redaction
             item.lastDestinationURL = destination
+            batchProcessingStartTimes[item.id] = Date()
             updateState()
         }
 
@@ -1316,8 +1336,9 @@ final class DocumentRedactionViewModel: ObservableObject {
         heartbeatTasks.removeAll()
         AppDelegate.pythonRunner?.clearCancellationRequest()
         updateState()
+        updateBatchETA()
     }
-    
+
     func retryDocument(_ item: DocumentItem, destination: URL? = nil, operation: DocumentOperation) {
         item.errorMessage = nil
         Task { [weak self, weak item] in
@@ -1955,7 +1976,9 @@ final class DocumentRedactionViewModel: ObservableObject {
         // Clean up progress animations for all terminal states
         item.cleanupProgressAnimations()
         item.releaseSecurityScope()
+        recordBatchETASample(for: item)
         updateState()
+        updateBatchETA()
 
         // Auto-wipe secure temp storage if idle
         if !hasProcessingDocuments {
@@ -1963,6 +1986,50 @@ final class DocumentRedactionViewModel: ObservableObject {
                 DebugLogger.shared.log(msg, component: "SecurityCleanup")
             }
         }
+    }
+
+    /// Records a (duration, size) sample for the batch ETA estimator once a document that
+    /// actually ran (completed or failed) reaches a terminal state. Cancelled documents are
+    /// skipped — their elapsed time isn't a meaningful processing-rate signal.
+    private func recordBatchETASample(for item: DocumentItem) {
+        guard let startedAt = batchProcessingStartTimes.removeValue(forKey: item.id) else { return }
+        guard item.status == .completed || item.status == .failed else { return }
+
+        let duration = Date().timeIntervalSince(startedAt)
+        guard duration > 0 else { return }
+
+        let size = documentSizeSignal(for: item.url)
+        guard size > 0 else { return }
+
+        batchETASamples.append(BatchETASample(duration: duration, size: size))
+    }
+
+    /// Recomputes `batchETA` from samples collected so far in this run plus the size signal
+    /// for documents still queued or in-flight. Clears the estimate once no documents remain
+    /// in a processing state, or while there isn't enough data yet.
+    private func updateBatchETA() {
+        guard hasProcessingDocuments else {
+            batchETA = nil
+            return
+        }
+
+        let remainingSizes = items
+            .filter { $0.status.isProcessing || $0.status == .validDocument }
+            .map { documentSizeSignal(for: $0.url) }
+
+        batchETA = BatchETACalculator.estimate(samples: batchETASamples, remainingSizes: remainingSizes)
+    }
+
+    /// File size in bytes for a document, used as the relative "work" signal for batch ETA
+    /// estimation — the same signal already captured via `documentComplexity` at validation
+    /// time (see `checkDocument`), re-read here to avoid depending on that cached enum's
+    /// coarser bucketing.
+    private func documentSizeSignal(for url: URL) -> Int64 {
+        guard let attributes = try? FileManager.default.attributesOfItem(atPath: url.path),
+              let size = attributes[.size] as? Int64 else {
+            return 0
+        }
+        return size
     }
     
     private func loadFailureReport(at path: String) -> (code: String, message: String, details: String)? {

@@ -319,6 +319,12 @@ struct ContentView: View {
                     .frame(maxHeight: .infinity)
             }
 
+            // Batch ETA (only while actively processing a multi-document run with enough data)
+            if viewModel.hasProcessingDocuments, let batchETA = viewModel.batchETA {
+                BatchETAView(remainingSeconds: batchETA)
+                    .accessibilityIdentifier("content.batchETA")
+            }
+
             // Action buttons (Redact + Scrub Metadata side by side)
             actionButtons
 
@@ -1850,6 +1856,41 @@ extension DocumentRow {
     }
 }
 
+
+// Batch-level "time remaining" indicator shown above the action buttons during a multi-document
+// run, once BatchETACalculator has enough completed-document samples to produce an estimate.
+struct BatchETAView: View {
+    let remainingSeconds: TimeInterval
+    @Environment(\.colorScheme) private var colorScheme
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Image(systemName: "clock")
+                .font(.system(size: 12, weight: .medium))
+            Text("~\(formatTime(remainingSeconds)) remaining")
+                .font(.system(size: 13, weight: .medium))
+        }
+        .foregroundColor(CustomColors.secondaryText(for: colorScheme))
+        .frame(maxWidth: .infinity, alignment: .center)
+        .padding(.bottom, 4)
+    }
+
+    private func formatTime(_ timeInterval: TimeInterval) -> String {
+        let totalSeconds = max(Int(timeInterval), 0)
+        let minutes = totalSeconds / 60
+        let seconds = totalSeconds % 60
+
+        if minutes > 60 {
+            let hours = minutes / 60
+            let remainingMinutes = minutes % 60
+            return String(format: "%dh %02dm", hours, remainingMinutes)
+        } else if minutes > 0 {
+            return String(format: "%dm %02ds", minutes, seconds)
+        } else {
+            return String(format: "%ds", seconds)
+        }
+    }
+}
 
 // Countdown timer component
 struct CountdownTimerView: View {

@@ -477,6 +477,66 @@ final class MarcutAppTests: XCTestCase {
         XCTAssertEqual(item.processedMass, 100, "Processed mass should clamp to total mass")
     }
 
+    // MARK: - Batch ETA Tests
+
+    func testBatchETAReturnsNilWithFewerThanTwoSamples() throws {
+        XCTAssertNil(
+            BatchETACalculator.estimate(samples: [], remainingSizes: [1000]),
+            "No samples should yield no estimate"
+        )
+        XCTAssertNil(
+            BatchETACalculator.estimate(
+                samples: [BatchETASample(duration: 10, size: 1000)],
+                remainingSizes: [1000]
+            ),
+            "A single sample should not be enough data for a rate estimate"
+        )
+    }
+
+    func testBatchETAComputesRemainingTimeFromObservedRate() throws {
+        // Two documents completed: 1000 bytes in 10s, then 2000 bytes in 20s -> 100 bytes/sec overall.
+        let samples = [
+            BatchETASample(duration: 10, size: 1000),
+            BatchETASample(duration: 20, size: 2000),
+        ]
+        // One remaining document of 500 bytes -> 500 / 100 = 5s.
+        let eta = BatchETACalculator.estimate(samples: samples, remainingSizes: [500])
+
+        XCTAssertNotNil(eta)
+        XCTAssertEqual(eta ?? -1, 5.0, accuracy: 0.001)
+    }
+
+    func testBatchETASumsMultipleRemainingDocuments() throws {
+        let samples = [
+            BatchETASample(duration: 10, size: 1000),
+            BatchETASample(duration: 10, size: 1000),
+        ]
+        // Rate = 2000 / 20 = 100 bytes/sec. Remaining = 300 + 200 = 500 -> 5s.
+        let eta = BatchETACalculator.estimate(samples: samples, remainingSizes: [300, 200])
+
+        XCTAssertNotNil(eta)
+        XCTAssertEqual(eta ?? -1, 5.0, accuracy: 0.001)
+    }
+
+    func testBatchETAReturnsZeroWhenNoRemainingWork() throws {
+        let samples = [
+            BatchETASample(duration: 10, size: 1000),
+            BatchETASample(duration: 10, size: 1000),
+        ]
+        let eta = BatchETACalculator.estimate(samples: samples, remainingSizes: [])
+
+        XCTAssertEqual(eta, 0.0, "No remaining documents should mean zero time remaining, not nil")
+    }
+
+    func testBatchETAReturnsNilWhenObservedRateIsDegenerate() throws {
+        // Zero total size across samples (e.g. size signal unavailable) -> no reliable rate.
+        let samples = [
+            BatchETASample(duration: 10, size: 0),
+            BatchETASample(duration: 10, size: 0),
+        ]
+        XCTAssertNil(BatchETACalculator.estimate(samples: samples, remainingSizes: [1000]))
+    }
+
     // MARK: - Integration Tests
 
     func testDocumentItemStatusTransitions() throws {
