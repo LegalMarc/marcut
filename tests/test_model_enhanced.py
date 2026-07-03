@@ -3,10 +3,12 @@ Unit tests for model_enhanced.py retry behavior.
 """
 
 import json
+import time
 import requests
 import pytest
 
 import marcut.model_enhanced as model_enhanced
+from marcut.cancellation import ProcessingDeadlineExceeded
 from marcut.model_enhanced import ollama_validate, Entity, DocumentContext
 
 
@@ -102,6 +104,100 @@ def test_ollama_validate_no_retry_on_4xx(monkeypatch):
 
     assert timeouts == [5]
     assert sleeps == []
+
+
+def test_ollama_validate_sends_seed(monkeypatch):
+    captured = {}
+
+    def fake_post(url, json=None, timeout=None):
+        captured.update(json)
+        return DummyResponse(200, _make_response_payload())
+
+    monkeypatch.setattr(model_enhanced.requests, "post", fake_post)
+
+    result = ollama_validate("test-model", _make_entity(), "text", DocumentContext(), temperature=0.2, seed=123)
+
+    assert result["classification"] == "SKIP"
+    assert captured["options"]["temperature"] == 0.2
+    assert captured["options"]["seed"] == 123
+
+
+def test_ollama_validate_respects_processing_deadline(monkeypatch):
+    captured = {}
+
+    def fake_post(url, json=None, timeout=None):
+        captured["timeout"] = timeout
+        return DummyResponse(200, _make_response_payload())
+
+    monkeypatch.setenv("MARCUT_PROCESSING_DEADLINE_MONOTONIC", str(time.monotonic() + 1.25))
+    monkeypatch.setattr(model_enhanced.requests, "post", fake_post)
+
+    result = ollama_validate("test-model", _make_entity(), "text", DocumentContext(), temperature=0.1)
+
+    assert result["classification"] == "SKIP"
+    assert 0.25 <= captured["timeout"] <= 1.25
+
+
+def test_intelligent_pipeline_rejects_expired_processing_deadline(monkeypatch):
+    monkeypatch.setenv("MARCUT_PROCESSING_DEADLINE_MONOTONIC", str(time.monotonic() - 0.01))
+    pipeline = model_enhanced.IntelligentRedactionPipeline("test-model", temperature=0.3, seed=456)
+
+    with pytest.raises(ProcessingDeadlineExceeded):
+        pipeline.process_document(
+            "John Smith",
+            [{"text": "John Smith", "start": 0, "end": 10}],
+            warnings=[],
+            suppressed=[],
+        )
+
+
+def test_intelligent_pipeline_deadline_interrupts_hanging_extraction(monkeypatch):
+    calls = {"count": 0}
+
+    def hanging_extract(*args, **kwargs):
+        calls["count"] += 1
+        time.sleep(0.4)
+        return [{"start": 0, "end": 10, "label": "NAME"}]
+
+    monkeypatch.setattr("marcut.model.ollama_extract", hanging_extract)
+    monkeypatch.setenv("MARCUT_PROCESSING_DEADLINE_MONOTONIC", str(time.monotonic() + 0.05))
+    pipeline = model_enhanced.IntelligentRedactionPipeline("test-model", temperature=0.3, seed=456)
+
+    started = time.monotonic()
+    with pytest.raises(ProcessingDeadlineExceeded):
+        pipeline.process_document(
+            "John Smith",
+            [{"text": "John Smith", "start": 0, "end": 10}],
+            warnings=[],
+            suppressed=[],
+        )
+
+    assert calls["count"] == 1
+    assert time.monotonic() - started < 0.3
+
+
+def test_intelligent_pipeline_sends_seed_to_chunk_extraction(monkeypatch):
+    captured = {}
+
+    def fake_extract(model_id, text, temperature=0.0, seed=42, context=None):
+        captured["model_id"] = model_id
+        captured["temperature"] = temperature
+        captured["seed"] = seed
+        return [{"start": 0, "end": 10, "label": "NAME"}]
+
+    monkeypatch.setattr("marcut.model.ollama_extract", fake_extract)
+    monkeypatch.setattr(model_enhanced, "needs_validation", lambda entity, doc_context: False)
+
+    pipeline = model_enhanced.IntelligentRedactionPipeline("test-model", temperature=0.3, seed=456)
+    spans = pipeline.process_document(
+        "John Smith",
+        [{"text": "John Smith", "start": 0, "end": 10}],
+        warnings=[],
+        suppressed=[],
+    )
+
+    assert spans
+    assert captured == {"model_id": "test-model", "temperature": 0.3, "seed": 456}
 
 
 def test_document_context_collects_specific_org_alias_after_formation_clause():
