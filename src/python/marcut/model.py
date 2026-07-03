@@ -77,7 +77,7 @@ def _log_app_event(message: str) -> None:
         pass
 
 def get_ollama_base_url() -> str:
-    allow_remote = os.getenv("MARCUT_ALLOW_REMOTE_OLLAMA") == "1"
+    allow_remote = os.getenv("MARCUT_DEVELOPER_UNSAFE_ALLOW_REMOTE_OLLAMA") == "1"
     return normalize_ollama_base_url(loopback_only=not allow_remote)
 
 

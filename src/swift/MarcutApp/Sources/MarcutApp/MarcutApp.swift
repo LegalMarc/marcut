@@ -345,6 +345,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             process.executableURL = URL(fileURLWithPath: scriptPath)
             process.arguments = ["redact", "--help"]
             var env = ProcessInfo.processInfo.environment
+            env.removeValue(forKey: "MARCUT_ALLOW_REMOTE_OLLAMA")
+            env.removeValue(forKey: "MARCUT_DEVELOPER_UNSAFE_ALLOW_REMOTE_OLLAMA")
             env["PYTHONUNBUFFERED"] = "1"
             process.environment = env
 

@@ -1084,6 +1084,7 @@ Sandboxed builds resolve these inside the app container; use Reveal buttons in S
 - Model downloads require network access.
 - Inference uses a local Ollama server bound to `127.0.0.1` only.
 - `OLLAMA_HOST` and `MARCUT_OLLAMA_HOST` are sanitized to loopback; only the port may vary.
+- Public app runs ignore legacy remote-host overrides. Source developers can opt into remote Ollama only with `MARCUT_DEVELOPER_UNSAFE_ALLOW_REMOTE_OLLAMA=1`; do not use that unsafe mode with confidential documents.
 
 ### Metadata Reduction and Hardening
 

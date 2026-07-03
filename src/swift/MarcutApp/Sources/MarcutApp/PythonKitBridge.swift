@@ -805,6 +805,9 @@ public final class PythonKitRunner {
     }
 
     private func syncEmbeddedEnvToPython(_ py_os: PythonObject) {
+        for key in ["MARCUT_ALLOW_REMOTE_OLLAMA", "MARCUT_DEVELOPER_UNSAFE_ALLOW_REMOTE_OLLAMA"] {
+            _ = py_os.environ.pop(PythonObject(key), Python.None)
+        }
         for key in Self.pythonEnvKeys {
             if let raw = getenv(key) {
                 py_os.environ[key] = PythonObject(String(cString: raw))

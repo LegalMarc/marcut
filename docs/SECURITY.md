@@ -105,5 +105,6 @@ All HTTP requests are made to the local Ollama service (`http://127.0.0.1:<port>
 - Localhost-only: No external network calls.
 - No `verify=False`: TLS verification is not disabled (not needed for localhost HTTP).
 - Timeouts: Health checks use short timeouts (2–5s). LLM requests allow long-running responses (up to ~120 minutes). The macOS app also enforces per-phase and per-document timeouts (default 120 minutes for the processing phase).
+- Public runtime does not honor the legacy `MARCUT_ALLOW_REMOTE_OLLAMA` variable. Source developers can opt into remote Ollama only with the explicitly unsafe `MARCUT_DEVELOPER_UNSAFE_ALLOW_REMOTE_OLLAMA=1` environment variable; do not use this with confidential documents.
 
 ---
