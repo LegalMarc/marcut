@@ -769,7 +769,11 @@ public final class PythonKitRunner {
         stateLock.lock()
         isCancellationRequested = true
         stateLock.unlock()
+        setenv("MARCUT_PROCESSING_DEADLINE_MONOTONIC", String(ProcessInfo.processInfo.systemUptime), 1)
 
+        if Py_IsInitialized() != 0 {
+            PyErr_SetInterrupt()
+        }
         worker.performAsync { [logger] in
             if Py_IsInitialized() != 0 {
                 PyErr_SetInterrupt()
@@ -783,6 +787,7 @@ public final class PythonKitRunner {
         let wasCancelled = isCancellationRequested
         isCancellationRequested = false
         stateLock.unlock()
+        unsetenv("MARCUT_PROCESSING_DEADLINE_MONOTONIC")
         if wasCancelled {
             logger("PK_CANCEL_CLEARED: was_cancelled=true")
         }
@@ -794,6 +799,7 @@ public final class PythonKitRunner {
         activeRunToken = token
         isCancellationRequested = false
         stateLock.unlock()
+        unsetenv("MARCUT_PROCESSING_DEADLINE_MONOTONIC")
         return token
     }
 
@@ -1235,6 +1241,21 @@ public final class PythonKitRunner {
                 resolvedProcessingStepTimeout
             )
             let processingDisableTimeouts = PythonTimeoutOverrides.disable(for: "PROCESSING")
+            if !processingDisableTimeouts {
+                do {
+                    let pyTime = try Python.attemptImport("time")
+                    let deadline = (Double(pyTime.monotonic()) ?? 0.0) + resolvedProcessingStepTimeout
+                    py_os.environ["MARCUT_PROCESSING_DEADLINE_MONOTONIC"] = PythonObject(String(deadline))
+                    logger("PK_PROCESSING_DEADLINE_SET: \(String(format: "%.2f", resolvedProcessingStepTimeout))s")
+                } catch {
+                    logger("PK_PROCESSING_DEADLINE_ERROR: \(error)")
+                }
+            } else {
+                _ = py_os.environ.pop(PythonObject("MARCUT_PROCESSING_DEADLINE_MONOTONIC"), Python.None)
+            }
+            defer {
+                _ = py_os.environ.pop(PythonObject("MARCUT_PROCESSING_DEADLINE_MONOTONIC"), Python.None)
+            }
             let code: Int = try withTimeout(
                 operation: "processing",
                 stepTimeout: resolvedProcessingStepTimeout,
