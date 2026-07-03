@@ -6,37 +6,29 @@
       "properties": [
         {
           "name": "marcut:manual_review",
-          "value": "Confirm embedded Ollama provenance and vulnerability status for each public release."
-        },
-        {
-          "name": "marcut:source",
-          "value": "/Users/mhm/Documents/Dev/Marcut-2/.marcut_artifacts/ignored-resources/appstore/build/MarcutApp.app/Contents/Resources/ollama"
+          "value": "Embedded Ollama binary was not present in the scanned root; verify from the release bundle."
         }
       ],
       "type": "application",
-      "version": "unknown"
+      "version": "manual-review-required"
     },
     {
       "name": "Python.framework",
       "properties": [
         {
-          "name": "marcut:ecosystem",
-          "value": "beeware-python-support"
-        },
-        {
-          "name": "marcut:source",
-          "value": "/Users/mhm/Documents/Dev/Marcut-2/.marcut_artifacts/ignored-resources/appstore/build/MarcutApp.app/Contents/Frameworks/Python.framework/Resources/Info.plist"
+          "name": "marcut:manual_review",
+          "value": "BeeWare Python framework version must be checked from the release bundle."
         }
       ],
       "type": "framework",
-      "version": "3.11.9, (c) 2001-2023 Python Software Foundation."
+      "version": "manual-review-required"
     },
     {
       "name": "annotated-types",
       "properties": [
         {
           "name": "marcut:source",
-          "value": ".marcut_artifacts/ignored-resources/appstore/build/MarcutApp.app/Contents/Resources/python_site/annotated_types-0.7.0.dist-info/METADATA"
+          "value": "src/swift/MarcutApp/Sources/MarcutApp/python_site/annotated_types-0.7.0.dist-info/METADATA"
         }
       ],
       "purl": "pkg:pypi/annotated-types@0.7.0",
@@ -48,7 +40,7 @@
       "properties": [
         {
           "name": "marcut:source",
-          "value": ".marcut_artifacts/ignored-resources/appstore/build/MarcutApp.app/Contents/Resources/python_site/certifi-2026.6.17.dist-info/METADATA"
+          "value": "src/swift/MarcutApp/Sources/MarcutApp/python_site/certifi-2026.6.17.dist-info/METADATA"
         }
       ],
       "purl": "pkg:pypi/certifi@2026.6.17",
@@ -60,7 +52,7 @@
       "properties": [
         {
           "name": "marcut:source",
-          "value": ".marcut_artifacts/ignored-resources/appstore/build/MarcutApp.app/Contents/Resources/python_site/charset_normalizer-3.4.7.dist-info/METADATA"
+          "value": "src/swift/MarcutApp/Sources/MarcutApp/python_site/charset_normalizer-3.4.7.dist-info/METADATA"
         }
       ],
       "purl": "pkg:pypi/charset-normalizer@3.4.7",
@@ -72,7 +64,7 @@
       "properties": [
         {
           "name": "marcut:source",
-          "value": ".marcut_artifacts/ignored-resources/appstore/build/MarcutApp.app/Contents/Resources/python_site/dateparser-1.2.0.dist-info/METADATA"
+          "value": "src/swift/MarcutApp/Sources/MarcutApp/python_site/dateparser-1.2.0.dist-info/METADATA"
         }
       ],
       "purl": "pkg:pypi/dateparser@1.2.0",
@@ -84,7 +76,7 @@
       "properties": [
         {
           "name": "marcut:source",
-          "value": ".marcut_artifacts/ignored-resources/appstore/build/MarcutApp.app/Contents/Resources/python_site/idna-3.18.dist-info/METADATA"
+          "value": "src/swift/MarcutApp/Sources/MarcutApp/python_site/idna-3.18.dist-info/METADATA"
         }
       ],
       "purl": "pkg:pypi/idna@3.18",
@@ -96,7 +88,7 @@
       "properties": [
         {
           "name": "marcut:source",
-          "value": ".marcut_artifacts/ignored-resources/appstore/build/MarcutApp.app/Contents/Resources/python_site/lxml-6.1.0.dist-info/METADATA"
+          "value": "src/swift/MarcutApp/Sources/MarcutApp/python_site/lxml-6.1.0.dist-info/METADATA"
         }
       ],
       "purl": "pkg:pypi/lxml@6.1.0",
@@ -108,7 +100,7 @@
       "properties": [
         {
           "name": "marcut:source",
-          "value": ".marcut_artifacts/ignored-resources/appstore/build/MarcutApp.app/Contents/Resources/python_site/numpy-2.2.0.dist-info/METADATA"
+          "value": "src/swift/MarcutApp/Sources/MarcutApp/python_site/numpy-2.2.0.dist-info/METADATA"
         }
       ],
       "purl": "pkg:pypi/numpy@2.2.0",
@@ -120,7 +112,7 @@
       "properties": [
         {
           "name": "marcut:source",
-          "value": ".marcut_artifacts/ignored-resources/appstore/build/MarcutApp.app/Contents/Resources/python_site/pydantic-2.10.3.dist-info/METADATA"
+          "value": "src/swift/MarcutApp/Sources/MarcutApp/python_site/pydantic-2.10.3.dist-info/METADATA"
         }
       ],
       "purl": "pkg:pypi/pydantic@2.10.3",
@@ -132,7 +124,7 @@
       "properties": [
         {
           "name": "marcut:source",
-          "value": ".marcut_artifacts/ignored-resources/appstore/build/MarcutApp.app/Contents/Resources/python_site/pydantic_core-2.27.1.dist-info/METADATA"
+          "value": "src/swift/MarcutApp/Sources/MarcutApp/python_site/pydantic_core-2.27.1.dist-info/METADATA"
         }
       ],
       "purl": "pkg:pypi/pydantic_core@2.27.1",
@@ -144,7 +136,7 @@
       "properties": [
         {
           "name": "marcut:source",
-          "value": ".marcut_artifacts/ignored-resources/appstore/build/MarcutApp.app/Contents/Resources/python_site/python_dateutil-2.9.0.post0.dist-info/METADATA"
+          "value": "src/swift/MarcutApp/Sources/MarcutApp/python_site/python_dateutil-2.9.0.post0.dist-info/METADATA"
         }
       ],
       "purl": "pkg:pypi/python-dateutil@2.9.0.post0",
@@ -156,7 +148,7 @@
       "properties": [
         {
           "name": "marcut:source",
-          "value": ".marcut_artifacts/ignored-resources/appstore/build/MarcutApp.app/Contents/Resources/python_site/python_docx-1.1.2.dist-info/METADATA"
+          "value": "src/swift/MarcutApp/Sources/MarcutApp/python_site/python_docx-1.1.2.dist-info/METADATA"
         }
       ],
       "purl": "pkg:pypi/python-docx@1.1.2",
@@ -190,7 +182,7 @@
       "properties": [
         {
           "name": "marcut:source",
-          "value": ".marcut_artifacts/ignored-resources/appstore/build/MarcutApp.app/Contents/Resources/python_site/pytz-2026.2.dist-info/METADATA"
+          "value": "src/swift/MarcutApp/Sources/MarcutApp/python_site/pytz-2026.2.dist-info/METADATA"
         }
       ],
       "purl": "pkg:pypi/pytz@2026.2",
@@ -202,7 +194,7 @@
       "properties": [
         {
           "name": "marcut:source",
-          "value": ".marcut_artifacts/ignored-resources/appstore/build/MarcutApp.app/Contents/Resources/python_site/rapidfuzz-3.14.5.dist-info/METADATA"
+          "value": "src/swift/MarcutApp/Sources/MarcutApp/python_site/rapidfuzz-3.14.5.dist-info/METADATA"
         }
       ],
       "purl": "pkg:pypi/RapidFuzz@3.14.5",
@@ -214,7 +206,7 @@
       "properties": [
         {
           "name": "marcut:source",
-          "value": ".marcut_artifacts/ignored-resources/appstore/build/MarcutApp.app/Contents/Resources/python_site/regex-2024.11.6.dist-info/METADATA"
+          "value": "src/swift/MarcutApp/Sources/MarcutApp/python_site/regex-2024.11.6.dist-info/METADATA"
         }
       ],
       "purl": "pkg:pypi/regex@2024.11.6",
@@ -226,7 +218,7 @@
       "properties": [
         {
           "name": "marcut:source",
-          "value": ".marcut_artifacts/ignored-resources/appstore/build/MarcutApp.app/Contents/Resources/python_site/requests-2.33.0.dist-info/METADATA"
+          "value": "src/swift/MarcutApp/Sources/MarcutApp/python_site/requests-2.33.0.dist-info/METADATA"
         }
       ],
       "purl": "pkg:pypi/requests@2.33.0",
@@ -238,7 +230,7 @@
       "properties": [
         {
           "name": "marcut:source",
-          "value": ".marcut_artifacts/ignored-resources/appstore/build/MarcutApp.app/Contents/Resources/python_site/six-1.17.0.dist-info/METADATA"
+          "value": "src/swift/MarcutApp/Sources/MarcutApp/python_site/six-1.17.0.dist-info/METADATA"
         }
       ],
       "purl": "pkg:pypi/six@1.17.0",
@@ -250,7 +242,7 @@
       "properties": [
         {
           "name": "marcut:source",
-          "value": ".marcut_artifacts/ignored-resources/appstore/build/MarcutApp.app/Contents/Resources/python_site/tqdm-4.67.1.dist-info/METADATA"
+          "value": "src/swift/MarcutApp/Sources/MarcutApp/python_site/tqdm-4.67.1.dist-info/METADATA"
         }
       ],
       "purl": "pkg:pypi/tqdm@4.67.1",
@@ -262,7 +254,7 @@
       "properties": [
         {
           "name": "marcut:source",
-          "value": ".marcut_artifacts/ignored-resources/appstore/build/MarcutApp.app/Contents/Resources/python_site/typing_extensions-4.16.0.dist-info/METADATA"
+          "value": "src/swift/MarcutApp/Sources/MarcutApp/python_site/typing_extensions-4.16.0.dist-info/METADATA"
         }
       ],
       "purl": "pkg:pypi/typing_extensions@4.16.0",
@@ -274,7 +266,7 @@
       "properties": [
         {
           "name": "marcut:source",
-          "value": ".marcut_artifacts/ignored-resources/appstore/build/MarcutApp.app/Contents/Resources/python_site/tzlocal-5.4.4.dist-info/METADATA"
+          "value": "src/swift/MarcutApp/Sources/MarcutApp/python_site/tzlocal-5.4.4.dist-info/METADATA"
         }
       ],
       "purl": "pkg:pypi/tzlocal@5.4.4",
@@ -286,7 +278,7 @@
       "properties": [
         {
           "name": "marcut:source",
-          "value": ".marcut_artifacts/ignored-resources/appstore/build/MarcutApp.app/Contents/Resources/python_site/urllib3-2.7.0.dist-info/METADATA"
+          "value": "src/swift/MarcutApp/Sources/MarcutApp/python_site/urllib3-2.7.0.dist-info/METADATA"
         }
       ],
       "purl": "pkg:pypi/urllib3@2.7.0",
@@ -302,16 +294,16 @@
     "properties": [
       {
         "name": "marcut:sbom_source",
-        "value": "/Users/mhm/Documents/Dev/Marcut-2/.marcut_artifacts/ignored-resources/appstore/build/MarcutApp.app"
+        "value": "/Users/mhm/Documents/Dev/Marcut-2/src/swift/MarcutApp/Sources/MarcutApp/python_site"
       },
       {
         "name": "marcut:unsupported_vulnerability_checks",
         "value": "SwiftPM Git revisions, BeeWare Python framework, and embedded Ollama require manual release review unless external scanner support is added."
       }
     ],
-    "timestamp": "2026-07-03T21:14:19.108985Z"
+    "timestamp": "2026-07-03T21:55:21.753861Z"
   },
-  "serialNumber": "urn:uuid:80d0ed7b-628c-4c8c-bd4b-46e2ab705c88",
+  "serialNumber": "urn:uuid:30c516d2-9aec-4408-bcbe-c3b501dccdd0",
   "specVersion": "1.5",
   "version": 1
 }
