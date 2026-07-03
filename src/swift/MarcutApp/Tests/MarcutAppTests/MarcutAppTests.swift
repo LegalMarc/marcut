@@ -513,6 +513,71 @@ final class MarcutAppTests: XCTestCase {
         XCTAssertNotNil(item.errorMessage, "Error message should be set for failed items")
     }
 
+    // MARK: - Retry Failed Tests
+
+    func testRetryFailedDocumentsOnlyReQueuesFailedItems() throws {
+        let viewModel = createTestViewModel()
+
+        let completedItem = createTestDocumentItem(status: .completed)
+        let failedItemA = createTestDocumentItem(status: .failed)
+        let failedItemB = createTestDocumentItem(status: .failed)
+        let cancelledItem = createTestDocumentItem(status: .cancelled)
+        let validItem = createTestDocumentItem(status: .validDocument)
+
+        viewModel.items = [completedItem, failedItemA, cancelledItem, validItem, failedItemB]
+
+        // Spy: capture exactly which items get passed to the processing call instead of
+        // dispatching the real (Python-backed) retry path.
+        var retried: [DocumentItem] = []
+        viewModel.retryFailedDocumentsHandler = { item, _, _ in
+            retried.append(item)
+        }
+
+        viewModel.retryFailedDocuments()
+
+        XCTAssertEqual(retried.count, 2, "Only the two failed items should be re-queued")
+        XCTAssertTrue(retried.contains(where: { $0 === failedItemA }), "failedItemA should be re-queued")
+        XCTAssertTrue(retried.contains(where: { $0 === failedItemB }), "failedItemB should be re-queued")
+        XCTAssertFalse(retried.contains(where: { $0 === completedItem }), "Completed items must not be touched")
+        XCTAssertFalse(retried.contains(where: { $0 === cancelledItem }), "Cancelled items must not be touched")
+        XCTAssertFalse(retried.contains(where: { $0 === validItem }), "Valid (never-run) items must not be touched")
+
+        // Original statuses must be untouched by the spy path (no real processing occurred).
+        XCTAssertEqual(completedItem.status, .completed)
+        XCTAssertEqual(cancelledItem.status, .cancelled)
+        XCTAssertEqual(validItem.status, .validDocument)
+    }
+
+    func testRetryFailedDocumentsNoOpWhenNoFailedItems() throws {
+        let viewModel = createTestViewModel()
+        viewModel.items = [
+            createTestDocumentItem(status: .completed),
+            createTestDocumentItem(status: .validDocument)
+        ]
+
+        var retried: [DocumentItem] = []
+        viewModel.retryFailedDocumentsHandler = { item, _, _ in
+            retried.append(item)
+        }
+
+        viewModel.retryFailedDocuments()
+
+        XCTAssertTrue(retried.isEmpty, "Retry should be a no-op when there are no failed documents")
+    }
+
+    func testHasFailedDocumentsReflectsItemStatuses() throws {
+        let viewModel = createTestViewModel()
+        XCTAssertFalse(viewModel.hasFailedDocuments, "No documents means no failed documents")
+
+        viewModel.items = [createTestDocumentItem(status: .completed)]
+        viewModel.add(urls: [])
+        XCTAssertFalse(viewModel.hasFailedDocuments, "Only completed documents present")
+
+        viewModel.items.append(createTestDocumentItem(status: .failed))
+        viewModel.add(urls: [])
+        XCTAssertTrue(viewModel.hasFailedDocuments, "A failed document should flip the flag on")
+    }
+
     // MARK: - Performance Tests
 
     func testRedactionStatusPerformance() throws {

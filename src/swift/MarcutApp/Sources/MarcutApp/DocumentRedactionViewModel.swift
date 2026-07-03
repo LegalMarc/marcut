@@ -64,6 +64,7 @@ final class DocumentRedactionViewModel: ObservableObject {
     @Published var hasProcessingDocuments: Bool = false
     @Published var hasCompletedDocuments: Bool = false
     @Published var hasFinishedProcessing: Bool = false
+    @Published var hasFailedDocuments: Bool = false
     @Published var metadataReportErrorMessage: String?
     @Published var metadataReportNeedsPermissionRetry: Bool = false
     @Published var reportErrorMessage: String?
@@ -1361,7 +1362,30 @@ final class DocumentRedactionViewModel: ObservableObject {
         }
         updateState()
     }
-    
+
+    /// Test-only injection point: when set, `retryFailedDocuments` calls this instead of
+    /// dispatching the real `retryDocument` processing, so tests can assert on exactly
+    /// which items were re-queued without a live Python runtime.
+    var retryFailedDocumentsHandler: ((DocumentItem, URL?, DocumentOperation) -> Void)?
+
+    /// Re-queues only the documents currently marked `.failed`, reusing whatever settings/
+    /// operation/destination were active for each document's original run. Documents with any
+    /// other status (including `.completed` and `.cancelled`) are left untouched.
+    func retryFailedDocuments(destination: URL? = nil) {
+        let failedItems = items.filter { $0.status == .failed }
+        guard !failedItems.isEmpty else { return }
+
+        for item in failedItems {
+            let operation = item.lastOperation ?? .redaction
+            let itemDestination = destination ?? item.lastDestinationURL
+            if let handler = retryFailedDocumentsHandler {
+                handler(item, itemDestination, operation)
+            } else {
+                retryDocument(item, destination: itemDestination, operation: operation)
+            }
+        }
+    }
+
     // MARK: - State Management
 
     private func needsRedaction(_ item: DocumentItem, includeRetryItems: Bool = true) -> Bool {
@@ -1379,6 +1403,7 @@ final class DocumentRedactionViewModel: ObservableObject {
         hasValidDocuments = items.contains { $0.status == .validDocument }
         hasProcessingDocuments = items.contains { $0.status.isProcessing }
         hasCompletedDocuments = items.contains { $0.status.isComplete }
+        hasFailedDocuments = items.contains { $0.status == .failed }
 
         let hasPendingDocuments = items.contains { $0.status.isPendingReview }
         let hasPendingRedaction = items.contains { needsRedaction($0) }

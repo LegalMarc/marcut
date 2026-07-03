@@ -285,11 +285,36 @@ struct ContentView: View {
                         .buttonStyle(.plain)
                         .disabled(isPreparing)
                         .accessibilityIdentifier("content.clearList")
+
+                        if viewModel.hasFailedDocuments {
+                            Button(action: { retryFailedDocuments() }) {
+                                HStack(spacing: 4) {
+                                    Image(systemName: "arrow.clockwise.circle.fill")
+                                        .font(.system(size: 9))
+                                    Text("Retry Failed")
+                                        .font(.system(size: 9, weight: .medium))
+                                }
+                                .padding(.horizontal, 10)
+                                .padding(.vertical, 5)
+                                .foregroundColor(CustomColors.secondaryText(for: colorScheme))
+                                .background(
+                                    RoundedRectangle(cornerRadius: 12)
+                                        .fill(CustomColors.cardBackground(for: colorScheme))
+                                        .overlay(
+                                            RoundedRectangle(cornerRadius: 12)
+                                                .stroke(CustomColors.subtleBorder(for: colorScheme), lineWidth: 1)
+                                        )
+                                )
+                            }
+                            .buttonStyle(.plain)
+                            .disabled(isPreparing || isStopping || viewModel.hasProcessingDocuments || currentProcessingTask != nil)
+                            .accessibilityIdentifier("content.retryFailed")
+                        }
                         Spacer()
                     }
                     .padding(.leading, 18) // Align with row content (matches row padding)
                 }
-                
+
                 DocumentListView(viewModel: viewModel, alertInfo: $alertInfo, onRetry: retryDocument)
                     .frame(maxHeight: .infinity)
             }
@@ -1038,7 +1063,51 @@ struct ContentView: View {
             }
         }
     }
-    
+
+    /// Re-queues only the documents currently marked `.failed`, reusing each document's
+    /// original operation/destination via `DocumentRedactionViewModel.retryFailedDocuments`.
+    private func retryFailedDocuments() {
+        ContentView.logToFile("=== RETRY FAILED BUTTON CLICKED ===")
+
+        isStopping = false
+        isPreparing = true
+
+        Task {
+            await MainActor.run {
+                if viewModel.isPythonInitializing {
+                    alertInfo = AlertInfo(
+                        title: "Please Wait",
+                        message: "The AI engine is still warming up. Try again in a few seconds."
+                    )
+                    isPreparing = false
+                    return
+                }
+
+                if let error = viewModel.pythonInitializationError {
+                    alertInfo = AlertInfo(
+                        title: "Initialization Failed",
+                        message: error
+                    )
+                    isPreparing = false
+                    return
+                }
+
+                if !viewModel.isEnvironmentReady {
+                    alertInfo = AlertInfo(
+                        title: "Environment Not Ready",
+                        message: viewModel.environmentStatus
+                    )
+                    viewModel.requestFirstRunSetup()
+                    isPreparing = false
+                    return
+                }
+
+                isPreparing = false
+                viewModel.retryFailedDocuments()
+            }
+        }
+    }
+
     /// Scrub metadata only - no rules or LLM redaction
     /// Uses saved metadata preferences from MetadataCleaningSettings
     private func startMetadataScrub() {
