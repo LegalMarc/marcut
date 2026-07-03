@@ -8,6 +8,8 @@ Tests cover:
 
 import pytest
 import argparse
+import sys
+import marcut.cli as cli
 from marcut.cli import _parse_mode, build
 
 
@@ -232,6 +234,46 @@ class TestEdgeCases:
             "--llama-gguf", "/path/to/model.gguf"
         ])
         assert args.llama_gguf == "/path/to/model.gguf"
+
+    def test_main_forwards_gguf_backend_settings(self, monkeypatch):
+        """CLI llama.cpp settings should reach unified execution."""
+        captured = {}
+
+        def fake_run_unified_redaction(**kwargs):
+            captured.update(kwargs)
+            return {
+                "success": True,
+                "exit_code": 0,
+                "duration": 0.1,
+                "entity_count": 0,
+                "phase_timings": {},
+                "llm_timing": {},
+            }
+
+        monkeypatch.setattr(cli, "run_unified_redaction", fake_run_unified_redaction)
+        monkeypatch.setattr(sys, "argv", [
+            "marcut",
+            "redact",
+            "--in", "/input.docx",
+            "--out", "/output.docx",
+            "--report", "/report.json",
+            "--mode", "enhanced",
+            "--backend", "llama_cpp",
+            "--llama-gguf", "/models/local.gguf",
+            "--threads", "8",
+            "--temp", "0.4",
+            "--seed", "123",
+        ])
+
+        with pytest.raises(SystemExit) as exc:
+            cli.main()
+
+        assert exc.value.code == 0
+        assert captured["backend"] == "llama_cpp"
+        assert captured["llama_gguf"] == "/models/local.gguf"
+        assert captured["threads"] == 8
+        assert captured["temperature"] == 0.4
+        assert captured["seed"] == 123
 
     def test_no_qa_flag(self):
         """Test --no-qa flag."""

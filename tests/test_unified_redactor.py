@@ -14,6 +14,7 @@ from marcut.unified_redactor import (
     validate_model_name,
     validate_parameters,
     setup_logging,
+    run_unified_redaction,
 )
 
 
@@ -89,6 +90,18 @@ class TestValidateParameters:
         # Cleanup
         if os.path.exists(path):
             os.remove(path)
+
+    def test_llama_cpp_backend_requires_gguf_path(self, temp_docx, tmp_path):
+        """llama.cpp backend should fail clearly without a GGUF path."""
+        with pytest.raises(ValueError, match="llama_cpp backend requires"):
+            run_unified_redaction(
+                input_path=temp_docx,
+                output_path=str(tmp_path / "out.docx"),
+                report_path=str(tmp_path / "report.json"),
+                mode="enhanced",
+                model="llama3.1:8b",
+                backend="llama_cpp",
+            )
 
     def test_missing_input_file(self):
         """Test that missing input file raises error."""
