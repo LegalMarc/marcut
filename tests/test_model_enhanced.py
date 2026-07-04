@@ -156,7 +156,7 @@ def test_intelligent_pipeline_deadline_interrupts_hanging_extraction(monkeypatch
 
     def hanging_extract(*args, **kwargs):
         calls["count"] += 1
-        time.sleep(0.4)
+        time.sleep(1.5)
         return [{"start": 0, "end": 10, "label": "NAME"}]
 
     monkeypatch.setattr("marcut.model.ollama_extract", hanging_extract)
@@ -173,10 +173,14 @@ def test_intelligent_pipeline_deadline_interrupts_hanging_extraction(monkeypatch
         )
 
     assert calls["count"] == 1
-    # Deadline is 0.05s out and the hang is 0.4s; assert the interrupt fires
-    # well before the full hang completes, with headroom for slower/loaded
-    # CI hosts rather than a tight bound tuned to a fast local machine.
-    assert time.monotonic() - started < 0.35
+    # The deadline poll loop only re-checks every `remaining_seconds()`
+    # minimum floor (0.25s, see cancellation.py) regardless of how soon the
+    # deadline itself expires, so the interrupt can never fire faster than
+    # that floor. The hang is deliberately much longer than the floor (1.5s
+    # vs 0.25s) so the assertion has real headroom for CI scheduling jitter
+    # while still proving the interrupt fires well before the hang would
+    # complete on its own.
+    assert time.monotonic() - started < 0.75
 
 
 def test_intelligent_pipeline_sends_seed_to_chunk_extraction(monkeypatch):
