@@ -531,19 +531,17 @@ struct MetadataCleaningSettings: Codable, Equatable {
     
     // MARK: - Persistence
     
-    private static let userDefaultsKey = "MetadataCleaningSettings"
-    
     static func load() -> MetadataCleaningSettings {
-        guard let data = UserDefaults.standard.data(forKey: userDefaultsKey),
+        guard let data = UserDefaults.standard.data(forKey: DefaultsKey.metadataCleaningSettings.key),
               let settings = try? JSONDecoder().decode(MetadataCleaningSettings.self, from: data) else {
             return .default
         }
         return settings
     }
-    
+
     func save() {
         if let data = try? JSONEncoder().encode(self) {
-            UserDefaults.standard.set(data, forKey: Self.userDefaultsKey)
+            UserDefaults.standard.set(data, forKey: DefaultsKey.metadataCleaningSettings.key)
         }
     }
     

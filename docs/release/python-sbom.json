@@ -1,69 +1,309 @@
 {
   "bomFormat": "CycloneDX",
-  "specVersion": "1.5",
-  "serialNumber": "urn:uuid:667188b2-60b4-4f7e-931e-7a30e964e14b",
-  "version": 1,
-  "metadata": {
-    "timestamp": "2026-05-12T20:18:09.557381Z",
-    "component": {
-      "type": "application",
-      "name": "Marcut"
-    }
-  },
   "components": [
     {
-      "type": "library",
-      "name": "python-docx",
-      "version": "1.1.2",
-      "purl": "pkg:pypi/python-docx@1.1.2"
+      "name": "Ollama",
+      "properties": [
+        {
+          "name": "marcut:manual_review",
+          "value": "Embedded Ollama binary was not present in the scanned root; verify from the release bundle."
+        }
+      ],
+      "type": "application",
+      "version": "manual-review-required"
     },
     {
-      "type": "library",
-      "name": "rapidfuzz",
-      "version": "3.14.5",
-      "purl": "pkg:pypi/rapidfuzz@3.14.5"
+      "name": "Python.framework",
+      "properties": [
+        {
+          "name": "marcut:manual_review",
+          "value": "BeeWare Python framework version must be checked from the release bundle."
+        }
+      ],
+      "type": "framework",
+      "version": "manual-review-required"
     },
     {
+      "name": "annotated-types",
+      "properties": [
+        {
+          "name": "marcut:source",
+          "value": "src/swift/MarcutApp/Sources/MarcutApp/python_site/annotated_types-0.7.0.dist-info/METADATA"
+        }
+      ],
+      "purl": "pkg:pypi/annotated-types@0.7.0",
       "type": "library",
-      "name": "pydantic",
-      "version": "2.10.3",
-      "purl": "pkg:pypi/pydantic@2.10.3"
+      "version": "0.7.0"
     },
     {
+      "name": "certifi",
+      "properties": [
+        {
+          "name": "marcut:source",
+          "value": "src/swift/MarcutApp/Sources/MarcutApp/python_site/certifi-2026.6.17.dist-info/METADATA"
+        }
+      ],
+      "purl": "pkg:pypi/certifi@2026.6.17",
       "type": "library",
-      "name": "requests",
-      "version": "2.33.0",
-      "purl": "pkg:pypi/requests@2.33.0"
+      "version": "2026.6.17"
     },
     {
+      "name": "charset-normalizer",
+      "properties": [
+        {
+          "name": "marcut:source",
+          "value": "src/swift/MarcutApp/Sources/MarcutApp/python_site/charset_normalizer-3.4.7.dist-info/METADATA"
+        }
+      ],
+      "purl": "pkg:pypi/charset-normalizer@3.4.7",
       "type": "library",
+      "version": "3.4.7"
+    },
+    {
       "name": "dateparser",
-      "version": "1.2.0",
-      "purl": "pkg:pypi/dateparser@1.2.0"
+      "properties": [
+        {
+          "name": "marcut:source",
+          "value": "src/swift/MarcutApp/Sources/MarcutApp/python_site/dateparser-1.2.0.dist-info/METADATA"
+        }
+      ],
+      "purl": "pkg:pypi/dateparser@1.2.0",
+      "type": "library",
+      "version": "1.2.0"
     },
     {
+      "name": "idna",
+      "properties": [
+        {
+          "name": "marcut:source",
+          "value": "src/swift/MarcutApp/Sources/MarcutApp/python_site/idna-3.18.dist-info/METADATA"
+        }
+      ],
+      "purl": "pkg:pypi/idna@3.18",
       "type": "library",
-      "name": "tqdm",
-      "version": "4.67.1",
-      "purl": "pkg:pypi/tqdm@4.67.1"
+      "version": "3.18"
     },
     {
-      "type": "library",
       "name": "lxml",
-      "version": "6.1.0",
-      "purl": "pkg:pypi/lxml@6.1.0"
+      "properties": [
+        {
+          "name": "marcut:source",
+          "value": "src/swift/MarcutApp/Sources/MarcutApp/python_site/lxml-6.1.0.dist-info/METADATA"
+        }
+      ],
+      "purl": "pkg:pypi/lxml@6.1.0",
+      "type": "library",
+      "version": "6.1.0"
     },
     {
-      "type": "library",
       "name": "numpy",
-      "version": "2.2.0",
-      "purl": "pkg:pypi/numpy@2.2.0"
+      "properties": [
+        {
+          "name": "marcut:source",
+          "value": "src/swift/MarcutApp/Sources/MarcutApp/python_site/numpy-2.2.0.dist-info/METADATA"
+        }
+      ],
+      "purl": "pkg:pypi/numpy@2.2.0",
+      "type": "library",
+      "version": "2.2.0"
     },
     {
+      "name": "pydantic",
+      "properties": [
+        {
+          "name": "marcut:source",
+          "value": "src/swift/MarcutApp/Sources/MarcutApp/python_site/pydantic-2.10.3.dist-info/METADATA"
+        }
+      ],
+      "purl": "pkg:pypi/pydantic@2.10.3",
       "type": "library",
+      "version": "2.10.3"
+    },
+    {
+      "name": "pydantic_core",
+      "properties": [
+        {
+          "name": "marcut:source",
+          "value": "src/swift/MarcutApp/Sources/MarcutApp/python_site/pydantic_core-2.27.1.dist-info/METADATA"
+        }
+      ],
+      "purl": "pkg:pypi/pydantic_core@2.27.1",
+      "type": "library",
+      "version": "2.27.1"
+    },
+    {
+      "name": "python-dateutil",
+      "properties": [
+        {
+          "name": "marcut:source",
+          "value": "src/swift/MarcutApp/Sources/MarcutApp/python_site/python_dateutil-2.9.0.post0.dist-info/METADATA"
+        }
+      ],
+      "purl": "pkg:pypi/python-dateutil@2.9.0.post0",
+      "type": "library",
+      "version": "2.9.0.post0"
+    },
+    {
+      "name": "python-docx",
+      "properties": [
+        {
+          "name": "marcut:source",
+          "value": "src/swift/MarcutApp/Sources/MarcutApp/python_site/python_docx-1.1.2.dist-info/METADATA"
+        }
+      ],
+      "purl": "pkg:pypi/python-docx@1.1.2",
+      "type": "library",
+      "version": "1.1.2"
+    },
+    {
+      "externalReferences": [
+        {
+          "type": "vcs",
+          "url": "https://github.com/pvieito/PythonKit.git"
+        }
+      ],
+      "name": "pythonkit",
+      "properties": [
+        {
+          "name": "marcut:ecosystem",
+          "value": "swiftpm"
+        },
+        {
+          "name": "marcut:revision",
+          "value": "6fee7617cfa910fbac7035276e295ba967adbbb4"
+        }
+      ],
+      "purl": "pkg:github/pvieito/PythonKit@0.5.1",
+      "type": "library",
+      "version": "0.5.1"
+    },
+    {
+      "name": "pytz",
+      "properties": [
+        {
+          "name": "marcut:source",
+          "value": "src/swift/MarcutApp/Sources/MarcutApp/python_site/pytz-2026.2.dist-info/METADATA"
+        }
+      ],
+      "purl": "pkg:pypi/pytz@2026.2",
+      "type": "library",
+      "version": "2026.2"
+    },
+    {
+      "name": "RapidFuzz",
+      "properties": [
+        {
+          "name": "marcut:source",
+          "value": "src/swift/MarcutApp/Sources/MarcutApp/python_site/rapidfuzz-3.14.5.dist-info/METADATA"
+        }
+      ],
+      "purl": "pkg:pypi/RapidFuzz@3.14.5",
+      "type": "library",
+      "version": "3.14.5"
+    },
+    {
       "name": "regex",
-      "version": "2024.11.6",
-      "purl": "pkg:pypi/regex@2024.11.6"
+      "properties": [
+        {
+          "name": "marcut:source",
+          "value": "src/swift/MarcutApp/Sources/MarcutApp/python_site/regex-2024.11.6.dist-info/METADATA"
+        }
+      ],
+      "purl": "pkg:pypi/regex@2024.11.6",
+      "type": "library",
+      "version": "2024.11.6"
+    },
+    {
+      "name": "requests",
+      "properties": [
+        {
+          "name": "marcut:source",
+          "value": "src/swift/MarcutApp/Sources/MarcutApp/python_site/requests-2.33.0.dist-info/METADATA"
+        }
+      ],
+      "purl": "pkg:pypi/requests@2.33.0",
+      "type": "library",
+      "version": "2.33.0"
+    },
+    {
+      "name": "six",
+      "properties": [
+        {
+          "name": "marcut:source",
+          "value": "src/swift/MarcutApp/Sources/MarcutApp/python_site/six-1.17.0.dist-info/METADATA"
+        }
+      ],
+      "purl": "pkg:pypi/six@1.17.0",
+      "type": "library",
+      "version": "1.17.0"
+    },
+    {
+      "name": "tqdm",
+      "properties": [
+        {
+          "name": "marcut:source",
+          "value": "src/swift/MarcutApp/Sources/MarcutApp/python_site/tqdm-4.67.1.dist-info/METADATA"
+        }
+      ],
+      "purl": "pkg:pypi/tqdm@4.67.1",
+      "type": "library",
+      "version": "4.67.1"
+    },
+    {
+      "name": "typing_extensions",
+      "properties": [
+        {
+          "name": "marcut:source",
+          "value": "src/swift/MarcutApp/Sources/MarcutApp/python_site/typing_extensions-4.16.0.dist-info/METADATA"
+        }
+      ],
+      "purl": "pkg:pypi/typing_extensions@4.16.0",
+      "type": "library",
+      "version": "4.16.0"
+    },
+    {
+      "name": "tzlocal",
+      "properties": [
+        {
+          "name": "marcut:source",
+          "value": "src/swift/MarcutApp/Sources/MarcutApp/python_site/tzlocal-5.4.4.dist-info/METADATA"
+        }
+      ],
+      "purl": "pkg:pypi/tzlocal@5.4.4",
+      "type": "library",
+      "version": "5.4.4"
+    },
+    {
+      "name": "urllib3",
+      "properties": [
+        {
+          "name": "marcut:source",
+          "value": "src/swift/MarcutApp/Sources/MarcutApp/python_site/urllib3-2.7.0.dist-info/METADATA"
+        }
+      ],
+      "purl": "pkg:pypi/urllib3@2.7.0",
+      "type": "library",
+      "version": "2.7.0"
     }
-  ]
+  ],
+  "metadata": {
+    "component": {
+      "name": "Marcut",
+      "type": "application"
+    },
+    "properties": [
+      {
+        "name": "marcut:sbom_source",
+        "value": "/Users/mhm/Documents/Dev/Marcut-2/src/swift/MarcutApp/Sources/MarcutApp/python_site"
+      },
+      {
+        "name": "marcut:unsupported_vulnerability_checks",
+        "value": "SwiftPM Git revisions, BeeWare Python framework, and embedded Ollama require manual release review unless external scanner support is added."
+      }
+    ],
+    "timestamp": "2026-07-03T21:55:21.753861Z"
+  },
+  "serialNumber": "urn:uuid:30c516d2-9aec-4408-bcbe-c3b501dccdd0",
+  "specVersion": "1.5",
+  "version": 1
 }

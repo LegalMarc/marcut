@@ -9,11 +9,7 @@ enum ProcessingState {
 
 @MainActor
 final class DocumentRedactionViewModel: ObservableObject {
-    private static let supportedModelIdentifiers: Set<String> = [
-        "llama3.1:8b",
-        "mistral:7b",
-        "llama3.2:3b"
-    ]
+    private static let supportedModelIdentifiers: Set<String> = ModelCatalog.shared.modelIds
     private static func normalizeModelIdentifier(_ modelName: String) -> String {
         let trimmed = modelName.trimmingCharacters(in: .whitespacesAndNewlines)
         let parts = trimmed.split(separator: "/")
@@ -26,17 +22,40 @@ final class DocumentRedactionViewModel: ObservableObject {
         }
         return relevant.map { String($0).lowercased() }.joined(separator: "/")
     }
-    private static let advancedModeKey = "MarcutApp.AdvancedModeEnabled"
-    private static let advancedAIModeKey = "MarcutApp.AdvancedAIMode"
-    private static let advancedConfidenceKey = "MarcutApp.AdvancedLLMConfidence"
-    private static let advancedConfidenceMigrationKey = "MarcutApp.AdvancedLLMConfidenceMigratedTo99"
-    private static let outputSaveLocationKey = "MarcutApp.OutputSaveLocationPreference"
+
+    static func finalRedactedCopyURL(
+        for sourceURL: URL,
+        fileExists: (String) -> Bool = { FileManager.default.fileExists(atPath: $0) }
+    ) -> URL {
+        let directory = sourceURL.deletingLastPathComponent()
+        let baseName = sourceURL.deletingPathExtension().lastPathComponent
+        let ext = sourceURL.pathExtension.isEmpty ? "docx" : sourceURL.pathExtension
+        var candidate = directory
+            .appendingPathComponent("\(baseName) Final Redacted")
+            .appendingPathExtension(ext)
+        var index = 2
+        while fileExists(candidate.path) {
+            candidate = directory
+                .appendingPathComponent("\(baseName) Final Redacted \(index)")
+                .appendingPathExtension(ext)
+            index += 1
+        }
+        return candidate
+    }
+
+    static func makeSensitiveReportFilePrivate(_ url: URL) {
+        try? FileManager.default.setAttributes(
+            [.posixPermissions: NSNumber(value: Int16(0o600))],
+            ofItemAtPath: url.path
+        )
+    }
     @Published var items: [DocumentItem] = []
     @Published var hasDocuments: Bool = false
     @Published var hasValidDocuments: Bool = false
     @Published var hasProcessingDocuments: Bool = false
     @Published var hasCompletedDocuments: Bool = false
     @Published var hasFinishedProcessing: Bool = false
+    @Published var hasFailedDocuments: Bool = false
     @Published var metadataReportErrorMessage: String?
     @Published var metadataReportNeedsPermissionRetry: Bool = false
     @Published var reportErrorMessage: String?
@@ -47,6 +66,31 @@ final class DocumentRedactionViewModel: ObservableObject {
     @Published var pythonInitializationError: String?
     // XPC removed - CLI subprocess only
     // @Published var executionStrategy: OllamaExecutionStrategy = .direct
+
+    /// Rough estimated time remaining for the current batch run, or `nil` when there isn't
+    /// yet enough data (fewer than `BatchETACalculator.minimumSamples` documents completed
+    /// in this run) to produce a meaningful estimate. Reset at the start of every
+    /// `processAllDocuments` run — estimates never persist across runs or app launches.
+    @Published var batchETA: TimeInterval? = nil
+
+    /// A pending-job record recovered from a previous session (crash or quit mid-batch), or `nil`
+    /// once there's nothing to offer. Set at launch from `PendingBatchJobStore`; the UI observes
+    /// this to show the "Resume N pending document(s)?" prompt. Cleared by `resumePendingJob()`
+    /// or `discardPendingJob()`.
+    @Published var pendingResumeRecord: PendingBatchJobRecord? = nil
+
+    /// Guards against re-persisting the same empty/non-empty state repeatedly from `updateState()`.
+    private var lastPersistedPendingPaths: [String] = []
+
+    /// Set by `resumePendingJob()` and left set until the *next* state-changing event, so the
+    /// alert's `isPresented` binding setter — which SwiftUI invokes with `false` right after the
+    /// "Resume" button action returns, as a separate call once the alert finishes dismissing —
+    /// knows that dismissal is just an echo of the resume, not an explicit Discard. Without this,
+    /// `discardPendingJob()` would wipe the record `resumePendingJob()` just re-persisted, leaving
+    /// nothing on disk to recover if the app quits before the next state change. A plain
+    /// "in-flight" flag cleared when `resumePendingJob()` returns does NOT work here: SwiftUI's
+    /// setter call happens strictly after `resumePendingJob()` has already returned.
+    private var didJustResumePendingJob = false
 
     // MARK: - Initialization & Cleanup
     private var pythonInitObservers: [NSObjectProtocol] = []
@@ -103,6 +147,8 @@ final class DocumentRedactionViewModel: ObservableObject {
 
         pythonBridge.updateRuleFilter(settings.enabledRules)
         AppDelegate.pythonRunner?.updateRuleFilter(settings.enabledRules)
+
+        pendingResumeRecord = PendingBatchJobStore.load()
     }
 
     deinit {
@@ -129,33 +175,40 @@ final class DocumentRedactionViewModel: ObservableObject {
     private let pythonBridge: PythonBridgeService = .shared
     private var processingTasks: [UUID: Task<Void, Never>] = [:]
     private var heartbeatTasks: [UUID: Task<Void, Never>] = [:]
-    private let heartbeatTimeout: TimeInterval = 30.0
+
+    // MARK: - Batch ETA Tracking
+    /// Wall-clock time each document started processing in the current run, keyed by item id.
+    /// Used to compute a per-document duration sample once the document reaches a terminal state.
+    private var batchProcessingStartTimes: [UUID: Date] = [:]
+    /// (duration, size) samples for documents completed so far in the current run. Reset at the
+    /// start of every `processAllDocuments` call.
+    private var batchETASamples: [BatchETASample] = []
+    private let heartbeatTimeout: TimeInterval = 120.0
     // Note: retryCounts was removed along with retry logic - heartbeat stalls now immediately fail
-    private let firstRunCompletedKey = "MarcutApp.hasCompletedFirstRun"
-    private let metadataScrubUsedKey = "MarcutApp.hasUsedMetadataScrub"
     private var hasPrefetchedModels = false
 
-    enum FirstRunEntryPoint {
+    enum FirstRunEntryPoint: Equatable {
         case onboarding
         case manageModels
+        case downloadSpecificModel(String)
     }
 
     @Published var firstRunEntryPoint: FirstRunEntryPoint = .onboarding
 
     var hasCompletedFirstRun: Bool {
-        UserDefaults.standard.bool(forKey: firstRunCompletedKey)
+        UserDefaults.standard.bool(forKey: DefaultsKey.hasCompletedFirstRun.key)
     }
 
     func markFirstRunComplete() {
-        UserDefaults.standard.set(true, forKey: firstRunCompletedKey)
+        UserDefaults.standard.set(true, forKey: DefaultsKey.hasCompletedFirstRun.key)
     }
 
     var hasUsedMetadataScrub: Bool {
-        UserDefaults.standard.bool(forKey: metadataScrubUsedKey)
+        UserDefaults.standard.bool(forKey: DefaultsKey.hasUsedMetadataScrub.key)
     }
 
     private func markMetadataScrubUsed() {
-        UserDefaults.standard.set(true, forKey: metadataScrubUsedKey)
+        UserDefaults.standard.set(true, forKey: DefaultsKey.hasUsedMetadataScrub.key)
     }
     
     // MARK: - Document Management
@@ -244,6 +297,11 @@ final class DocumentRedactionViewModel: ObservableObject {
         // Clear any lingering cancellation flags from previous operations
         AppDelegate.pythonRunner?.clearCancellationRequest()
 
+        // Fresh ETA estimation for every run — never persisted across runs or app launches.
+        batchProcessingStartTimes.removeAll()
+        batchETASamples.removeAll()
+        batchETA = nil
+
         let shouldLog = DebugPreferences.isEnabled()
         let logPath = DebugLogger.shared.logPath
         let timestamp = ISO8601DateFormatter().string(from: Date())
@@ -252,9 +310,10 @@ final class DocumentRedactionViewModel: ObservableObject {
         if shouldLog {
             // Log all document statuses in a batch to avoid opening the file 1000s of times
             var batchLog = ""
+            batchLog.reserveCapacity(items.count * 100)
             batchLog += "[\(timestamp)] Total documents: \(items.count)\n"
             for (index, item) in items.enumerated() {
-                batchLog += "[\(timestamp)] Doc \(index): \(item.url.lastPathComponent) - Status: \(item.status)\n"
+                batchLog += "[\(timestamp)] Doc \(index): \(item.id.uuidString) - Status: \(item.status)\n"
             }
             let validItems = items.filter { needsRedaction($0, includeRetryItems: includeRetryItems) }
             batchLog += "[\(timestamp)] Valid items for processing: \(validItems.count)\n"
@@ -598,7 +657,7 @@ final class DocumentRedactionViewModel: ObservableObject {
 
     var outputSaveLocationPreference: OutputSaveLocation {
         let defaults = UserDefaults.standard
-        let rawValue = defaults.object(forKey: Self.outputSaveLocationKey) as? Int ?? OutputSaveLocation.alwaysAsk.rawValue
+        let rawValue = defaults.object(forKey: DefaultsKey.outputSaveLocationPreference.key) as? Int ?? OutputSaveLocation.alwaysAsk.rawValue
         return OutputSaveLocation(rawValue: rawValue) ?? .alwaysAsk
     }
 
@@ -817,16 +876,19 @@ final class DocumentRedactionViewModel: ObservableObject {
                             do {
                                 let reportData = try JSONSerialization.data(withJSONObject: report, options: [.prettyPrinted, .sortedKeys])
                                 try reportData.write(to: reportOutputPath)
+                                Self.makeSensitiveReportFilePrivate(reportOutputPath)
                                 scrubReportURL = reportOutputPath
                                 item.metadataReportOutputURL = reportOutputPath
                                 
                                 // Check for HTML report (generated by Python alongside JSON)
                                 let htmlReportURL = reportOutputPath.deletingPathExtension().appendingPathExtension("html")
                                 if FileManager.default.fileExists(atPath: htmlReportURL.path) {
+                                    Self.makeSensitiveReportFilePrivate(htmlReportURL)
                                     scrubHTMLURL = htmlReportURL
                                     item.metadataReportHTMLOutputURL = htmlReportURL
                                     DebugLogger.shared.log("📄 HTML Report found: \(htmlReportURL.path)", component: "DocumentRedactionViewModel")
                                 } else if let generatedHTML = await generateScrubHTMLIfMissing(at: reportOutputPath) {
+                                    Self.makeSensitiveReportFilePrivate(generatedHTML)
                                     scrubHTMLURL = generatedHTML
                                     item.metadataReportHTMLOutputURL = generatedHTML
                                     DebugLogger.shared.log("📄 Generated HTML report: \(generatedHTML.path)", component: "DocumentRedactionViewModel")
@@ -893,6 +955,7 @@ final class DocumentRedactionViewModel: ObservableObject {
             item.status = .processing
             item.lastOperation = .redaction
             item.lastDestinationURL = destination
+            batchProcessingStartTimes[item.id] = Date()
             updateState()
         }
 
@@ -980,9 +1043,9 @@ final class DocumentRedactionViewModel: ObservableObject {
 
     private func logAdvancedSettingsSnapshot(useEnhanced: Bool, modelName: String, backend: String) {
         let defaults = UserDefaults.standard
-        let advancedEnabled = defaults.bool(forKey: Self.advancedModeKey)
-        let advancedModeRaw = defaults.string(forKey: Self.advancedAIModeKey) ?? "unknown"
-        let advancedConfidence = defaults.integer(forKey: Self.advancedConfidenceKey)
+        let advancedEnabled = defaults.bool(forKey: DefaultsKey.advancedModeEnabled.key)
+        let advancedModeRaw = defaults.string(forKey: DefaultsKey.advancedAIMode.key) ?? "unknown"
+        let advancedConfidence = defaults.integer(forKey: DefaultsKey.advancedLLMConfidence.key)
         let timeoutSeconds = settings.processingTimeoutSeconds
         let timeoutLabel = timeoutSeconds <= 0 || timeoutSeconds == Int.max ? "no_limit" : "\(timeoutSeconds)s"
         DebugLogger.shared.log(
@@ -993,9 +1056,9 @@ final class DocumentRedactionViewModel: ObservableObject {
 
     private func applyAdvancedSettingsEnvironment() {
         let defaults = UserDefaults.standard
-        let advancedEnabled = defaults.bool(forKey: Self.advancedModeKey)
-        let advancedModeRaw = defaults.string(forKey: Self.advancedAIModeKey) ?? RedactionMode.rulesOverride.rawValue
-        let advancedConfidence = defaults.integer(forKey: Self.advancedConfidenceKey)
+        let advancedEnabled = defaults.bool(forKey: DefaultsKey.advancedModeEnabled.key)
+        let advancedModeRaw = defaults.string(forKey: DefaultsKey.advancedAIMode.key) ?? RedactionMode.rulesOverride.rawValue
+        let advancedConfidence = defaults.integer(forKey: DefaultsKey.advancedLLMConfidence.key)
         setenv("MARCUT_ADVANCED_MODE_ENABLED", advancedEnabled ? "1" : "0", 1)
         setenv("MARCUT_ADVANCED_AI_MODE", advancedModeRaw, 1)
         setenv("MARCUT_ADVANCED_CONFIDENCE", "\(advancedConfidence)", 1)
@@ -1124,6 +1187,7 @@ final class DocumentRedactionViewModel: ObservableObject {
                 debug: debug,
                 mode: useEnhanced ? settings.mode.rawValue : "rules",
                 llmSkipConfidence: settings.llmConfidenceThresholdValue,
+                llmConcurrency: settings.llmConcurrency,
                 chunkTokens: settings.chunkTokens,
                 overlap: settings.overlap,
                 temperature: settings.temperature,
@@ -1285,8 +1349,9 @@ final class DocumentRedactionViewModel: ObservableObject {
         heartbeatTasks.removeAll()
         AppDelegate.pythonRunner?.clearCancellationRequest()
         updateState()
+        updateBatchETA()
     }
-    
+
     func retryDocument(_ item: DocumentItem, destination: URL? = nil, operation: DocumentOperation) {
         item.errorMessage = nil
         Task { [weak self, weak item] in
@@ -1331,7 +1396,30 @@ final class DocumentRedactionViewModel: ObservableObject {
         }
         updateState()
     }
-    
+
+    /// Test-only injection point: when set, `retryFailedDocuments` calls this instead of
+    /// dispatching the real `retryDocument` processing, so tests can assert on exactly
+    /// which items were re-queued without a live Python runtime.
+    var retryFailedDocumentsHandler: ((DocumentItem, URL?, DocumentOperation) -> Void)?
+
+    /// Re-queues only the documents currently marked `.failed`, reusing whatever settings/
+    /// operation/destination were active for each document's original run. Documents with any
+    /// other status (including `.completed` and `.cancelled`) are left untouched.
+    func retryFailedDocuments(destination: URL? = nil) {
+        let failedItems = items.filter { $0.status == .failed }
+        guard !failedItems.isEmpty else { return }
+
+        for item in failedItems {
+            let operation = item.lastOperation ?? .redaction
+            let itemDestination = destination ?? item.lastDestinationURL
+            if let handler = retryFailedDocumentsHandler {
+                handler(item, itemDestination, operation)
+            } else {
+                retryDocument(item, destination: itemDestination, operation: operation)
+            }
+        }
+    }
+
     // MARK: - State Management
 
     private func needsRedaction(_ item: DocumentItem, includeRetryItems: Bool = true) -> Bool {
@@ -1349,13 +1437,74 @@ final class DocumentRedactionViewModel: ObservableObject {
         hasValidDocuments = items.contains { $0.status == .validDocument }
         hasProcessingDocuments = items.contains { $0.status.isProcessing }
         hasCompletedDocuments = items.contains { $0.status.isComplete }
+        hasFailedDocuments = items.contains { $0.status == .failed }
 
         let hasPendingDocuments = items.contains { $0.status.isPendingReview }
         let hasPendingRedaction = items.contains { needsRedaction($0) }
         hasFinishedProcessing = hasCompletedDocuments && !hasProcessingDocuments && !hasPendingDocuments && !hasPendingRedaction
         ProcessingState.isProcessing = hasProcessingDocuments
+
+        persistPendingBatchJobIfNeeded()
     }
-    
+
+    /// Documents that are still queued (`.validDocument`) or were mid-processing
+    /// (`status.isProcessing`) when the record is saved. A document that quits mid-processing
+    /// resumes as `.pending`, not wherever it left off — see issue #19 "Out of scope".
+    private var pendingBatchJobPaths: [String] {
+        items
+            .filter { $0.status == .validDocument || $0.status.isProcessing }
+            .map { $0.url.path }
+    }
+
+    /// Persists the current pending/in-progress document set whenever it changes, or clears the
+    /// persisted record once nothing is pending. Called from every `updateState()` pass so it
+    /// stays in sync with adds/removes/status transitions without needing to hook every call site.
+    private func persistPendingBatchJobIfNeeded() {
+        let paths = pendingBatchJobPaths
+        guard paths != lastPersistedPendingPaths else { return }
+        lastPersistedPendingPaths = paths
+
+        if paths.isEmpty {
+            PendingBatchJobStore.save(nil)
+        } else {
+            PendingBatchJobStore.save(PendingBatchJobRecord(documentPaths: paths, settings: settings))
+        }
+    }
+
+    /// Repopulates the document list from a previously persisted pending-job record, in
+    /// `.pending` (`.validDocument`) state. Does not auto-start processing — the user still
+    /// presses the normal "Redact Documents" action. Restores the settings that were active for
+    /// the persisted run.
+    func resumePendingJob() {
+        guard let record = pendingResumeRecord else { return }
+        pendingResumeRecord = nil
+        didJustResumePendingJob = true
+
+        settings = record.settings
+        pythonBridge.updateRuleFilter(settings.enabledRules)
+        AppDelegate.pythonRunner?.updateRuleFilter(settings.enabledRules)
+
+        let urls = record.documentPaths.map { URL(fileURLWithPath: $0) }
+        add(urls: urls)
+    }
+
+    /// Dismisses the resume prompt without repopulating the document list, clearing the
+    /// persisted record so it doesn't reappear on the next launch.
+    ///
+    /// No-op immediately after `resumePendingJob()`: SwiftUI writes `isPresented = false` back
+    /// through the alert's binding as a separate call once the "Resume" button action returns and
+    /// the alert finishes dismissing, which would otherwise call this and immediately wipe the
+    /// record `resumePendingJob()` just re-persisted (see `didJustResumePendingJob`). That echo
+    /// call is consumed here (flag reset) so a *later*, genuine Discard still clears the record.
+    func discardPendingJob() {
+        if didJustResumePendingJob {
+            didJustResumePendingJob = false
+            return
+        }
+        pendingResumeRecord = nil
+        PendingBatchJobStore.save(nil)
+    }
+
     func clearAllDocuments() {
         stopProcessing()
         for item in items {
@@ -1395,6 +1544,117 @@ final class DocumentRedactionViewModel: ObservableObject {
     func openRedactedDocument(_ item: DocumentItem) -> Bool {
         guard let url = item.redactedOutputURL else { return false }
         return NSWorkspace.shared.open(url)
+    }
+
+    @discardableResult
+    func shareDocument(_ item: DocumentItem) -> Bool {
+        guard item.redactedOutputURL != nil || item.scrubOutputURL != nil else {
+            item.errorMessage = "No DOCX output is available to send."
+            return false
+        }
+
+        let alert = NSAlert()
+        alert.messageText = "Send Document"
+        alert.informativeText = """
+        Choose the DOCX you want to send.
+
+        Final redacted copy accepts Marcut's redaction Track Changes in a new copy and scrubs metadata before sending.
+
+        Review copy sends the current review artifact with Track Changes and metadata exactly as they are in that file.
+        """
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: "Send Final Redacted Copy")
+        alert.addButton(withTitle: "Send Review Copy")
+        alert.addButton(withTitle: "Cancel")
+
+        switch alert.runModal() {
+        case .alertFirstButtonReturn:
+            Task { [weak self, weak item] in
+                guard let self, let item else { return }
+                await self.shareFinalRedactedCopy(item)
+            }
+            return true
+        case .alertSecondButtonReturn:
+            return confirmAndShareReviewCopy(item)
+        default:
+            return false
+        }
+    }
+
+    private func confirmAndShareReviewCopy(_ item: DocumentItem) -> Bool {
+        guard let url = item.redactedOutputURL ?? item.scrubOutputURL else { return false }
+
+        let alert = NSAlert()
+        alert.messageText = "Send Review Copy?"
+        alert.informativeText = """
+        This sends the current DOCX review artifact. It may contain recoverable original text in Track Changes and document metadata. Use this only when the recipient should review proposed redactions with full context.
+        """
+        alert.alertStyle = .critical
+        alert.addButton(withTitle: "Send Review Copy")
+        alert.addButton(withTitle: "Cancel")
+
+        guard alert.runModal() == .alertFirstButtonReturn else { return false }
+        return presentSharePicker(for: url)
+    }
+
+    private func shareFinalRedactedCopy(_ item: DocumentItem) async {
+        guard let sourceURL = item.redactedOutputURL ?? item.scrubOutputURL else {
+            item.errorMessage = "No DOCX output is available to finalize."
+            return
+        }
+        guard let runner = AppDelegate.pythonRunner else {
+            item.errorMessage = "The Python runtime is not available to finalize this document."
+            return
+        }
+
+        let finalURL = Self.finalRedactedCopyURL(for: sourceURL)
+        let previousPreset = getenv("MARCUT_METADATA_PRESET").map { String(cString: $0) }
+        let previousArgs = getenv("MARCUT_METADATA_ARGS").map { String(cString: $0) }
+        let previousSettingsJSON = getenv("MARCUT_METADATA_SETTINGS_JSON").map { String(cString: $0) }
+
+        applyMetadataSettingsEnvironment(.maximumPrivacy, context: "final share copy")
+        defer {
+            restoreEnvironmentValue(previousPreset, forKey: "MARCUT_METADATA_PRESET")
+            restoreEnvironmentValue(previousArgs, forKey: "MARCUT_METADATA_ARGS")
+            restoreEnvironmentValue(previousSettingsJSON, forKey: "MARCUT_METADATA_SETTINGS_JSON")
+        }
+
+        do {
+            let result = try await runner.scrubMetadataOnlyAsync(
+                inputPath: sourceURL.path,
+                outputPath: finalURL.path
+            )
+            guard result.success else {
+                item.errorMessage = result.error ?? "Unable to create the final redacted copy."
+                try? FileManager.default.removeItem(at: finalURL)
+                return
+            }
+            item.errorMessage = nil
+            _ = presentSharePicker(for: finalURL)
+        } catch {
+            item.errorMessage = "Unable to create the final redacted copy: \(error.localizedDescription)"
+            try? FileManager.default.removeItem(at: finalURL)
+        }
+    }
+
+    private func restoreEnvironmentValue(_ value: String?, forKey key: String) {
+        if let value {
+            setenv(key, value, 1)
+        } else {
+            unsetenv(key)
+        }
+    }
+
+    @discardableResult
+    private func presentSharePicker(for url: URL) -> Bool {
+        guard FileManager.default.fileExists(atPath: url.path) else { return false }
+        guard let view = NSApp.keyWindow?.contentView else {
+            NSWorkspace.shared.activateFileViewerSelecting([url])
+            return true
+        }
+        let picker = NSSharingServicePicker(items: [url])
+        picker.show(relativeTo: .zero, of: view, preferredEdge: .minY)
+        return true
     }
     
     @discardableResult
@@ -1661,6 +1921,7 @@ final class DocumentRedactionViewModel: ObservableObject {
                     }
                     try fm.copyItem(at: htmlURL, to: finalHTMLURL)
                 }
+                Self.makeSensitiveReportFilePrivate(finalHTMLURL)
             }
 
             // 2. Copy JSON
@@ -1680,6 +1941,7 @@ final class DocumentRedactionViewModel: ObservableObject {
                 }
                 try fm.copyItem(at: jsonURL, to: destinationJSONURL)
             }
+            Self.makeSensitiveReportFilePrivate(destinationJSONURL)
 
             DebugLogger.shared.log("✅ Saved metadata report to \(destinationURL.path)", component: "DocumentRedactionViewModel")
             await MainActor.run {
@@ -1718,29 +1980,29 @@ final class DocumentRedactionViewModel: ObservableObject {
 
     private func applyAdvancedModeDefaultsIfNeeded() {
         let defaults = UserDefaults.standard
-        if defaults.object(forKey: Self.advancedModeKey) == nil {
-            defaults.set(hasCompletedFirstRun, forKey: Self.advancedModeKey)
+        if defaults.object(forKey: DefaultsKey.advancedModeEnabled.key) == nil {
+            defaults.set(hasCompletedFirstRun, forKey: DefaultsKey.advancedModeEnabled.key)
         }
-        if defaults.object(forKey: Self.advancedAIModeKey) == nil {
+        if defaults.object(forKey: DefaultsKey.advancedAIMode.key) == nil {
             let seedMode = settings.mode.usesLLM ? settings.mode : .rulesOverride
-            defaults.set(seedMode.rawValue, forKey: Self.advancedAIModeKey)
+            defaults.set(seedMode.rawValue, forKey: DefaultsKey.advancedAIMode.key)
         }
-        if defaults.object(forKey: Self.advancedConfidenceKey) == nil {
-            defaults.set(settings.llmConfidenceThreshold, forKey: Self.advancedConfidenceKey)
+        if defaults.object(forKey: DefaultsKey.advancedLLMConfidence.key) == nil {
+            defaults.set(settings.llmConfidenceThreshold, forKey: DefaultsKey.advancedLLMConfidence.key)
         }
-        if defaults.object(forKey: Self.advancedConfidenceMigrationKey) == nil {
-            if let storedConfidence = defaults.object(forKey: Self.advancedConfidenceKey) as? NSNumber,
+        if defaults.object(forKey: DefaultsKey.advancedLLMConfidenceMigratedTo99.key) == nil {
+            if let storedConfidence = defaults.object(forKey: DefaultsKey.advancedLLMConfidence.key) as? NSNumber,
                storedConfidence.intValue == 95 {
-                defaults.set(RedactionSettings.standardNormalModeConfidence, forKey: Self.advancedConfidenceKey)
+                defaults.set(RedactionSettings.standardNormalModeConfidence, forKey: DefaultsKey.advancedLLMConfidence.key)
             }
-            defaults.set(true, forKey: Self.advancedConfidenceMigrationKey)
+            defaults.set(true, forKey: DefaultsKey.advancedLLMConfidenceMigratedTo99.key)
         }
 
-        let advancedEnabled = defaults.bool(forKey: Self.advancedModeKey)
-        let storedModeRaw = defaults.string(forKey: Self.advancedAIModeKey) ?? RedactionMode.rulesOverride.rawValue
+        let advancedEnabled = defaults.bool(forKey: DefaultsKey.advancedModeEnabled.key)
+        let storedModeRaw = defaults.string(forKey: DefaultsKey.advancedAIMode.key) ?? RedactionMode.rulesOverride.rawValue
         let storedMode = RedactionMode(rawValue: storedModeRaw) ?? .rulesOverride
         let normalizedMode = storedMode == .rules ? .rulesOverride : storedMode
-        let storedConfidence = defaults.integer(forKey: Self.advancedConfidenceKey)
+        let storedConfidence = defaults.integer(forKey: DefaultsKey.advancedLLMConfidence.key)
         let resolvedConfidence = storedConfidence
 
         if advancedEnabled {
@@ -1759,13 +2021,13 @@ final class DocumentRedactionViewModel: ObservableObject {
         pythonBridge.updateLoggingPreference(settings.debug)
     }
 
-    func requestFirstRunSetup(fromManageModels: Bool = false) {
-        if !fromManageModels && shouldSuppressModelSetupPrompt {
+    func requestFirstRunSetup(entryPoint: FirstRunEntryPoint = .onboarding) {
+        if entryPoint == .onboarding && shouldSuppressModelSetupPrompt {
             DebugLogger.shared.log("🧽 Skipping setup prompt (metadata-only usage, no models installed)", component: "DocumentRedactionViewModel")
             shouldShowFirstRunSetup = false
             return
         }
-        firstRunEntryPoint = fromManageModels ? .manageModels : .onboarding
+        firstRunEntryPoint = entryPoint
         shouldShowFirstRunSetup = true
     }
 
@@ -1787,7 +2049,9 @@ final class DocumentRedactionViewModel: ObservableObject {
         // Clean up progress animations for all terminal states
         item.cleanupProgressAnimations()
         item.releaseSecurityScope()
+        recordBatchETASample(for: item)
         updateState()
+        updateBatchETA()
 
         // Auto-wipe secure temp storage if idle
         if !hasProcessingDocuments {
@@ -1795,6 +2059,50 @@ final class DocumentRedactionViewModel: ObservableObject {
                 DebugLogger.shared.log(msg, component: "SecurityCleanup")
             }
         }
+    }
+
+    /// Records a (duration, size) sample for the batch ETA estimator once a document that
+    /// actually ran (completed or failed) reaches a terminal state. Cancelled documents are
+    /// skipped — their elapsed time isn't a meaningful processing-rate signal.
+    private func recordBatchETASample(for item: DocumentItem) {
+        guard let startedAt = batchProcessingStartTimes.removeValue(forKey: item.id) else { return }
+        guard item.status == .completed || item.status == .failed else { return }
+
+        let duration = Date().timeIntervalSince(startedAt)
+        guard duration > 0 else { return }
+
+        let size = documentSizeSignal(for: item.url)
+        guard size > 0 else { return }
+
+        batchETASamples.append(BatchETASample(duration: duration, size: size))
+    }
+
+    /// Recomputes `batchETA` from samples collected so far in this run plus the size signal
+    /// for documents still queued or in-flight. Clears the estimate once no documents remain
+    /// in a processing state, or while there isn't enough data yet.
+    private func updateBatchETA() {
+        guard hasProcessingDocuments else {
+            batchETA = nil
+            return
+        }
+
+        let remainingSizes = items
+            .filter { $0.status.isProcessing || $0.status == .validDocument }
+            .map { documentSizeSignal(for: $0.url) }
+
+        batchETA = BatchETACalculator.estimate(samples: batchETASamples, remainingSizes: remainingSizes)
+    }
+
+    /// File size in bytes for a document, used as the relative "work" signal for batch ETA
+    /// estimation — the same signal already captured via `documentComplexity` at validation
+    /// time (see `checkDocument`), re-read here to avoid depending on that cached enum's
+    /// coarser bucketing.
+    private func documentSizeSignal(for url: URL) -> Int64 {
+        guard let attributes = try? FileManager.default.attributesOfItem(atPath: url.path),
+              let size = attributes[.size] as? Int64 else {
+            return 0
+        }
+        return size
     }
     
     private func loadFailureReport(at path: String) -> (code: String, message: String, details: String)? {
@@ -1905,7 +2213,7 @@ final class DocumentRedactionViewModel: ObservableObject {
             if pythonBridge.installedModels.isEmpty {
                 return "⚠️ No AI models available - Will download on first use"
             } else {
-                return "⚠️ No supported models - Install llama3.1:8b or similar"
+                return "⚠️ No supported models - Install qwen2.5:14b or similar"
             }
         } else {
             return "✅ Ready with \(supportedModels.count) AI model(s)"

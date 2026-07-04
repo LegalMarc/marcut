@@ -6,7 +6,7 @@ This guide explains how to run Marcut to produce Word documents with track chang
 - The signed macOS app ships with an embedded Python 3.11 runtime (BeeWare) and an embedded Ollama service. No system Python or Ollama install is required.
 - Enhanced mode downloads a local model on first use (Settings > Manage Models). Rules Only works immediately.
 - CLI example:
-  `/Applications/MarcutApp.app/Contents/MacOS/MarcutApp --cli --redact --in <doc> --out <doc> --report <json> --mode enhanced --model llama3.1:8b`
+  `/Applications/MarcutApp.app/Contents/MacOS/MarcutApp --cli --redact --in <doc> --out <doc> --report <json> --mode enhanced --model qwen2.5:14b`
 - Outputs are written to user-selected locations; the CLI defaults to the input directory when sandbox permissions allow it.
 - If the sandbox blocks app-CLI file access, copy inputs into `~/Library/Application Support/MarcutApp/` (for example `Work/Input/`) before invoking the CLI.
 - GUI startup runs an embedded-interpreter smoke test and will display a blocking alert if the runtime cannot load, keeping failures obvious.
@@ -23,7 +23,7 @@ This guide explains how to run Marcut to produce Word documents with track chang
 ### Requirements
 - Python 3.9+ (3.11 recommended)
 - Ollama running locally (http://localhost:11434) for enhanced modes
-- Model pulled in Ollama (recommended: `llama3.1:8b`)
+- Model pulled in Ollama (recommended: `qwen2.5:14b`)
 
 ### Install
 ```
@@ -36,7 +36,7 @@ pip install -e .
 ### Start Ollama
 ```
 ollama serve &
-ollama pull llama3.1:8b
+ollama pull qwen2.5:14b
 ```
 
 ### Run redaction (CLI)
@@ -47,7 +47,7 @@ marcut redact \
   --report runs/out.json \
   --mode enhanced \
   --backend ollama \
-  --model llama3.1:8b \
+  --model qwen2.5:14b \
   --debug
 ```
 
@@ -66,7 +66,7 @@ exit_code, timings = run_redaction(
     output_path='runs/out.docx',
     report_path='runs/out.json',
     mode='enhanced',
-    model_id='llama3.1:8b',
+    model_id='qwen2.5:14b',
     chunk_tokens=1000,
     overlap=150,
     temperature=0.1,
@@ -82,5 +82,5 @@ exit_code, timings = run_redaction(
 
 ## Troubleshooting
 - "Ollama not installed": The CLI checks for the `ollama` binary in PATH. If your server is running but the binary is missing, install Ollama or fix PATH.
-- Empty/low ORG or NAME detection: Ensure the model is running and selected (e.g., `--model llama3.1:8b`).
+- Empty/low ORG or NAME detection: Ensure the model is running and selected (e.g., `--model qwen2.5:14b`).
 - Excessive ORG detections: Use `--mode enhanced` and tune excluded words and system prompt.

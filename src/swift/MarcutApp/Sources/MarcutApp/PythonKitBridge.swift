@@ -769,7 +769,11 @@ public final class PythonKitRunner {
         stateLock.lock()
         isCancellationRequested = true
         stateLock.unlock()
+        setenv("MARCUT_PROCESSING_DEADLINE_MONOTONIC", String(ProcessInfo.processInfo.systemUptime), 1)
 
+        if Py_IsInitialized() != 0 {
+            PyErr_SetInterrupt()
+        }
         worker.performAsync { [logger] in
             if Py_IsInitialized() != 0 {
                 PyErr_SetInterrupt()
@@ -783,6 +787,7 @@ public final class PythonKitRunner {
         let wasCancelled = isCancellationRequested
         isCancellationRequested = false
         stateLock.unlock()
+        unsetenv("MARCUT_PROCESSING_DEADLINE_MONOTONIC")
         if wasCancelled {
             logger("PK_CANCEL_CLEARED: was_cancelled=true")
         }
@@ -794,6 +799,7 @@ public final class PythonKitRunner {
         activeRunToken = token
         isCancellationRequested = false
         stateLock.unlock()
+        unsetenv("MARCUT_PROCESSING_DEADLINE_MONOTONIC")
         return token
     }
 
@@ -805,6 +811,9 @@ public final class PythonKitRunner {
     }
 
     private func syncEmbeddedEnvToPython(_ py_os: PythonObject) {
+        for key in ["MARCUT_ALLOW_REMOTE_OLLAMA", "MARCUT_DEVELOPER_UNSAFE_ALLOW_REMOTE_OLLAMA"] {
+            _ = py_os.environ.pop(PythonObject(key), Python.None)
+        }
         for key in Self.pythonEnvKeys {
             if let raw = getenv(key) {
                 py_os.environ[key] = PythonObject(String(cString: raw))
@@ -1137,6 +1146,7 @@ public final class PythonKitRunner {
         debug: Bool,
         mode: String,
         llmSkipConfidence: Double = 0.95,
+        llmConcurrency: Int = 2,
         chunkTokens: Int = 500,
         overlap: Int = 120,
         temperature: Double = 0.1,
@@ -1232,6 +1242,21 @@ public final class PythonKitRunner {
                 resolvedProcessingStepTimeout
             )
             let processingDisableTimeouts = PythonTimeoutOverrides.disable(for: "PROCESSING")
+            if !processingDisableTimeouts {
+                do {
+                    let pyTime = try Python.attemptImport("time")
+                    let deadline = (Double(pyTime.monotonic()) ?? 0.0) + resolvedProcessingStepTimeout
+                    py_os.environ["MARCUT_PROCESSING_DEADLINE_MONOTONIC"] = PythonObject(String(deadline))
+                    logger("PK_PROCESSING_DEADLINE_SET: \(String(format: "%.2f", resolvedProcessingStepTimeout))s")
+                } catch {
+                    logger("PK_PROCESSING_DEADLINE_ERROR: \(error)")
+                }
+            } else {
+                _ = py_os.environ.pop(PythonObject("MARCUT_PROCESSING_DEADLINE_MONOTONIC"), Python.None)
+            }
+            defer {
+                _ = py_os.environ.pop(PythonObject("MARCUT_PROCESSING_DEADLINE_MONOTONIC"), Python.None)
+            }
             let code: Int = try withTimeout(
                 operation: "processing",
                 stepTimeout: resolvedProcessingStepTimeout,
@@ -1290,6 +1315,7 @@ public final class PythonKitRunner {
                     temperature: temperature,
                     seed: seed,
                     llm_skip_confidence: llmSkipConfidence,
+                    llm_concurrency: llmConcurrency,
                     debug: debug,
                     progress_callback: progressCallback
                 )
@@ -1365,6 +1391,7 @@ public final class PythonKitRunner {
         debug: Bool,
         mode: String,
         llmSkipConfidence: Double = 0.95,
+        llmConcurrency: Int = 2,
         chunkTokens: Int = 500,
         overlap: Int = 120,
         temperature: Double = 0.1,
@@ -1393,6 +1420,7 @@ public final class PythonKitRunner {
                         debug: debug,
                         mode: mode,
                         llmSkipConfidence: llmSkipConfidence,
+                        llmConcurrency: llmConcurrency,
                         chunkTokens: chunkTokens,
                         overlap: overlap,
                         temperature: temperature,

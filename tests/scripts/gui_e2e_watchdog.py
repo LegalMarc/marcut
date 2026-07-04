@@ -11,7 +11,7 @@ Usage examples:
       --iterations 3 \
       --timeout-sec 600 \
       --mode enhanced \
-      --model llama3.1:8b
+      --model qwen2.5:14b
 
 Options:
   --use-dmg           Mount and test from the DMG instead of the build bundle
@@ -241,7 +241,7 @@ def main():
     ap.add_argument('--iterations', type=int, default=1)
     ap.add_argument('--timeout-sec', type=int, default=600)
     ap.add_argument('--mode', choices=['enhanced', 'rules'], default='enhanced')
-    ap.add_argument('--model', default='llama3.1:8b')
+    ap.add_argument('--model', default='qwen2.5:14b')
     ap.add_argument('--use-dmg', action='store_true')
     ap.add_argument('--skip-build', action='store_true')
     ap.add_argument('--input', default=str(ROOT / '.marcut_artifacts/ignored-resources' / 'sample-files' / 'Sample 123 Consent.docx'))

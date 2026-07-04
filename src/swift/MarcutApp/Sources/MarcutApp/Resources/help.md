@@ -108,7 +108,7 @@ If you are new to Marcut, start with the macOS app and Rules + AI (Enhanced) mod
 ### Quickstart (macOS app)
 
 1. Install the DMG and drag MarcutApp to `/Applications`.
-2. Launch the app and download a model when prompted (recommended: `llama3.1:8b`). Models are stored inside the app's Application Support container.
+2. Launch the app and download a model when prompted (recommended: `qwen2.5:14b`). Models are stored inside the app's Application Support container.
 3. Drag one or more `.docx` files into the window.
 4. Open Settings and choose a mode (Rules + AI is recommended).
 5. Click Redact Documents and choose an output folder.
@@ -134,12 +134,12 @@ pip install -e .
    - macOS app: the bundled AI service starts automatically; download the model in Settings if prompted.
    - CLI from source: install Ollama, then download a model:
 ```bash
-ollama pull llama3.1:8b
+ollama pull qwen2.5:14b
 ```
 
 3. Run a redaction:
 ```bash
-marcut redact --in input.docx --out runs/out.docx --report runs/out_report.json --mode enhanced --model llama3.1:8b
+marcut redact --in input.docx --out runs/out.docx --report runs/out_report.json --mode enhanced --model qwen2.5:14b
 ```
 
 4. Review the DOCX track changes and JSON report.
@@ -227,6 +227,8 @@ Text is extracted from:
 ### Redaction Tags and Track Changes
 
 - Redactions are applied as track changes so you can accept or reject each change. The default DOCX is a review artifact, not a destructively sanitized final-share file.
+- Use **Send Final Redacted Copy** when you are ready to share a finalized document. Marcut creates a separate copy, accepts the redaction Track Changes in that copy, and runs maximum-privacy metadata scrubbing before opening the share sheet.
+- Use **Send Review Copy** only when you intentionally want to share the Track Changes proposal and preserve review metadata for the recipient.
 - Redaction tags appear as inserted text in red (for example `[NAME_1]`).
 - Original content appears as deletions.
 - Possessives are preserved (`[NAME_1]'s`).
@@ -285,7 +287,7 @@ The labels below appear in the audit report and in redaction tags. Some labels a
 - macOS 14 or later.
 - Apple Silicon (arm64). Non-arm64 builds show an unsupported architecture screen.
 - No system Python or external Ollama install is required for the bundled app.
-- On first run, the app prompts you to download a model (recommended: `llama3.1:8b`).
+- On first run, the app prompts you to download a model (recommended: `qwen2.5:14b`).
 
 Model storage paths:
 - Primary: `~/Library/Application Support/MarcutApp/models/`
@@ -307,7 +309,7 @@ Processing Mode
 - Advanced Mode: exposes the three override behaviors (Rules Override, Constrained LLM Overrides, LLM Overrides).
 
 AI Model (Rules + AI)
-- Choose from recommended models (for example `llama3.1:8b`, `mistral:7b`, `llama3.2:3b`).
+- Choose from recommended models (for example `qwen2.5:14b`, `qwen2.5:7b`, `phi4-mini:3.8b`).
 - Manage Models to download; Reveal Models to open the models directory.
 - Larger models are slower but can catch more context-dependent entities.
 
@@ -395,10 +397,10 @@ Other logs
 
 ```bash
 # Headless redaction
-MarcutApp --redact --in /path/to/file.docx --outdir /tmp/out --mode enhanced --model llama3.1:8b
+MarcutApp --redact --in /path/to/file.docx --outdir /tmp/out --mode enhanced --model qwen2.5:14b
 
 # Model download
-MarcutApp --download-model llama3.1:8b
+MarcutApp --download-model qwen2.5:14b
 
 # Diagnostics
 MarcutApp --diagnose
@@ -446,7 +448,7 @@ Required
 Mode and backend
 - `--mode <rules|enhanced|rules_override|constrained_overrides|llm_overrides>` (default: `enhanced`, `strict` is an alias for `rules`; `enhanced` maps to `rules_override`).
 - `--backend <ollama|llama_cpp|mock>` (default: `ollama`).
-- `--model <id-or-path>` (default: `llama3.1:8b`).
+- `--model <id-or-path>` (default: `qwen2.5:14b`).
 
 LLM tuning
 - `--chunk-tokens <int>` (default: 1000).
@@ -495,7 +497,7 @@ MARCUT_STATUS: Processing chunk 3 of 6
 
 ```bash
 # Enhanced mode with Ollama (recommended)
-marcut redact --in input.docx --out runs/out.docx --report runs/out_report.json --mode enhanced --model llama3.1:8b
+marcut redact --in input.docx --out runs/out.docx --report runs/out_report.json --mode enhanced --model qwen2.5:14b
 
 # Rules only (no model calls)
 marcut redact --in input.docx --out runs/out.docx --report runs/out_report.json --mode rules
@@ -1084,6 +1086,7 @@ Sandboxed builds resolve these inside the app container; use Reveal buttons in S
 - Model downloads require network access.
 - Inference uses a local Ollama server bound to `127.0.0.1` only.
 - `OLLAMA_HOST` and `MARCUT_OLLAMA_HOST` are sanitized to loopback; only the port may vary.
+- Public app runs ignore legacy remote-host overrides. Source developers can opt into remote Ollama only with `MARCUT_DEVELOPER_UNSAFE_ALLOW_REMOTE_OLLAMA=1`; do not use that unsafe mode with confidential documents.
 
 ### Metadata Reduction and Hardening
 
@@ -1179,7 +1182,7 @@ If redactions are too aggressive:
 
 ### Performance Tips
 
-- Use smaller models for faster results (`llama3.2:3b` is faster than `llama3.1:8b`).
+- Use smaller models for faster results (`phi4-mini:3.8b` is faster than `qwen2.5:14b`).
 - Reduce `chunk-tokens` for large documents to avoid timeouts.
 - Use Rules only for the fastest deterministic scan.
 - Disable `IMAGES` to avoid removing images if you do not need that step.

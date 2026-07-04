@@ -6,6 +6,7 @@ These tests focus on pure functions that don't require an actual LLM.
 
 import pytest
 import json
+import time
 import marcut.llm_timing as llm_timing_module
 import marcut.model as model_module
 from marcut.model import (
@@ -246,17 +247,29 @@ class TestGetOllamaBaseUrl:
         finally:
             del os.environ['OLLAMA_HOST']
 
-    def test_remote_host_requires_explicit_override(self):
-        """Test remote Ollama hosts require an explicit unsafe opt-in."""
+    def test_legacy_remote_host_override_is_ignored(self):
+        """Test legacy remote Ollama override no longer disables loopback."""
         import os
         os.environ['OLLAMA_HOST'] = 'http://custom-host:8080'
         os.environ['MARCUT_ALLOW_REMOTE_OLLAMA'] = '1'
         try:
             url = get_ollama_base_url()
-            assert url == "http://custom-host:8080"
+            assert url == "http://127.0.0.1:8080"
         finally:
             del os.environ['OLLAMA_HOST']
             del os.environ['MARCUT_ALLOW_REMOTE_OLLAMA']
+
+    def test_remote_host_requires_developer_unsafe_override(self):
+        """Test remote Ollama hosts require an explicit developer-unsafe opt-in."""
+        import os
+        os.environ['OLLAMA_HOST'] = 'http://custom-host:8080'
+        os.environ['MARCUT_DEVELOPER_UNSAFE_ALLOW_REMOTE_OLLAMA'] = '1'
+        try:
+            url = get_ollama_base_url()
+            assert url == "http://custom-host:8080"
+        finally:
+            del os.environ['OLLAMA_HOST']
+            del os.environ['MARCUT_DEVELOPER_UNSAFE_ALLOW_REMOTE_OLLAMA']
 
 
 class TestOllamaDiagnostics:
@@ -279,6 +292,7 @@ class TestOllamaDiagnostics:
         monkeypatch.delenv("OLLAMA_HOST", raising=False)
         monkeypatch.delenv("MARCUT_OLLAMA_REQUEST_TIMEOUT", raising=False)
         monkeypatch.delenv("MARCUT_OLLAMA_NUM_PREDICT", raising=False)
+        monkeypatch.delenv("MARCUT_PROCESSING_DEADLINE_MONOTONIC", raising=False)
         monkeypatch.setattr(llm_timing_module.requests, "post", fake_post)
 
         spans, _timing = llm_timing_module.ollama_extract_with_timing("mock-model", "Document text")
@@ -304,11 +318,35 @@ class TestOllamaDiagnostics:
         monkeypatch.delenv("OLLAMA_HOST", raising=False)
         monkeypatch.delenv("MARCUT_OLLAMA_REQUEST_TIMEOUT", raising=False)
         monkeypatch.delenv("MARCUT_OLLAMA_NUM_PREDICT", raising=False)
+        monkeypatch.delenv("MARCUT_PROCESSING_DEADLINE_MONOTONIC", raising=False)
         monkeypatch.setattr(model_module.requests, "post", fake_post)
 
         assert ollama_extract("mock-model", "Document text", temperature=0.0) == []
         assert captured["timeout"] == 300.0
         assert captured["json"]["options"]["num_predict"] == 2048
+
+    def test_request_timeout_respects_processing_deadline(self, monkeypatch):
+        captured = {}
+
+        class MockResponse:
+            def raise_for_status(self):
+                return None
+
+            def json(self):
+                return {"response": '{"entities": []}'}
+
+        def fake_post(*args, **kwargs):
+            captured.update(kwargs)
+            return MockResponse()
+
+        monkeypatch.delenv("OLLAMA_HOST", raising=False)
+        monkeypatch.delenv("MARCUT_OLLAMA_REQUEST_TIMEOUT", raising=False)
+        monkeypatch.delenv("MARCUT_OLLAMA_NUM_PREDICT", raising=False)
+        monkeypatch.setenv("MARCUT_PROCESSING_DEADLINE_MONOTONIC", str(time.monotonic() + 1.5))
+        monkeypatch.setattr(model_module.requests, "post", fake_post)
+
+        assert ollama_extract("mock-model", "Document text", temperature=0.0) == []
+        assert 0.25 <= captured["timeout"] <= 1.5
 
     def test_parse_failure_omits_raw_response_from_log_and_exception(self, tmp_path, monkeypatch):
         secret = "patient@example.com"

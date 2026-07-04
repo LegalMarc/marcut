@@ -42,7 +42,7 @@ Breaks down the LLM phase into sub-components:
 ## Profiling Results
 
 ### Test Configuration
-- **Model**: llama3.1:8b (Q4_K_M quantization)
+- **Model**: qwen2.5:14b (Q4_K_M quantization)
 - **Document**: Sample 123 Consent.docx (sample legal document)
 - **Hardware**: Apple Silicon Mac
 - **Mode**: Enhanced (rules + LLM)
@@ -143,7 +143,7 @@ Current `num_predict: 512` is generous. Consider:
 |-------|-------|----------|------|
 | llama3.2:1b | Fastest | Acceptable | 1.3GB |
 | llama3.2:3b | Fast | Good | 2.0GB |
-| llama3.1:8b | Moderate | Best | 4.9GB |
+| qwen2.5:14b | Moderate | Best | 4.9GB |
 
 For most legal documents, 3B provides good accuracy/speed balance.
 
@@ -171,7 +171,7 @@ exit_code, timings = run_redaction(
     output_path="out.docx",
     report_path="report.json",
     mode="enhanced",
-    model_id="llama3.1:8b",
+    model_id="qwen2.5:14b",
     timing=True,
     llm_detail=True,
     # ... other params

@@ -14,6 +14,7 @@ from marcut.unified_redactor import (
     validate_model_name,
     validate_parameters,
     setup_logging,
+    run_unified_redaction,
 )
 
 
@@ -32,7 +33,7 @@ class TestValidateModelName:
     def test_simple_ollama_model(self):
         """Test standard Ollama model names."""
         assert validate_model_name("llama3") is True
-        assert validate_model_name("llama3.1:8b") is True
+        assert validate_model_name("qwen2.5:14b") is True
         assert validate_model_name("phi4:mini-instruct") is True
         assert validate_model_name("gpt-4") is True
 
@@ -90,6 +91,18 @@ class TestValidateParameters:
         if os.path.exists(path):
             os.remove(path)
 
+    def test_llama_cpp_backend_requires_gguf_path(self, temp_docx, tmp_path):
+        """llama.cpp backend should fail clearly without a GGUF path."""
+        with pytest.raises(ValueError, match="llama_cpp backend requires"):
+            run_unified_redaction(
+                input_path=temp_docx,
+                output_path=str(tmp_path / "out.docx"),
+                report_path=str(tmp_path / "report.json"),
+                mode="enhanced",
+                model="llama3.1:8b",
+                backend="llama_cpp",
+            )
+
     def test_missing_input_file(self):
         """Test that missing input file raises error."""
         with pytest.raises(ValueError, match="Input file not found"):
@@ -142,7 +155,7 @@ class TestValidateParameters:
                 temp_docx,
                 "/tmp/output.docx",
                 "/tmp/report.json",
-                model="llama3.1:8b",
+                model="qwen2.5:14b",
                 backend="mock"
             )
 

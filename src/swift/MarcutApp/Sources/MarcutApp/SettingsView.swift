@@ -1,12 +1,13 @@
 import SwiftUI
 import AppKit
+import UniformTypeIdentifiers
 
 /// App appearance theme preference
 enum AppTheme: String, CaseIterable {
     case system = "system"
     case light = "light"
     case dark = "dark"
-    
+
     var displayName: String {
         switch self {
         case .system: return "Follow System"
@@ -14,7 +15,7 @@ enum AppTheme: String, CaseIterable {
         case .dark: return "Dark"
         }
     }
-    
+
     var appearance: NSAppearance? {
         switch self {
         case .system: return nil
@@ -37,10 +38,13 @@ struct SettingsView: View {
     @State private var localSettings: RedactionSettings
     @Environment(\.dismiss) private var dismiss
     @Environment(\.colorScheme) private var colorScheme
+    @State private var searchQuery = ""
     @State private var pendingManageModels = false
+    @State private var pendingDownloadModel: String? = nil
     @State private var showingExcludedWordsEditor = false
     @State private var showingSystemPromptEditor = false
     @State private var showingMetadataEditor = false
+    @State private var showingLogViewer = false
     @State private var metadataSettings = MetadataCleaningSettings.load()
     @State private var isCustomExcludedWords = UserOverridesManager.shared.hasCustomExcludedWords
     @State private var isCustomSystemPrompt = UserOverridesManager.shared.hasCustomSystemPrompt
@@ -50,19 +54,14 @@ struct SettingsView: View {
     @State private var systemPromptBaseline = ""
     @State private var overrideErrorMessage: String?
     @State private var downloadsAccessError: String?
-    private static let advancedModeKey = "MarcutApp.AdvancedModeEnabled"
-    private static let advancedAIModeKey = "MarcutApp.AdvancedAIMode"
-    private static let advancedConfidenceKey = "MarcutApp.AdvancedLLMConfidence"
-    private static let advancedConfidenceMigrationKey = "MarcutApp.AdvancedLLMConfidenceMigratedTo99"
-    private static let outputSaveLocationKey = "MarcutApp.OutputSaveLocationPreference"
-    private static let legacyMetadataReportAlwaysSaveKey = "MarcutApp.MetadataReportAlwaysSaveToDownloads"
-    private static let unsavedReportQuitBehaviorKey = "MarcutApp.UnsavedReportQuitBehavior"
-    @AppStorage(Self.advancedModeKey) private var isAdvancedModeEnabled = true
-    @AppStorage(Self.advancedAIModeKey) private var advancedAIModeRaw = RedactionMode.rulesOverride.rawValue
-    @AppStorage(Self.advancedConfidenceKey) private var advancedLlmConfidence = RedactionSettings.standardNormalModeConfidence
-    @AppStorage(Self.outputSaveLocationKey) private var outputSaveLocationRaw = OutputSaveLocation.alwaysAsk.rawValue
-    @AppStorage(Self.unsavedReportQuitBehaviorKey) private var unsavedReportQuitBehaviorRaw = UnsavedReportQuitBehavior.warn.rawValue
-    @AppStorage("AppTheme") private var appThemeRaw = AppTheme.system.rawValue
+    @State private var profileErrorMessage: String?
+    @State private var profileImportSucceeded = false
+    @AppStorage(DefaultsKey.advancedModeEnabled.key) private var isAdvancedModeEnabled = true
+    @AppStorage(DefaultsKey.advancedAIMode.key) private var advancedAIModeRaw = RedactionMode.rulesOverride.rawValue
+    @AppStorage(DefaultsKey.advancedLLMConfidence.key) private var advancedLlmConfidence = RedactionSettings.standardNormalModeConfidence
+    @AppStorage(DefaultsKey.outputSaveLocationPreference.key) private var outputSaveLocationRaw = OutputSaveLocation.alwaysAsk.rawValue
+    @AppStorage(DefaultsKey.unsavedReportQuitBehavior.key) private var unsavedReportQuitBehaviorRaw = UnsavedReportQuitBehavior.warn.rawValue
+    @AppStorage(DefaultsKey.appTheme.key) private var appThemeRaw = AppTheme.system.rawValue
     @ObservedObject private var permissionManager = PermissionManager.shared
     private let overridesManager = UserOverridesManager.shared
 
@@ -79,7 +78,86 @@ struct SettingsView: View {
             set: { unsavedReportQuitBehaviorRaw = $0.rawValue }
         )
     }
-    
+
+    /// Identifies each top-level settings Section so search can gate its visibility (including header).
+    private enum SettingsSection {
+        case processingMode
+        case sharedSettings
+        case rulesEngine
+        case aiModel
+        case advancedAI
+        case debug
+    }
+
+    /// Static, human-visible row labels for each section, used to decide whether a search
+    /// query matches anything inside that section. Kept in sync with the Text labels rendered
+    /// in the corresponding `*Section` view builder below.
+    private static let sectionLabels: [SettingsSection: [String]] = [
+        .processingMode: [
+            "Processing Mode", "Rules Only", "Fast rule-based detection for structured PII.",
+            "Rules + AI"
+        ],
+        .sharedSettings: [
+            "Shared Settings", "System Notifications", "Enable Completion Banners",
+            "Show banner when redaction finishes.", "Output Location",
+            "Choose where redactions and reports are saved.", "Quit Warning",
+            "Warn if unsaved reports would be deleted when quitting.", "Appearance",
+            "Choose light, dark, or follow system appearance.", "Metadata Cleaning",
+            "Remove hidden document properties during redaction.", "Configure Cleaning…",
+            "Excluded Terms", "Phrases that should never be redacted.", "Customize…",
+            "Edit Custom List…", "Reset to Defaults", "Settings Profile",
+            "Share this configuration with your team as a JSON file, or load one someone else exported.",
+            "Export Profile…", "Import Profile…", "Advanced Mode",
+            "Show advanced AI controls and override modes."
+        ],
+        .rulesEngine: [
+            "Rules Engine", "Select which deterministic rules run.", "Invert Selection"
+        ],
+        .aiModel: [
+            "AI Model", "Select AI Model", "Qwen 3.5 35B A3B", "Qwen 2.5 14B", "Qwen 2.5 7B", "Phi-4 Mini 3.8B",
+            "AI System Prompt", "Customize Prompt…", "Manage Models…", "Reveal Models…"
+        ],
+        .advancedAI: [
+            "Advanced AI Settings", "Rules + AI Behavior", "Rules Override",
+            "Constrained LLM Overrides", "LLM Overrides", "LLM Confidence", "Temperature",
+            "Chunk Size", "Chunk Overlap", "Processing Timeout", "Random Seed"
+        ],
+        .debug: [
+            "Debug", "Enable Debug Logging", "View Logs", "Open App Log", "Open Ollama Log", "Clear Logs"
+        ]
+    ]
+
+    /// Pure, testable predicate: does `label` match `query`? Empty query always matches.
+    /// Matching is a case-insensitive substring match.
+    static func matchesSearch(_ label: String, query: String) -> Bool {
+        let trimmedQuery = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmedQuery.isEmpty { return true }
+        return label.range(of: trimmedQuery, options: [.caseInsensitive, .diacriticInsensitive]) != nil
+    }
+
+    /// Whether a whole section (including its header) should be shown given the current search query.
+    private func isSectionVisible(_ section: SettingsSection) -> Bool {
+        guard !searchQuery.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return true }
+        if section == .rulesEngine {
+            // Rules Engine has dynamic, per-rule rows in addition to its static labels.
+            let ruleMatches = RedactionRule.allCases.contains { rule in
+                Self.matchesSearch(rule.displayName, query: searchQuery)
+            }
+            if ruleMatches { return true }
+        }
+        let labels = Self.sectionLabels[section] ?? []
+        return labels.contains { Self.matchesSearch($0, query: searchQuery) }
+    }
+
+    /// Whether an individual redaction rule row should be shown given the current search query.
+    private func isRuleVisible(_ rule: RedactionRule) -> Bool {
+        guard !searchQuery.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return true }
+        // If the section header itself matches (e.g. "Rules Engine"), show all rows.
+        let sectionLabels = Self.sectionLabels[.rulesEngine] ?? []
+        if sectionLabels.contains(where: { Self.matchesSearch($0, query: searchQuery) }) { return true }
+        return Self.matchesSearch(rule.displayName, query: searchQuery)
+    }
+
     init(viewModel: DocumentRedactionViewModel) {
         self.viewModel = viewModel
         var initialSettings = viewModel.settings
@@ -89,40 +167,40 @@ struct SettingsView: View {
             initialSettings.model = first
         }
         let defaults = UserDefaults.standard
-        if defaults.object(forKey: Self.advancedModeKey) == nil {
-            defaults.set(viewModel.hasCompletedFirstRun, forKey: Self.advancedModeKey)
+        if defaults.object(forKey: DefaultsKey.advancedModeEnabled.key) == nil {
+            defaults.set(viewModel.hasCompletedFirstRun, forKey: DefaultsKey.advancedModeEnabled.key)
         }
-        if defaults.object(forKey: Self.advancedAIModeKey) == nil {
+        if defaults.object(forKey: DefaultsKey.advancedAIMode.key) == nil {
             let seedMode = initialSettings.mode.usesLLM ? initialSettings.mode : .rulesOverride
-            defaults.set(seedMode.rawValue, forKey: Self.advancedAIModeKey)
+            defaults.set(seedMode.rawValue, forKey: DefaultsKey.advancedAIMode.key)
         }
-        if defaults.object(forKey: Self.advancedConfidenceKey) == nil {
-            defaults.set(initialSettings.llmConfidenceThreshold, forKey: Self.advancedConfidenceKey)
+        if defaults.object(forKey: DefaultsKey.advancedLLMConfidence.key) == nil {
+            defaults.set(initialSettings.llmConfidenceThreshold, forKey: DefaultsKey.advancedLLMConfidence.key)
         }
-        if defaults.object(forKey: Self.advancedConfidenceMigrationKey) == nil {
-            if let storedConfidence = defaults.object(forKey: Self.advancedConfidenceKey) as? NSNumber,
+        if defaults.object(forKey: DefaultsKey.advancedLLMConfidenceMigratedTo99.key) == nil {
+            if let storedConfidence = defaults.object(forKey: DefaultsKey.advancedLLMConfidence.key) as? NSNumber,
                storedConfidence.intValue == 95 {
-                defaults.set(RedactionSettings.standardNormalModeConfidence, forKey: Self.advancedConfidenceKey)
+                defaults.set(RedactionSettings.standardNormalModeConfidence, forKey: DefaultsKey.advancedLLMConfidence.key)
             }
-            defaults.set(true, forKey: Self.advancedConfidenceMigrationKey)
+            defaults.set(true, forKey: DefaultsKey.advancedLLMConfidenceMigratedTo99.key)
         }
-        if defaults.object(forKey: Self.outputSaveLocationKey) == nil {
-            if let legacy = defaults.object(forKey: Self.legacyMetadataReportAlwaysSaveKey) as? Bool {
+        if defaults.object(forKey: DefaultsKey.outputSaveLocationPreference.key) == nil {
+            if let legacy = defaults.object(forKey: DefaultsKey.legacyMetadataReportAlwaysSaveToDownloads.key) as? Bool {
                 let mapped = legacy ? OutputSaveLocation.downloads.rawValue : OutputSaveLocation.alwaysAsk.rawValue
-                defaults.set(mapped, forKey: Self.outputSaveLocationKey)
+                defaults.set(mapped, forKey: DefaultsKey.outputSaveLocationPreference.key)
             } else {
-                defaults.set(OutputSaveLocation.alwaysAsk.rawValue, forKey: Self.outputSaveLocationKey)
+                defaults.set(OutputSaveLocation.alwaysAsk.rawValue, forKey: DefaultsKey.outputSaveLocationPreference.key)
             }
         }
-        if defaults.object(forKey: Self.unsavedReportQuitBehaviorKey) == nil {
-            defaults.set(UnsavedReportQuitBehavior.warn.rawValue, forKey: Self.unsavedReportQuitBehaviorKey)
+        if defaults.object(forKey: DefaultsKey.unsavedReportQuitBehavior.key) == nil {
+            defaults.set(UnsavedReportQuitBehavior.warn.rawValue, forKey: DefaultsKey.unsavedReportQuitBehavior.key)
         }
 
-        let advancedEnabled = defaults.bool(forKey: Self.advancedModeKey)
-        let storedModeRaw = defaults.string(forKey: Self.advancedAIModeKey) ?? RedactionMode.rulesOverride.rawValue
+        let advancedEnabled = defaults.bool(forKey: DefaultsKey.advancedModeEnabled.key)
+        let storedModeRaw = defaults.string(forKey: DefaultsKey.advancedAIMode.key) ?? RedactionMode.rulesOverride.rawValue
         let storedMode = RedactionMode(rawValue: storedModeRaw) ?? .rulesOverride
         let normalizedMode = storedMode == .rules ? .rulesOverride : storedMode
-        let storedConfidence = defaults.integer(forKey: Self.advancedConfidenceKey)
+        let storedConfidence = defaults.integer(forKey: DefaultsKey.advancedLLMConfidence.key)
         let resolvedConfidence = storedConfidence
 
         if advancedEnabled {
@@ -136,24 +214,35 @@ struct SettingsView: View {
 
         self._localSettings = State(initialValue: initialSettings)
     }
-    
+
     var body: some View {
         VStack(spacing: 24) {
             headerView
 
-            Form {
-                processingModeSection
-                sharedSettingsSection
-                rulesEngineSection
-                if localSettings.mode.usesLLM {
-                    aiModelSection
+            NavigationStack {
+                Form {
+                    if isSectionVisible(.processingMode) {
+                        processingModeSection
+                    }
+                    if isSectionVisible(.sharedSettings) {
+                        sharedSettingsSection
+                    }
+                    if isSectionVisible(.rulesEngine) {
+                        rulesEngineSection
+                    }
+                    if localSettings.mode.usesLLM && isSectionVisible(.aiModel) {
+                        aiModelSection
+                    }
+                    if isAdvancedModeEnabled && isSectionVisible(.advancedAI) {
+                        advancedAISection
+                    }
+                    if isSectionVisible(.debug) {
+                        debugSection
+                    }
                 }
-                if isAdvancedModeEnabled {
-                    advancedAISection
-                }
-                debugSection
+                .formStyle(.grouped)
+                .searchable(text: $searchQuery, placement: .automatic, prompt: "Search settings")
             }
-            .formStyle(.grouped)
 
             Spacer()
 
@@ -166,7 +255,12 @@ struct SettingsView: View {
             if pendingManageModels {
                 pendingManageModels = false
                 DispatchQueue.main.async {
-                    viewModel.requestFirstRunSetup(fromManageModels: true)
+                    viewModel.requestFirstRunSetup(entryPoint: .manageModels)
+                }
+            } else if let modelToDownload = pendingDownloadModel {
+                pendingDownloadModel = nil
+                DispatchQueue.main.async {
+                    viewModel.requestFirstRunSetup(entryPoint: .downloadSpecificModel(modelToDownload))
                 }
             }
         }
@@ -177,7 +271,8 @@ struct SettingsView: View {
                 text: $excludedWordsDraft,
                 onCancel: { cancelExcludedWordsEditing() },
                 onSave: { saveExcludedWords() },
-                onRestoreDefaults: { restoreExcludedWordsDefaults() }
+                onRestoreDefaults: { restoreExcludedWordsDefaults() },
+                showsMatchPreview: true
             )
         }
         .sheet(isPresented: $showingSystemPromptEditor) {
@@ -193,11 +288,26 @@ struct SettingsView: View {
         .sheet(isPresented: $showingMetadataEditor) {
             MetadataCleaningSheet(settings: $metadataSettings)
         }
+        .sheet(isPresented: $showingLogViewer) {
+            LogViewerSheet()
+        }
         .alert("Override Error", isPresented: overrideErrorBinding, presenting: overrideErrorMessage) { _ in
             Button("OK", role: .cancel) { }
                 .accessibilityIdentifier("settings.overrideError.ok")
         } message: { message in
             Text(message)
+        }
+        .alert("Import Failed", isPresented: profileErrorBinding, presenting: profileErrorMessage) { _ in
+            Button("OK", role: .cancel) { }
+                .accessibilityIdentifier("settings.profile.importError.ok")
+        } message: { message in
+            Text(message)
+        }
+        .alert("Profile Imported", isPresented: $profileImportSucceeded) {
+            Button("OK", role: .cancel) { }
+                .accessibilityIdentifier("settings.profile.importSuccess.ok")
+        } message: {
+            Text("Settings were replaced with the imported profile. Click Save Settings to apply.")
         }
     }
 
@@ -208,7 +318,7 @@ struct SettingsView: View {
                 .font(.title2)
                 .fontWeight(.semibold)
                 .foregroundColor(CustomColors.primaryText(for: colorScheme))
-            
+
             Text("Configure how documents are processed and redacted")
                 .font(.body)
                 .foregroundColor(CustomColors.secondaryText(for: colorScheme))
@@ -293,7 +403,7 @@ struct SettingsView: View {
                     .onAppear {
                         Task { await PermissionManager.shared.refreshNotificationStatus() }
                     }
-                    
+
                     Toggle(isOn: $permissionManager.userEnabledNotifications) {
                         VStack(alignment: .leading) {
                             Text("Enable Completion Banners")
@@ -312,7 +422,7 @@ struct SettingsView: View {
                     }
                     .toggleStyle(.switch)
                     .accessibilityIdentifier("settings.notifications.toggle")
-                    
+
                     if PermissionManager.shared.notificationStatus == .denied {
                         Button("Open System Settings (Permission Denied)") {
                              if let url = URL(string: "x-apple.systempreferences:com.apple.preference.notifications") {
@@ -400,14 +510,14 @@ struct SettingsView: View {
                     }
                     .accessibilityIdentifier("settings.quitWarning.segmented")
                 }
-                
+
                 VStack(alignment: .leading, spacing: 6) {
                     Text("Appearance")
                         .font(.system(size: 14, weight: .medium))
                     Text("Choose light, dark, or follow system appearance.")
                         .font(.system(size: 12))
                         .foregroundColor(CustomColors.secondaryText(for: colorScheme))
-                    
+
                     Picker("", selection: appThemeBinding) {
                         ForEach(AppTheme.allCases, id: \.self) { theme in
                             Text(theme.displayName).tag(theme)
@@ -417,9 +527,9 @@ struct SettingsView: View {
                     .labelsHidden()
                     .accessibilityIdentifier("settings.appearance.theme")
                 }
-                
+
                 Divider()
-                
+
                 VStack(alignment: .leading, spacing: 6) {
                     Text("Metadata Cleaning")
                         .font(.system(size: 14, weight: .medium))
@@ -433,9 +543,9 @@ struct SettingsView: View {
                     .controlSize(.small)
                     .accessibilityIdentifier("settings.metadata.configure")
                 }
-                
+
                 Divider()
-                
+
                 VStack(alignment: .leading, spacing: 6) {
                     HStack {
                         Text("Excluded Terms")
@@ -463,7 +573,7 @@ struct SettingsView: View {
                     Text("Phrases that should never be redacted.")
                         .font(.system(size: 12))
                         .foregroundColor(CustomColors.secondaryText(for: colorScheme))
-                    
+
                     HStack {
                         Button(isCustomExcludedWords ? "Edit Custom List…" : "Customize…") {
                             openExcludedWordsEditor()
@@ -471,7 +581,7 @@ struct SettingsView: View {
                         .buttonStyle(.bordered)
                         .controlSize(.small)
                         .accessibilityIdentifier("settings.excludedWords.edit")
-                        
+
                         if isCustomExcludedWords {
                             Button("Reset to Defaults") {
                                 resetExcludedWordsToDefault()
@@ -480,6 +590,32 @@ struct SettingsView: View {
                             .controlSize(.small)
                             .accessibilityIdentifier("settings.excludedWords.reset")
                         }
+                    }
+                }
+
+                Divider()
+
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("Settings Profile")
+                        .font(.system(size: 14, weight: .medium))
+                    Text("Share this configuration with your team as a JSON file, or load one someone else exported.")
+                        .font(.system(size: 12))
+                        .foregroundColor(CustomColors.secondaryText(for: colorScheme))
+
+                    HStack(spacing: 8) {
+                        Button("Export Profile…") {
+                            exportSettingsProfile()
+                        }
+                        .buttonStyle(.bordered)
+                        .controlSize(.small)
+                        .accessibilityIdentifier("settings.profile.export")
+
+                        Button("Import Profile…") {
+                            importSettingsProfile()
+                        }
+                        .buttonStyle(.bordered)
+                        .controlSize(.small)
+                        .accessibilityIdentifier("settings.profile.import")
                     }
                 }
 
@@ -523,7 +659,7 @@ struct SettingsView: View {
                     Spacer()
                 }
 
-                ForEach(RedactionRule.allCases.sorted { $0.displayName < $1.displayName }) { rule in
+                ForEach(RedactionRule.allCases.sorted { $0.displayName < $1.displayName }.filter(isRuleVisible)) { rule in
                     Toggle(isOn: binding(for: rule)) {
                         VStack(alignment: .leading, spacing: 2) {
                             Text(rule.displayName)
@@ -548,22 +684,22 @@ struct SettingsView: View {
                     .font(.system(size: 14, weight: .medium))
                     .foregroundColor(CustomColors.primaryText(for: colorScheme))
 
-                ForEach([
-                    ("llama3.1:8b", "Llama 3.1 8B", "Gold standard. The most accurate model tested.", "~45s", CustomColors.accentColor(for: colorScheme)),
-                    ("mistral:7b", "Mistral 7B", "Solid alternative, but less consistent than Llama 3.1.", "~35s", Color.orange),
-                    ("llama3.2:3b", "Llama 3.2 3B", "Very fast, but frequently misses entities. Use with caution.", "~20s", Color.green)
-                ], id: \.0) { model in
+                ForEach(ModelCatalog.shared.models) { model in
                     ModelSelectionRow(
-                        modelId: model.0,
-                        displayName: model.1,
-                        description: model.2,
-                        processingTime: model.3,
-                        accentColor: model.4,
-                        isSelected: localSettings.model == model.0,
-                        isInstalled: viewModel.availableModels.contains(model.0),
-                        accessibilityId: "settings.model.\(model.0)"
+                        modelId: model.id,
+                        displayName: model.displayName,
+                        description: model.description,
+                        processingTime: model.processingTime,
+                        accentColor: model.resolvedAccentColor(for: colorScheme),
+                        isSelected: localSettings.model == model.id,
+                        isInstalled: viewModel.availableModels.contains(model.id),
+                        accessibilityId: "settings.model.\(model.id)",
+                        onDownload: {
+                            pendingDownloadModel = model.id
+                            dismiss()
+                        }
                     ) {
-                        localSettings.model = model.0
+                        localSettings.model = model.id
                     }
                     .padding(.horizontal, 12)
                 }
@@ -596,7 +732,7 @@ struct SettingsView: View {
                                 .cornerRadius(4)
                         }
                     }
-                    
+
                     HStack(spacing: 8) {
                         Button(isCustomSystemPrompt ? "Edit Custom Prompt…" : "Customize Prompt…") {
                             openSystemPromptEditor()
@@ -604,7 +740,7 @@ struct SettingsView: View {
                         .buttonStyle(.bordered)
                         .controlSize(.small)
                         .accessibilityIdentifier("settings.systemPrompt.edit")
-                        
+
                         if isCustomSystemPrompt {
                             Button("Reset to Defaults") {
                                 resetSystemPromptToDefault()
@@ -616,7 +752,35 @@ struct SettingsView: View {
                     }
                 }
                 .padding(.top, 4)
-                
+
+                Divider()
+                    .padding(.vertical, 4)
+
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("LLM Processing Concurrency")
+                        .font(.system(size: 14, weight: .medium))
+                    Text("Higher concurrency extracts entities faster but uses significantly more system Unified Memory.")
+                        .font(.system(size: 12))
+                        .foregroundColor(CustomColors.secondaryText(for: colorScheme))
+
+                    HStack {
+                        Slider(
+                            value: Binding(
+                                get: { Double(localSettings.llmConcurrency) },
+                                set: { localSettings.llmConcurrency = Int($0) }
+                            ),
+                            in: 1...5,
+                            step: 1
+                        )
+                        .accessibilityIdentifier("settings.llmConcurrency.slider")
+
+                        Text("\(localSettings.llmConcurrency) worker\((localSettings.llmConcurrency > 1) ? "s" : "")")
+                            .font(.system(size: 13, weight: .semibold))
+                            .frame(width: 80, alignment: .trailing)
+                    }
+                }
+                .padding(.top, 4)
+
                 Divider()
                     .padding(.vertical, 4)
 
@@ -770,7 +934,7 @@ struct SettingsView: View {
                     .font(.system(size: 12))
                     .foregroundColor(CustomColors.secondaryText(for: colorScheme))
             }
-            
+
             VStack(alignment: .leading, spacing: 8) {
                 Text("Chunk Size: \(localSettings.chunkTokens) tokens")
                     .font(.system(size: 14, weight: .medium))
@@ -784,7 +948,7 @@ struct SettingsView: View {
                     .font(.system(size: 12))
                     .foregroundColor(CustomColors.secondaryText(for: colorScheme))
             }
-            
+
             VStack(alignment: .leading, spacing: 8) {
                 Text("Chunk Overlap: \(localSettings.overlap) tokens")
                     .font(.system(size: 14, weight: .medium))
@@ -803,14 +967,14 @@ struct SettingsView: View {
                 Text("Processing Timeout: \(timeoutDisplay)")
                     .font(.system(size: 14, weight: .medium))
                     .foregroundColor(CustomColors.primaryText(for: colorScheme))
-                
+
                 Slider(value: timeoutSliderIndex, in: 0...Double(timeoutSteps.count - 1), step: 1)
                     .accessibilityIdentifier("settings.ai.timeout")
                 Text("Maximum time per document. Increase for very large documents. Use ∞ to disable timeout entirely.")
                     .font(.system(size: 12))
                     .foregroundColor(CustomColors.secondaryText(for: colorScheme))
             }
-            
+
             VStack(alignment: .leading, spacing: 8) {
                 Text("Random Seed: \(localSettings.seed)")
                     .font(.system(size: 14, weight: .medium))
@@ -840,6 +1004,14 @@ struct SettingsView: View {
                 .padding(.top, 4)
 
             HStack(spacing: 12) {
+                Button("View Logs") {
+                    DebugLogger.shared.ensureLogInitialized()
+                    showingLogViewer = true
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                .accessibilityIdentifier("settings.debug.viewLogs")
+
                 Button("Open App Log") {
                     DebugLogger.shared.ensureLogInitialized()
                     let logURL = DebugLogger.shared.logURL
@@ -878,7 +1050,7 @@ struct SettingsView: View {
             .buttonStyle(.bordered)
             .controlSize(.large)
             .accessibilityIdentifier("settings.cancel")
-            
+
             Button("Save Settings") {
                 viewModel.updateSettings(localSettings)
                 dismiss()
@@ -895,6 +1067,81 @@ struct SettingsView: View {
             get: { overrideErrorMessage != nil },
             set: { if !$0 { overrideErrorMessage = nil } }
         )
+    }
+
+    private var profileErrorBinding: Binding<Bool> {
+        Binding(
+            get: { profileErrorMessage != nil },
+            set: { if !$0 { profileErrorMessage = nil } }
+        )
+    }
+
+    // MARK: - Settings Profile Export/Import
+
+    private func exportSettingsProfile() {
+        let profile = RedactionProfile(metadataCleaningSettings: metadataSettings, redactionSettings: localSettings)
+
+        let data: Data
+        do {
+            data = try profile.encoded()
+        } catch {
+            profileErrorMessage = "Could not prepare the profile for export: \(error.localizedDescription)"
+            return
+        }
+
+        let panel = NSSavePanel()
+        panel.title = "Export Settings Profile"
+        panel.nameFieldStringValue = "Marcut Settings Profile.json"
+        panel.allowedContentTypes = [UTType.json]
+        panel.canCreateDirectories = true
+        panel.directoryURL = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first
+
+        guard panel.runModal() == .OK, let destinationURL = panel.url else { return }
+
+        let securityScopedURL = destinationURL.deletingLastPathComponent()
+        let didStartAccess = securityScopedURL.startAccessingSecurityScopedResource()
+        defer {
+            if didStartAccess {
+                securityScopedURL.stopAccessingSecurityScopedResource()
+            }
+        }
+
+        do {
+            try data.write(to: destinationURL, options: .atomic)
+        } catch {
+            profileErrorMessage = "Could not write the profile file: \(error.localizedDescription)"
+        }
+    }
+
+    private func importSettingsProfile() {
+        let panel = NSOpenPanel()
+        panel.title = "Import Settings Profile"
+        panel.canChooseDirectories = false
+        panel.canChooseFiles = true
+        panel.allowsMultipleSelection = false
+        panel.allowedContentTypes = [UTType.json]
+        panel.directoryURL = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first
+
+        guard panel.runModal() == .OK, let sourceURL = panel.url else { return }
+
+        let didStartAccess = sourceURL.startAccessingSecurityScopedResource()
+        defer {
+            if didStartAccess {
+                sourceURL.stopAccessingSecurityScopedResource()
+            }
+        }
+
+        do {
+            let data = try Data(contentsOf: sourceURL)
+            let profile = try RedactionProfile.decoded(from: data)
+            // Replace current values wholesale — no merging with existing settings.
+            localSettings = profile.redactionSettings
+            metadataSettings = profile.metadataCleaningSettings
+            metadataSettings.save()
+            profileImportSucceeded = true
+        } catch {
+            profileErrorMessage = error.localizedDescription
+        }
     }
 
     private var appThemeBinding: Binding<AppTheme> {
@@ -1079,6 +1326,7 @@ private struct OverrideEditorSheet: View {
     let onCancel: () -> Void
     let onSave: () -> Void
     let onRestoreDefaults: () -> Void
+    var showsMatchPreview: Bool = false
     @Environment(\.colorScheme) private var colorScheme
 
     var body: some View {
@@ -1095,6 +1343,10 @@ private struct OverrideEditorSheet: View {
             ScrollableTextEditor(text: $text)
                 .frame(minHeight: 300)
                 .accessibilityIdentifier("settings.override.text")
+
+            if showsMatchPreview {
+                ExcludedWordMatchPreview(excludedWordsText: text)
+            }
 
             HStack(spacing: 12) {
                 Button("Cancel") {
@@ -1122,6 +1374,85 @@ private struct OverrideEditorSheet: View {
         }
         .padding(24)
         .frame(minWidth: 500, minHeight: 625)
+    }
+}
+
+/// Live "does this phrase match an excluded-word entry" preview shown in the
+/// excluded-words `OverrideEditorSheet`. Matches against the same rule the redaction
+/// pipeline uses (`ExcludedWordMatcher`, ported from `marcut.rules._is_excluded`),
+/// evaluated against the sheet's in-progress (possibly unsaved) text.
+private struct ExcludedWordMatchPreview: View {
+    let excludedWordsText: String
+
+    @State private var testPhrase: String = ""
+    @State private var debouncedPhrase: String = ""
+    @State private var debounceTask: Task<Void, Never>?
+    @Environment(\.colorScheme) private var colorScheme
+
+    /// Small debounce so a fast typist doesn't recompile/match on every keystroke.
+    private static let debounceNanoseconds: UInt64 = 150_000_000
+
+    private var compiledEntries: [ExcludedWordMatcher.CompiledEntry] {
+        ExcludedWordMatcher.compileAllEntries(editorText: excludedWordsText)
+    }
+
+    private var result: ExcludedWordMatcher.MatchResult? {
+        guard !debouncedPhrase.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            return nil
+        }
+        return ExcludedWordMatcher.match(debouncedPhrase, entries: compiledEntries)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("Test a Phrase")
+                .font(.system(size: 13, weight: .medium))
+                .foregroundColor(CustomColors.secondaryText(for: colorScheme))
+
+            HStack(spacing: 10) {
+                TextField("Type a phrase to test against the terms above…", text: $testPhrase)
+                    .textFieldStyle(.roundedBorder)
+                    .accessibilityIdentifier("settings.override.matchPreview.input")
+                    .onChange(of: testPhrase) { _, newValue in
+                        debounceTask?.cancel()
+                        debounceTask = Task {
+                            try? await Task.sleep(nanoseconds: Self.debounceNanoseconds)
+                            guard !Task.isCancelled else { return }
+                            await MainActor.run {
+                                debouncedPhrase = newValue
+                            }
+                        }
+                    }
+
+                matchIndicator
+                    .accessibilityIdentifier("settings.override.matchPreview.result")
+            }
+        }
+        .onAppear {
+            debouncedPhrase = testPhrase
+        }
+    }
+
+    @ViewBuilder
+    private var matchIndicator: some View {
+        if let result {
+            if result.matched {
+                Label(
+                    result.matchedEntry.map { "Matches: \($0)" } ?? "Matches",
+                    systemImage: "checkmark.circle.fill"
+                )
+                .font(.system(size: 12, weight: .medium))
+                .foregroundColor(.green)
+                .lineLimit(1)
+                .truncationMode(.tail)
+            } else {
+                Label("No match", systemImage: "xmark.circle")
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundColor(CustomColors.secondaryText(for: colorScheme))
+            }
+        } else {
+            Color.clear.frame(width: 1, height: 1)
+        }
     }
 }
 
@@ -1202,19 +1533,41 @@ struct FirstRunSetupView: View {
         case complete
     }
 
+    @State private var autoStartDownload = false
+
     private var isManageFlow: Bool {
-        viewModel.firstRunEntryPoint == .manageModels
+        viewModel.firstRunEntryPoint != .onboarding
     }
 
     init(viewModel: DocumentRedactionViewModel, onComplete: @escaping () -> Void) {
         self.viewModel = viewModel
         self.onComplete = onComplete
-        let initialStep: SetupStep = viewModel.firstRunEntryPoint == .manageModels ? .modelSelection : .welcome
+
+        var initialStep: SetupStep = .welcome
+        // Default dynamically falls back to the normal recommendation.
+        var resolvedModel = ModelCatalog.shared.defaultModelId
+        var shouldAutoDownload = false
+
+        switch viewModel.firstRunEntryPoint {
+        case .manageModels:
+            initialStep = .modelSelection
+        case .downloadSpecificModel(let targetModelId):
+            initialStep = .modelSelection
+            resolvedModel = targetModelId
+            shouldAutoDownload = true
+        case .onboarding:
+            initialStep = .welcome
+        }
+
+        if !shouldAutoDownload {
+            let supportedModelIds = ModelCatalog.shared.modelIds
+            let preferred = viewModel.availableModels.first ?? viewModel.settings.model
+            resolvedModel = supportedModelIds.contains(preferred) ? preferred : ModelCatalog.shared.defaultModelId
+        }
+
         _setupStep = State(initialValue: initialStep)
-        let supportedModelIds = ["llama3.1:8b", "mistral:7b", "llama3.2:3b"]
-        let preferred = viewModel.availableModels.first ?? viewModel.settings.model
-        let resolved = supportedModelIds.contains(preferred) ? preferred : "llama3.1:8b"
-        _selectedModel = State(initialValue: resolved)
+        _selectedModel = State(initialValue: resolvedModel)
+        _autoStartDownload = State(initialValue: shouldAutoDownload)
     }
 
     var body: some View {
@@ -1294,9 +1647,12 @@ struct FirstRunSetupView: View {
                 .padding(24)
         }
         .onAppear {
-            // If a supported model already exists and we're not in the manage-models flow,
-            // skip the download prompt and finish onboarding immediately.
-            if !isManageFlow && hasInstalledSupportedModel {
+            if autoStartDownload {
+                autoStartDownload = false
+                downloadModel()
+            } else if !isManageFlow && hasInstalledSupportedModel {
+                // If a supported model already exists and we're not in the manage-models flow,
+                // skip the download prompt and finish onboarding immediately.
                 viewModel.markFirstRunComplete()
                 onComplete()
             }
@@ -1366,22 +1722,18 @@ struct FirstRunSetupView: View {
 
             // Model selection cards
             VStack(spacing: 12) {
-                ForEach([
-                    ("llama3.1:8b", "Llama 3.1 8B", "Gold standard. The most accurate model tested. Recommended.", "4.7 GB", "Best"),
-                    ("mistral:7b", "Mistral 7B", "Solid alternative, but less consistent than Llama 3.1.", "4.1 GB", "Balanced"),
-                    ("llama3.2:3b", "Llama 3.2 3B", "Very fast, but frequently misses entities. Use with caution.", "2.0 GB", "Fast")
-                ], id: \.0) { model in
+                ForEach(ModelCatalog.shared.models) { model in
                     ModelSelectionRow(
-                        modelId: model.0,
-                        displayName: model.1,
-                        description: model.2,
-                        size: model.3,
-                        badge: model.4,
-                        isSelected: selectedModel == model.0,
-                        isInstalled: viewModel.availableModels.contains(model.0),
-                        accessibilityId: "setup.model.\(model.0)"
+                        modelId: model.id,
+                        displayName: model.displayName,
+                        description: model.setupDescription,
+                        size: model.sizeLabel,
+                        badge: model.badge,
+                        isSelected: selectedModel == model.id,
+                        isInstalled: viewModel.availableModels.contains(model.id),
+                        accessibilityId: "setup.model.\(model.id)"
                     ) {
-                        selectedModel = model.0
+                        selectedModel = model.id
                     }
                     .padding(.horizontal, 12)
                 }
@@ -1589,10 +1941,11 @@ struct ModelSelectionRow: View {
     let onSelect: () -> Void
     let isInstalled: Bool
     let accessibilityId: String?
+    let onDownload: (() -> Void)?
     @Environment(\.colorScheme) private var colorScheme
 
     // Convenience initializers for different use cases
-    init(modelId: String, displayName: String, description: String, processingTime: String, accentColor: Color, isSelected: Bool, isInstalled: Bool, accessibilityId: String? = nil, onSelect: @escaping () -> Void) {
+    init(modelId: String, displayName: String, description: String, processingTime: String, accentColor: Color, isSelected: Bool, isInstalled: Bool, accessibilityId: String? = nil, onDownload: (() -> Void)? = nil, onSelect: @escaping () -> Void) {
         self.modelId = modelId
         self.displayName = displayName
         self.description = description
@@ -1604,9 +1957,10 @@ struct ModelSelectionRow: View {
         self.onSelect = onSelect
         self.isInstalled = isInstalled
         self.accessibilityId = accessibilityId
+        self.onDownload = onDownload
     }
 
-    init(modelId: String, displayName: String, description: String, size: String, badge: String, isSelected: Bool, isInstalled: Bool, accessibilityId: String? = nil, onSelect: @escaping () -> Void) {
+    init(modelId: String, displayName: String, description: String, size: String, badge: String, isSelected: Bool, isInstalled: Bool, accessibilityId: String? = nil, onDownload: (() -> Void)? = nil, onSelect: @escaping () -> Void) {
         self.modelId = modelId
         self.displayName = displayName
         self.description = description
@@ -1618,6 +1972,7 @@ struct ModelSelectionRow: View {
         self.onSelect = onSelect
         self.isInstalled = isInstalled
         self.accessibilityId = accessibilityId
+        self.onDownload = onDownload
     }
 
     var body: some View {
@@ -1678,6 +2033,12 @@ struct ModelSelectionRow: View {
                                 Capsule()
                                     .fill(statusColor.opacity(0.15))
                             )
+                            .contentShape(Capsule())
+                            .onTapGesture {
+                                if !isInstalled {
+                                    onDownload?()
+                                }
+                            }
                     }
                 }
             }

@@ -8,7 +8,7 @@ Usage:
     # Test Ollama models
     python -m tests.benchmark.model_benchmark \
         --doc "sample-files/Sample 123 Preservation Letter track changes.docx" \
-        --models llama3.1:8b,llama3.2:3b
+        --models qwen2.5:14b,llama3.2:3b
     
     # Test all GGUF files in a directory
     python -m tests.benchmark.model_benchmark \

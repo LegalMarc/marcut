@@ -6,6 +6,7 @@ import sys
 import re
 import time
 from .network_utils import normalize_ollama_base_url
+from .cancellation import check_processing_deadline, remaining_seconds
 
 DEFAULT_EXTRACT_SYSTEM = """Extract entities for legal document redaction. Output JSON only.
 
@@ -76,7 +77,7 @@ def _log_app_event(message: str) -> None:
         pass
 
 def get_ollama_base_url() -> str:
-    allow_remote = os.getenv("MARCUT_ALLOW_REMOTE_OLLAMA") == "1"
+    allow_remote = os.getenv("MARCUT_DEVELOPER_UNSAFE_ALLOW_REMOTE_OLLAMA") == "1"
     return normalize_ollama_base_url(loopback_only=not allow_remote)
 
 
@@ -602,6 +603,7 @@ def ollama_extract(
         num_predict = 2048
 
     def _request(prompt: str, format_value) -> str:
+        check_processing_deadline()
         resp = requests.post(
             f"{base_url}/api/generate",
             json={
@@ -609,6 +611,7 @@ def ollama_extract(
                 "prompt": prompt,
                 "format": format_value,
                 "stream": False,  # CRITICAL: Disable streaming to get single JSON response
+                "think": False,   # Disable thinking mode for Qwen 3.5 and similar models
                 "options": {
                     "temperature": max(temperature, 0.1),
                     "seed": seed,
@@ -617,11 +620,12 @@ def ollama_extract(
                     "top_p": 0.9
                 },
                 },
-            timeout=request_timeout
+            timeout=remaining_seconds(request_timeout)
         )
         resp.raise_for_status()
         payload = resp.json()
-        return payload.get("response", "")
+        # Support both standard and thinking-model response fields
+        return payload.get("response") or payload.get("thinking", "")
 
     def _schema_fallback_allowed(err: requests.exceptions.HTTPError) -> bool:
         resp = err.response

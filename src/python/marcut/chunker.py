@@ -10,14 +10,14 @@ to avoid entity fragmentation and reduce LLM call overhead.
 SMALL_DOC_THRESHOLD = 4000
 
 
-def make_chunks(text, max_len=2500, overlap=400):
+def make_chunks(text, max_len=2500, overlap=200):
     """
     Split text into overlapping chunks for processing.
     
     Args:
         text: The document text to chunk
-        max_len: Maximum characters per chunk (default 4000)
-        overlap: Characters of overlap between chunks (default 400)
+        max_len: Maximum characters per chunk (default 2500)
+        overlap: Characters of overlap between chunks (default 200)
     
     Returns:
         List of chunk dicts with 'start', 'end', and 'text' keys

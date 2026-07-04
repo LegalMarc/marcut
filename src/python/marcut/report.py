@@ -467,6 +467,7 @@ def _generate_html_audit_report(data: Dict[str, Any], input_path: str, html_path
     
     with open(html_path, 'w', encoding='utf-8') as f:
         f.write(html)
+    make_private_file(html_path)
 
 
 

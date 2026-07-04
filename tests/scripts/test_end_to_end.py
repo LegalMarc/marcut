@@ -711,8 +711,8 @@ Examples:
 
     parser.add_argument(
         "--model", "-m",
-        default="llama3.1:8b",
-        help="AI model to use for enhanced pathway (default: llama3.1:8b)"
+        default="qwen2.5:14b",
+        help="AI model to use for enhanced pathway (default: qwen2.5:14b)"
     )
 
     parser.add_argument(

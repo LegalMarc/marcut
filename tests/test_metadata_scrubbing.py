@@ -248,6 +248,74 @@ class TestScrubReportPrePostValues(unittest.TestCase):
             self.assertFalse(os.path.exists(os.path.join(tmpdir, "forensic_explorer")))
 
     @unittest.skipUnless(IMPORTS_SUCCESS, "marcut.pipeline not available")
+    def test_report_values_are_bounded_with_warnings(self):
+        settings = MetadataCleaningSettings.from_preset("none")
+        previous = {
+            "MARCUT_METADATA_REPORT_MAX_STRING_CHARS": os.environ.get("MARCUT_METADATA_REPORT_MAX_STRING_CHARS"),
+            "MARCUT_METADATA_REPORT_MAX_LIST_ITEMS": os.environ.get("MARCUT_METADATA_REPORT_MAX_LIST_ITEMS"),
+        }
+        os.environ["MARCUT_METADATA_REPORT_MAX_STRING_CHARS"] = "16"
+        os.environ["MARCUT_METADATA_REPORT_MAX_LIST_ITEMS"] = "1"
+        try:
+            report = pipeline._build_scrub_report(  # pylint: disable=protected-access
+                {
+                    "hidden_text": ["x" * 40, "second item"],
+                    "custom_xml_parts": [{"part": "/customXml/item1.xml", "xml": "y" * 40}],
+                },
+                {},
+                settings,
+                file_path=None,
+                input_path=None,
+                report_dir=None,
+            )
+        finally:
+            for key, value in previous.items():
+                if value is None:
+                    os.environ.pop(key, None)
+                else:
+                    os.environ[key] = value
+
+        structure_group = report["groups"]["Document Structure"]
+        hidden_text_row = next(row for row in structure_group if row["field"] == "Hidden Text")
+        self.assertTrue(hidden_text_row["before"]["truncated"])
+        self.assertEqual(hidden_text_row["before"]["limit_count"], 1)
+        self.assertTrue(hidden_text_row["before"]["items"][0]["truncated"])
+        warning_codes = {warning["code"] for warning in report.get("warnings", [])}
+        self.assertIn("METADATA_REPORT_LIST_TRUNCATED", warning_codes)
+        self.assertIn("METADATA_REPORT_VALUE_TRUNCATED", warning_codes)
+
+    @unittest.skipUnless(IMPORTS_SUCCESS, "marcut.pipeline not available")
+    def test_metadata_reader_summarizes_binary_payloads_by_default(self):
+        class DummyPart:
+            partname = "/word/media/image1.bin"
+            blob = b"x" * 128
+            content_type = "application/octet-stream"
+
+        class DummyPackage:
+            parts = [DummyPart()]
+            rels = {}
+
+        class DummyDocumentPart:
+            package = DummyPackage()
+            rels = {}
+
+        class DummyDoc:
+            core_properties = object()
+            element = None
+            settings = None
+            part = DummyDocumentPart()
+
+        class DummyManager:
+            doc = DummyDoc()
+
+        values = pipeline._read_metadata_values(DummyManager())  # pylint: disable=protected-access
+
+        binary_parts = values.get("_binary_parts") or []
+        self.assertEqual(len(binary_parts), 1)
+        self.assertNotIn("data", binary_parts[0])
+        self.assertEqual(binary_parts[0]["size"], 128)
+
+    @unittest.skipUnless(IMPORTS_SUCCESS, "marcut.pipeline not available")
     def test_forensic_exports_are_bounded_and_private_when_enabled(self):
         settings = MetadataCleaningSettings.from_preset("none")
         previous = {key: os.environ.get(key) for key in (
@@ -662,6 +730,29 @@ class TestMetadataScrubReport(unittest.TestCase):
             self.assertIn(name, doc_fields)
 
     @unittest.skipUnless(DOCX_AVAILABLE and IMPORTS_SUCCESS, "python-docx or marcut not available")
+    def test_scrub_accepts_track_changes_for_final_copy(self):
+        input_docx = self._copy_docx(self.input_docx, "track_changes_input.docx")
+        document_xml = self._read_zip_entry(input_docx, "word/document.xml")
+        original_text = b"<w:t>Metadata scrub test document.</w:t>"
+        revised_text = (
+            b"<w:del w:id=\"1\"><w:r><w:delText>Client Secret</w:delText></w:r></w:del>"
+            b"<w:ins w:id=\"2\"><w:r><w:t>PERSON_1</w:t></w:r></w:ins>"
+        )
+        self.assertIn(original_text, document_xml)
+        self._patch_zip(input_docx, {
+            "word/document.xml": document_xml.replace(original_text, revised_text, 1)
+        })
+
+        output_docx, _report = self._run_scrub(input_docx, "track_changes_final.docx")
+
+        final_xml = self._read_zip_entry(output_docx, "word/document.xml")
+        final_text = self._extract_text(final_xml)
+        self.assertIn("PERSON_1", final_text)
+        self.assertNotIn("Client Secret", final_text)
+        self.assertNotIn(b"delText", final_xml)
+        self.assertNotIn(b"<w:del", final_xml)
+
+    @unittest.skipUnless(DOCX_AVAILABLE and IMPORTS_SUCCESS, "python-docx or marcut not available")
     def test_mail_merge_cleanup(self):
         input_docx = self._copy_docx(self.input_docx, "mail_merge_input.docx")
         self._inject_mail_merge(input_docx)
@@ -851,6 +942,10 @@ class TestMetadataScrubReport(unittest.TestCase):
         self.assertTrue(os.path.exists(output_docx))
         self.assertTrue(os.path.exists(audit_report))
         self.assertTrue(os.path.exists(scrub_report))
+        scrub_html = os.path.splitext(scrub_report)[0] + ".html"
+        self.assertTrue(os.path.exists(scrub_html))
+        self.assertEqual(stat.S_IMODE(os.stat(scrub_report).st_mode), 0o600)
+        self.assertEqual(stat.S_IMODE(os.stat(scrub_html).st_mode), 0o600)
         with open(scrub_report, "r", encoding="utf-8") as fh:
             report = json.load(fh)
         self.assertIn("groups", report)

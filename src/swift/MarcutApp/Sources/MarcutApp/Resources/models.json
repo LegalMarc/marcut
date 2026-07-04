@@ -1,0 +1,53 @@
+{
+  "defaultModel": "qwen2.5:14b",
+  "models": [
+    {
+      "id": "qwen3.5:35b",
+      "displayName": "Qwen 3.5 35B A3B",
+      "description": "Absolute highest accuracy. (Requires 24GB+ RAM).",
+      "setupDescription": "Absolute highest accuracy. (Requires 24GB+ RAM).",
+      "processingTime": "~120s",
+      "sizeLabel": "22 GB",
+      "badge": "Ultra",
+      "accentColor": "purple",
+      "temperature": 0.1,
+      "skipConfidence": 0.95
+    },
+    {
+      "id": "qwen2.5:14b",
+      "displayName": "Qwen 2.5 14B",
+      "description": "Gold standard. Best accuracy for legal & complex documents.",
+      "setupDescription": "Gold standard. Best accuracy for legal & complex documents. Recommended.",
+      "processingTime": "~50s",
+      "sizeLabel": "9.0 GB",
+      "badge": "Best",
+      "accentColor": "accent",
+      "temperature": 0.1,
+      "skipConfidence": 0.95
+    },
+    {
+      "id": "qwen2.5:7b",
+      "displayName": "Qwen 2.5 7B",
+      "description": "Balanced. Excellent extraction with lower memory usage.",
+      "setupDescription": "Balanced. Excellent extraction with lower memory usage.",
+      "processingTime": "~30s",
+      "sizeLabel": "4.7 GB",
+      "badge": "Balanced",
+      "accentColor": "orange",
+      "temperature": 0.1,
+      "skipConfidence": 0.95
+    },
+    {
+      "id": "phi4-mini:3.8b",
+      "displayName": "Phi-4 Mini 3.8B",
+      "description": "Fast & lightweight. Good for simple documents.",
+      "setupDescription": "Fast & lightweight. Good for simple documents.",
+      "processingTime": "~25s",
+      "sizeLabel": "2.5 GB",
+      "badge": "Fast",
+      "accentColor": "green",
+      "temperature": 0.1,
+      "skipConfidence": 0.95
+    }
+  ]
+}

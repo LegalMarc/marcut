@@ -13,7 +13,10 @@ Tests cover:
 
 import pytest
 import stat
+from marcut import pipeline
+from marcut.cancellation import ProcessingDeadlineExceeded
 from marcut.report import write_json_file
+from marcut.report_html import generate_html_report
 from marcut.pipeline import (
     normalize_unicode,
     _rank,
@@ -467,6 +470,21 @@ class TestApplyConsistencyPass:
         john_lower_matches = [s for s in result if s.get("text") == "john smith"]
         assert len(john_lower_matches) == 0  # No lowercase match
 
+    def test_candidate_limit_bounds_consistency_work(self, monkeypatch):
+        """Pathological candidate counts are bounded before regex construction."""
+        monkeypatch.setenv("MARCUT_CONSISTENCY_MAX_CANDIDATES", "2")
+        text = "Alpha Holdings Beta Holdings Gamma Holdings Alpha Holdings Beta Holdings Gamma Holdings"
+        spans = [
+            {"start": 0, "end": 14, "label": "ORG", "text": "Alpha Holdings"},
+            {"start": 15, "end": 28, "label": "ORG", "text": "Beta Holdings"},
+            {"start": 29, "end": 43, "label": "ORG", "text": "Gamma Holdings"},
+        ]
+
+        result = _apply_consistency_pass(text, spans)
+
+        gamma_mentions = [sp for sp in result if sp.get("text") == "Gamma Holdings"]
+        assert len(gamma_mentions) == 1
+
 
 class TestRedactionError:
     """Test RedactionError exception class."""
@@ -531,6 +549,261 @@ class TestRedactionError:
 
         assert report_path.read_text(encoding="utf-8")
         assert stat.S_IMODE(report_path.stat().st_mode) == 0o600
+
+    def test_metadata_html_report_is_owner_only(self, tmp_path):
+        """App-managed HTML reports should not be group/world-readable."""
+        json_path = tmp_path / "scrub_report.json"
+        html_path = tmp_path / "scrub_report.html"
+        report = {
+            "summary": {"report_type": "metadata_only", "total_cleaned": 0, "total_preserved": 0},
+            "groups": {},
+        }
+        json_path.write_text("{}", encoding="utf-8")
+
+        generated = generate_html_report(report, str(json_path), str(html_path), str(tmp_path))
+
+        assert generated == str(html_path)
+        assert html_path.read_text(encoding="utf-8")
+        assert stat.S_IMODE(html_path.stat().st_mode) == 0o600
+
+
+class TestLLMDetailTiming:
+    """Test --llm-detail observes the production enhanced path."""
+
+    def _patch_minimal_enhanced_pipeline(self, monkeypatch, text="John Smith"):
+        class FakeDocxMap:
+            def __init__(self):
+                self.text = text
+                self.author_name = ""
+
+        monkeypatch.setattr(
+            pipeline.DocxMap,
+            "load_accepting_revisions",
+            staticmethod(lambda input_path, debug=False: FakeDocxMap()),
+        )
+        monkeypatch.setattr(pipeline, "_collect_rule_spans", lambda text, debug: [])
+
+        for name in (
+            "_snap_to_boundaries",
+            "_trim_org_trailing_excluded_segments",
+            "_extend_org_suffixes",
+            "_attach_defined_term_aliases",
+            "_trim_org_jurisdiction_suffixes",
+            "_extend_loc_to_line",
+            "_filter_overlong_org_spans",
+            "_filter_county_spans",
+        ):
+            monkeypatch.setattr(pipeline, name, lambda text, spans, *args, **kwargs: spans)
+        monkeypatch.setattr(
+            pipeline,
+            "_apply_consistency_pass",
+            lambda text, spans, *args, **kwargs: spans,
+        )
+        monkeypatch.setattr(pipeline, "_merge_overlaps", lambda spans, text: spans)
+
+    def test_llm_detail_does_not_change_enhanced_spans(self, monkeypatch, tmp_path):
+        self._patch_minimal_enhanced_pipeline(monkeypatch)
+        captured_spans = []
+        collect_calls = []
+        enhanced_span = {
+            "start": 0,
+            "end": 10,
+            "label": "NAME",
+            "text": "John Smith",
+            "confidence": 0.91,
+            "source": "llm",
+        }
+
+        def fake_collect(text, model_id, chunk_tokens, overlap, *args, **kwargs):
+            collect_calls.append((model_id, chunk_tokens, overlap, kwargs.get("llm_concurrency")))
+            return [dict(enhanced_span)]
+
+        def fake_finalize(dm, text, spans, *args, **kwargs):
+            captured_spans.append([dict(span) for span in spans])
+            return 0
+
+        monkeypatch.setattr(pipeline, "_collect_enhanced_spans", fake_collect)
+        monkeypatch.setattr(pipeline, "_finalize_and_write", fake_finalize)
+
+        input_path = str(tmp_path / "input.docx")
+        output_path = str(tmp_path / "output.docx")
+        report_path = str(tmp_path / "report.json")
+        code_without_detail, timings_without_detail = pipeline.run_redaction(
+            input_path, output_path, report_path,
+            mode="rules_override", model_id="llama3.1:8b", chunk_tokens=250,
+            overlap=50, temperature=0.1, seed=42, debug=False, timing=True,
+            llm_detail=False, llm_concurrency=3,
+        )
+        code_with_detail, timings_with_detail = pipeline.run_redaction(
+            input_path, output_path, report_path,
+            mode="rules_override", model_id="llama3.1:8b", chunk_tokens=250,
+            overlap=50, temperature=0.1, seed=42, debug=False, timing=True,
+            llm_detail=True, llm_concurrency=3,
+        )
+
+        assert code_without_detail == 0
+        assert code_with_detail == 0
+        assert captured_spans[0] == captured_spans[1]
+        assert collect_calls == [("llama3.1:8b", 250, 50, 3), ("llama3.1:8b", 250, 50, 3)]
+        assert "llm_timing" not in timings_without_detail
+        assert timings_with_detail["llm_timing"]["instrumentation"] == "production_enhanced_path"
+
+    def test_llm_detail_keeps_enhanced_failure_semantics(self, monkeypatch, tmp_path):
+        self._patch_minimal_enhanced_pipeline(monkeypatch)
+        monkeypatch.setattr(
+            pipeline,
+            "_collect_enhanced_spans",
+            lambda *args, **kwargs: (_ for _ in ()).throw(TimeoutError("timeout")),
+        )
+
+        input_path = str(tmp_path / "input.docx")
+        output_path = str(tmp_path / "output.docx")
+        no_detail_report = str(tmp_path / "no_detail_report.json")
+        detail_report = str(tmp_path / "detail_report.json")
+
+        code_without_detail, _ = pipeline.run_redaction(
+            input_path, output_path, no_detail_report,
+            mode="rules_override", model_id="llama3.1:8b", chunk_tokens=250,
+            overlap=50, temperature=0.1, seed=42, debug=False, timing=True,
+            llm_detail=False,
+        )
+        code_with_detail, _ = pipeline.run_redaction(
+            input_path, output_path, detail_report,
+            mode="rules_override", model_id="llama3.1:8b", chunk_tokens=250,
+            overlap=50, temperature=0.1, seed=42, debug=False, timing=True,
+            llm_detail=True,
+        )
+
+        assert code_without_detail == 2
+        assert code_with_detail == 2
+        no_detail_payload = (tmp_path / "no_detail_report.json").read_text(encoding="utf-8")
+        detail_payload = (tmp_path / "detail_report.json").read_text(encoding="utf-8")
+        assert "AI_PROCESSING_TIMEOUT" in no_detail_payload
+        assert "AI_PROCESSING_TIMEOUT" in detail_payload
+
+    def test_llama_cpp_backend_uses_gguf_path_and_threads(self, monkeypatch):
+        captured = {}
+
+        class FakeLlamaPipeline:
+            def __init__(self, model_path, temperature=0.1, seed=None, threads=4):
+                captured["model_path"] = model_path
+                captured["temperature"] = temperature
+                captured["seed"] = seed
+                captured["threads"] = threads
+
+            def process_document(self, text, chunks, progress_callback=None):
+                captured["chunks"] = chunks
+                return [{"start": 0, "end": 10, "label": "NAME", "text": "John Smith"}]
+
+        monkeypatch.setattr(pipeline, "LlamaCppRedactionPipeline", FakeLlamaPipeline)
+
+        spans = pipeline._collect_enhanced_spans(
+            "John Smith",
+            model_id="ignored-model",
+            chunk_tokens=250,
+            overlap=50,
+            temperature=0.4,
+            seed=789,
+            llm_skip_confidence=0.95,
+            debug=False,
+            backend="llama_cpp",
+            llama_gguf="/models/local.gguf",
+            threads=8,
+        )
+
+        assert spans[0]["text"] == "John Smith"
+        assert captured["model_path"] == "/models/local.gguf"
+        assert captured["temperature"] == 0.4
+        assert captured["seed"] == 789
+        assert captured["threads"] == 8
+
+    def test_processing_deadline_failure_does_not_write_output_docx(self, monkeypatch, tmp_path):
+        self._patch_minimal_enhanced_pipeline(monkeypatch)
+        output_path = tmp_path / "output.docx"
+        report_path = tmp_path / "report.json"
+        finalize_called = {"value": False}
+
+        monkeypatch.setattr(
+            pipeline,
+            "_collect_enhanced_spans",
+            lambda *args, **kwargs: (_ for _ in ()).throw(
+                ProcessingDeadlineExceeded("Processing deadline exceeded")
+            ),
+        )
+
+        def fake_finalize(*args, **kwargs):
+            finalize_called["value"] = True
+            output_path.write_bytes(b"partial")
+            return 0
+
+        monkeypatch.setattr(pipeline, "_finalize_and_write", fake_finalize)
+
+        code, _timings = pipeline.run_redaction(
+            str(tmp_path / "input.docx"),
+            str(output_path),
+            str(report_path),
+            mode="rules_override",
+            model_id="llama3.1:8b",
+            chunk_tokens=250,
+            overlap=50,
+            temperature=0.1,
+            seed=42,
+            debug=False,
+            timing=True,
+        )
+
+        assert code == 2
+        assert not finalize_called["value"]
+        assert not output_path.exists()
+        assert "AI_PROCESSING_TIMEOUT" in report_path.read_text(encoding="utf-8")
+
+
+class TestTransactionalArtifacts:
+    """Test final artifacts are not exposed before the full set is ready."""
+
+    def test_finalize_cleans_docx_when_audit_report_fails(self, monkeypatch, tmp_path):
+        class FakeDocxMap:
+            warnings = []
+
+            def apply_replacements(self, replacements, track_changes=True):
+                self.replacements = replacements
+
+            def scrub_metadata(self, settings):
+                return None
+
+            def harden_document(self, *args, **kwargs):
+                return None
+
+            def save(self, path):
+                with open(path, "wb") as handle:
+                    handle.write(b"staged docx")
+
+        monkeypatch.setenv("MARCUT_METADATA_ARGS", "--preset-none")
+        monkeypatch.setattr(
+            pipeline,
+            "write_report",
+            lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("report failed")),
+        )
+
+        output_path = tmp_path / "output.docx"
+        report_path = tmp_path / "report.json"
+        input_path = tmp_path / "input.docx"
+        input_path.write_bytes(b"input")
+
+        with pytest.raises(pipeline.RedactionError, match="Failed to write audit report"):
+            pipeline._finalize_and_write(
+                FakeDocxMap(),
+                "John Smith",
+                [{"start": 0, "end": 10, "label": "NAME", "text": "John Smith"}],
+                str(output_path),
+                str(report_path),
+                str(input_path),
+                "mock",
+            )
+
+        assert not output_path.exists()
+        assert not report_path.exists()
+        assert list(tmp_path.glob(".*.tmp*")) == []
 
 
 class TestSafePrint:

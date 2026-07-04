@@ -2,7 +2,7 @@
 
 Local-first DOCX redaction that produces Microsoft Word documents with track changes. Uses a mandatory hybrid approach (rules + LLM) plus an optional enhanced two-pass LLM validation for high precision.
 
-**Status**: ✅ Fully operational (September 2024) - Swift GUI and Python CLI working
+**Status**: Public-beta hardening in progress for version `0.5.96`; Swift GUI and Python CLI are operational, but public distribution still requires a Developer ID signed, notarized, stapled, Gatekeeper-verified DMG.
 
 Important: LLM detection is REQUIRED for legal documents. Rules alone miss names and organizations.
 
@@ -11,13 +11,13 @@ Important: LLM detection is REQUIRED for legal documents. Rules alone miss names
 - Rule-based detection for structured PII (emails, phones, dates, money, credit cards with Luhn, URLs, IP)
 - Enhanced two-pass LLM pipeline for names/organizations with selective validation
 - Simple CLI and sample scripts
-- Native macOS SwiftUI app with embedded Ollama (MarcutApp-Swift-v0.2.3.dmg)
+- Native macOS SwiftUI app with embedded Ollama. The current configured release target is `MarcutApp-v0.5.96-AppStore.dmg`.
 
 ## Quick start
 
 ### macOS App (Recommended)
 
-Download and open `MarcutApp-Swift-v0.2.3.dmg`, drag to Applications. The app includes embedded Ollama and manages everything automatically.
+For a notarized release, download and open the current `MarcutApp-v<version>-AppStore.dmg`, then drag the app to Applications. The app includes embedded Ollama and manages local processing automatically.
 
 ### Command Line
 
@@ -31,13 +31,13 @@ pip install -e .
 ```
 
 2) Install and run Ollama, and pull a model
-- Recommended model: llama3.1:8b
+- Recommended model: qwen2.5:14b
 
 ```bash
 # macOS
 # Install from https://ollama.ai or `brew install ollama`
 ollama serve &
-ollama pull llama3.1:8b
+ollama pull qwen2.5:14b
 ```
 
 3) Run redaction (enhanced pipeline)
@@ -48,7 +48,7 @@ marcut redact \
   --out runs/out.docx \
   --report runs/out.json \
   --backend ollama \
-  --model llama3.1:8b \
+  --model qwen2.5:14b \
   --enhanced \
   --debug
 ```
@@ -61,7 +61,7 @@ run_redaction_enhanced(
     input_path='sample-files/Sample 123 Consent.docx',
     output_path='runs/out.docx',
     report_path='runs/out.json',
-    model_id='llama3.1:8b',
+    model_id='qwen2.5:14b',
     chunk_tokens=1000, overlap=150, temperature=0.1, seed=42, debug=True
 )
 ```
@@ -85,6 +85,6 @@ run_redaction_enhanced(
 - Use the Full Release workflow: `python3 build_tui.py` → Build Workflows → **Full Release Build (Clean & Archive)**.
 - Prereqs: Developer ID Application certificate installed; notarization credentials saved to `~/.config/marcut/notarize.env` (either App Store Connect API key: `ASC_API_KEY_ID/ISSUER/BASE64` or Apple ID + app-specific password).
 - The build signs the DMG, submits for notarization, staples the ticket, and then the bundle audit runs Gatekeeper on the notarized DMG.
-- Verify locally before sharing: `xcrun stapler validate MarcutApp-Swift-<ver>.dmg` and `spctl -a -t open --context context:primary-signature -v MarcutApp-Swift-<ver>.dmg` should both report “accepted / Notarized Developer ID”.
+- Verify locally before sharing: `xcrun stapler validate MarcutApp-v<ver>-AppStore.dmg` and `spctl -a -t open --context context:primary-signature -v MarcutApp-v<ver>-AppStore.dmg` should both report accepted/notarized Developer ID status. Public distribution must not use `MARCUT_ALLOW_NOTARIZATION_SKIP=1`; that override is for local/test builds only.
 
 See docs/USER_GUIDE.md and docs/DEVELOPER_GUIDE.md for details.

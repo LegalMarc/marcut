@@ -1212,6 +1212,16 @@ EOF
     if [ -n "$system_prompt_source" ]; then
         cp "$system_prompt_source" "${APP_BUNDLE}/Contents/Resources/system-prompt.txt"
     fi
+    local models_json_source=""
+    for candidate in "assets/models.json" "src/python/marcut/models.json" "models.json"; do
+        if [ -f "$candidate" ]; then
+            models_json_source="$candidate"
+            break
+        fi
+    done
+    if [ -n "$models_json_source" ]; then
+        cp "$models_json_source" "${APP_BUNDLE}/Contents/Resources/models.json"
+    fi
     local assets_dir="${ASSETS_DIR:-${ROOT_DIR}/assets}"
     local swift_resources_dir="${SWIFT_PROJECT_DIR}/Sources/MarcutApp/Resources"
     local help_md_source=""
@@ -1389,7 +1399,8 @@ sign_app_bundle() {
     if codesign --verify --deep --strict --verbose=2 "${APP_BUNDLE}"; then
         log_success "Code signature verified"
     else
-        log_warning "Code signature verification failed; continuing to DMG creation for testing"
+        log_error "Code signature verification failed"
+        exit 1
     fi
 
     # Check signature details
@@ -1606,8 +1617,12 @@ notarize_dmg() {
     log_section "Notarizing for App Store"
 
     if [ "${SKIP_NOTARIZATION:-false}" = "true" ]; then
-        log_warning "Skipping notarization (SKIP_NOTARIZATION=true)"
-        return 0
+        if [ "${MARCUT_ALLOW_NOTARIZATION_SKIP:-}" = "1" ]; then
+            log_warning "Skipping notarization (SKIP_NOTARIZATION=true; MARCUT_ALLOW_NOTARIZATION_SKIP=1)"
+            return 0
+        fi
+        log_error "Refusing to skip notarization without MARCUT_ALLOW_NOTARIZATION_SKIP=1"
+        exit 1
     fi
 
     log_info "Using notarization profile: ${NOTARIZATION_PROFILE}"
@@ -1623,8 +1638,13 @@ notarize_dmg() {
 
     if [ "${NOTARIZATION_STATUS}" -ne 0 ]; then
         if echo "${NOTARIZATION_OUTPUT}" | grep -q "No Keychain password item found"; then
-            log_warning "Notarization skipped: keychain profile '${NOTARIZATION_PROFILE}' not found."
-            return 0
+            if [ "${MARCUT_ALLOW_NOTARIZATION_SKIP:-}" = "1" ]; then
+                log_warning "Notarization skipped: keychain profile '${NOTARIZATION_PROFILE}' not found; MARCUT_ALLOW_NOTARIZATION_SKIP=1"
+                return 0
+            fi
+            log_error "Notarization failed: keychain profile '${NOTARIZATION_PROFILE}' not found."
+            echo "${NOTARIZATION_OUTPUT}"
+            exit 1
         fi
         log_error "Notarization failed"
         echo "${NOTARIZATION_OUTPUT}"
@@ -1671,7 +1691,8 @@ notarize_dmg() {
     if spctl -a -t open --context context:primary-signature -v "${FINAL_DMG}"; then
         log_success "DMG is properly notarized and ready for distribution"
     else
-        log_warning "Notarization verification had issues"
+        log_error "Notarization verification failed"
+        exit 1
     fi
 }
 
@@ -1686,10 +1707,15 @@ final_validation() {
     hdiutil verify "${FINAL_DMG}"
 
     if [ "${SKIP_NOTARIZATION:-false}" = "true" ]; then
-        log_warning "Notarization validation skipped (SKIP_NOTARIZATION=true)"
+        if [ "${MARCUT_ALLOW_NOTARIZATION_SKIP:-}" = "1" ]; then
+            log_warning "Notarization validation skipped (SKIP_NOTARIZATION=true; MARCUT_ALLOW_NOTARIZATION_SKIP=1)"
+        else
+            log_error "Refusing to skip notarization validation without MARCUT_ALLOW_NOTARIZATION_SKIP=1"
+            exit 1
+        fi
     else
         log_step "Notarization validation..."
-        spctl -a -t open --context context:primary-signature -v "${FINAL_DMG}" || true
+        spctl -a -t open --context context:primary-signature -v "${FINAL_DMG}"
     fi
 
     log_success "All validations complete"
@@ -1795,7 +1821,11 @@ main() {
     log_section "Build Complete! 🎉"
     echo ""
     echo -e "${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-    echo -e "${GREEN}  SUCCESS: ${APP_NAME} v${VERSION} ready for App Store${NC}"
+    if [ "$SKIP_NOTARIZATION" = false ]; then
+        echo -e "${GREEN}  SUCCESS: ${APP_NAME} v${VERSION} notarized and distribution-ready${NC}"
+    else
+        echo -e "${GREEN}  SUCCESS: ${APP_NAME} v${VERSION} built; notarization not completed in this script${NC}"
+    fi
     echo -e "${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
     echo ""
     echo "📦 Distribution Package: ${FINAL_DMG}"
@@ -1804,7 +1834,8 @@ main() {
     if [ "$SKIP_NOTARIZATION" = false ]; then
         echo "✅ Notarized and ready for direct distribution"
     else
-        echo "ℹ️  Notarization skipped for App Store identity"
+        echo "ℹ️  Notarization skipped by explicit local/test or intermediate-build override"
+        echo "🚫 Not ready for public direct distribution until notarization, stapling, and Gatekeeper verification pass"
     fi
     echo ""
     echo "📋 Next Steps:"

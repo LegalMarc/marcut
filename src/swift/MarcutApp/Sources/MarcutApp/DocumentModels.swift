@@ -845,7 +845,7 @@ enum DocumentOperation: String, Sendable {
     case scrub
 }
 
-enum RedactionMode: String, CaseIterable {
+enum RedactionMode: String, CaseIterable, Codable {
     case rules = "rules"
     case rulesOverride = "rules_override"
     case constrainedOverrides = "constrained_overrides"
@@ -971,7 +971,7 @@ enum RedactionRule: String, CaseIterable, Identifiable, Codable, Hashable {
     }
 }
 
-struct RedactionSettings {
+struct RedactionSettings: Codable, Equatable {
     static let standardNormalMode: RedactionMode = .rulesOverride
     static let standardNormalModeConfidence: Int = 99
     static let standardNormalModeTemperature: Double = 0.0
@@ -979,7 +979,7 @@ struct RedactionSettings {
     static let standardNormalModeOverlap: Int = 200
 
     var mode: RedactionMode = RedactionSettings.standardNormalMode
-    var model: String = "llama3.1:8b"
+    var model: String = ModelCatalog.shared.defaultModelId
     var backend: String = "ollama" // 'ollama' or 'mock' (for fast tests)
     var debug: Bool = false  // Default to false for production
     var temperature: Double = RedactionSettings.standardNormalModeTemperature
@@ -1003,6 +1003,71 @@ struct RedactionSettings {
 
     var llmConfidenceThresholdValue: Double {
         Double(llmConfidenceThreshold) / 100.0
+    }
+}
+
+// MARK: - Shareable Settings Profile (Export/Import)
+
+/// A JSON-serializable bundle of `MetadataCleaningSettings` and `RedactionSettings` that a user
+/// can export to a file and share with a legal team, or import to replace their current settings.
+struct RedactionProfile: Codable, Equatable {
+    /// Bump this whenever the profile's on-disk shape changes in a way older/newer clients can't
+    /// safely round-trip (e.g. removing a field, changing its meaning). Additive fields with
+    /// `decodeIfPresent` + defaults do not require a bump.
+    static let currentSchemaVersion = 1
+
+    var schemaVersion: Int
+    var metadataCleaningSettings: MetadataCleaningSettings
+    var redactionSettings: RedactionSettings
+
+    init(metadataCleaningSettings: MetadataCleaningSettings, redactionSettings: RedactionSettings) {
+        self.schemaVersion = Self.currentSchemaVersion
+        self.metadataCleaningSettings = metadataCleaningSettings
+        self.redactionSettings = redactionSettings
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case schemaVersion
+        case metadataCleaningSettings
+        case redactionSettings
+    }
+
+    enum ProfileError: LocalizedError {
+        case unsupportedSchemaVersion(found: Int, supported: Int)
+        case malformed(String)
+
+        var errorDescription: String? {
+            switch self {
+            case .unsupportedSchemaVersion(let found, let supported):
+                return "This profile was created with an unsupported schema version (\(found)). This version of Marcut supports schema version \(supported)."
+            case .malformed(let detail):
+                return "This profile file could not be read: \(detail)"
+            }
+        }
+    }
+
+    /// Encodes this profile to JSON data (sorted keys for stable, diffable output).
+    func encoded() throws -> Data {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        return try encoder.encode(self)
+    }
+
+    /// Decodes and validates a profile from JSON data. Throws `ProfileError` on malformed JSON
+    /// or an unrecognized schema version rather than partially applying any values.
+    static func decoded(from data: Data) throws -> RedactionProfile {
+        let profile: RedactionProfile
+        do {
+            profile = try JSONDecoder().decode(RedactionProfile.self, from: data)
+        } catch {
+            throw ProfileError.malformed(error.localizedDescription)
+        }
+
+        guard profile.schemaVersion == currentSchemaVersion else {
+            throw ProfileError.unsupportedSchemaVersion(found: profile.schemaVersion, supported: currentSchemaVersion)
+        }
+
+        return profile
     }
 }
 
@@ -1046,6 +1111,10 @@ class DebugLogger {
     // ~/Library/Application Support/MarcutApp/logs/marcut.log
     var logURL: URL { logDirectoryURL.appendingPathComponent("marcut.log") }
     var logPath: String { logURL.path }
+
+    /// Directory containing this instance's log files (`~/Library/Application Support/MarcutApp/logs`,
+    /// or a fallback under the temporary directory if Application Support is unavailable/sandboxed).
+    var logsDirectoryURL: URL { logDirectoryURL }
 
     private init() {
         logDirectoryURL = DebugLogger.resolveLogDirectory()
@@ -1174,5 +1243,32 @@ class DebugLogger {
 
     func clearLog() {
         try? FileManager.default.removeItem(at: logURL)
+    }
+
+    /// Discovers log files (`.log` extension) in `directory`, most-recently-modified first.
+    ///
+    /// Pure/testable: takes an explicit directory rather than reaching for `shared.logsDirectoryURL`,
+    /// so tests can point it at a temporary fixture directory. Returns an empty array if the
+    /// directory doesn't exist or contains no `.log` files.
+    static func discoverLogFiles(in directory: URL, fileManager: FileManager = .default) -> [URL] {
+        guard let entries = try? fileManager.contentsOfDirectory(
+            at: directory,
+            includingPropertiesForKeys: [.contentModificationDateKey],
+            options: [.skipsHiddenFiles]
+        ) else {
+            return []
+        }
+
+        let logFiles = entries.filter { $0.pathExtension.lowercased() == "log" }
+
+        return logFiles.sorted { lhs, rhs in
+            let lhsDate = (try? lhs.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate ?? .distantPast
+            let rhsDate = (try? rhs.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate ?? .distantPast
+            if lhsDate != rhsDate {
+                return lhsDate > rhsDate
+            }
+            // Stable tiebreaker for files with identical mtimes (e.g. fixtures created in the same instant).
+            return lhs.lastPathComponent < rhs.lastPathComponent
+        }
     }
 }

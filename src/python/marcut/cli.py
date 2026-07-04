@@ -1,10 +1,12 @@
 import argparse, sys
+import json
 import os
 import shlex
 from .unified_redactor import run_unified_redaction
 from .preflight import ensure_ollama_ready
 from .progress import create_progress_callback, ProgressUpdate
 from .docx_io import CLI_ARG_PAIRS
+from .model_config import default_model_id, default_temperature, default_skip_confidence
 
 
 def _parse_mode(value: str) -> str:
@@ -34,14 +36,17 @@ def build():
         help="rules (rules-only), enhanced/rules_override (rules + AI), constrained_overrides, llm_overrides.",
     )
     r.add_argument("--backend", choices=["ollama", "llama_cpp", "mock"], default="ollama")
-    r.add_argument("--model", default="llama3.1:8b")
+    r.add_argument("--model", default=default_model_id())
     r.add_argument("--llama-gguf", default=None)
     r.add_argument("--threads", type=int, default=4)
     r.add_argument("--chunk-tokens", type=int, default=1000)
     r.add_argument("--overlap", type=int, default=150)
-    r.add_argument("--temp", type=float, default=0.1)
+    r.add_argument("--temp", type=float, default=default_temperature())
     r.add_argument("--seed", type=int, default=42)
-    r.add_argument("--llm-skip-confidence", type=float, default=0.95)
+    r.add_argument("--llm-skip-confidence", type=float, default=default_skip_confidence())
+    r.add_argument("--llm-concurrency", type=int, default=2)
+    r.add_argument("--think", action="store_true", help="Enable Ollama thinking mode when the selected model supports it.")
+    r.add_argument("--format-schema", default=None, help="JSON schema path or inline JSON for Ollama structured output.")
     r.add_argument("--no-qa", action="store_true")
     r.add_argument("--debug", action="store_true")
     r.add_argument("--timing", action="store_true", help="Show detailed phase timing breakdown")
@@ -97,6 +102,18 @@ def build():
 
 def main():
     a = build().parse_args()
+
+    format_schema = None
+    if getattr(a, "format_schema", None):
+        schema_arg = a.format_schema
+        if os.path.exists(schema_arg):
+            with open(schema_arg, "r", encoding="utf-8") as fh:
+                format_schema = json.load(fh)
+        else:
+            try:
+                format_schema = json.loads(schema_arg)
+            except json.JSONDecodeError as exc:
+                raise SystemExit(f"--format-schema must be a JSON file path or inline JSON: {exc}") from exc
 
     metadata_overrides = list(getattr(a, "metadata_overrides", []) or [])
     raw_metadata_args = getattr(a, "metadata_args", None)
@@ -156,10 +173,15 @@ def main():
             temperature=a.temp,
             seed=a.seed,
             llm_skip_confidence=a.llm_skip_confidence,
+            llama_gguf=a.llama_gguf,
+            threads=a.threads,
+            llm_concurrency=a.llm_concurrency,
             log_path=f"/tmp/marcut_cli_{a.mode}_{a.model.replace(':', '_')}.log" if a.debug else None,
             timing=getattr(a, 'timing', False) or getattr(a, 'llm_detail', False),
             llm_detail=getattr(a, 'llm_detail', False),
             progress_callback=progress_callback,
+            think_mode=a.think,
+            format_schema=format_schema,
         )
 
         if result['success']:

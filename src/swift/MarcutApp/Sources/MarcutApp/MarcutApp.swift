@@ -121,7 +121,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         let defaults = UserDefaults.standard
-        let behavior = UnsavedReportQuitBehavior(rawValue: defaults.integer(forKey: "MarcutApp.UnsavedReportQuitBehavior")) ?? .warn
+        let behavior = UnsavedReportQuitBehavior(rawValue: defaults.integer(forKey: DefaultsKey.unsavedReportQuitBehavior.key)) ?? .warn
         switch behavior {
         case .alwaysQuit:
             return .terminateNow
@@ -137,7 +137,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             alert.addButton(withTitle: "Always Quit")
             let response = alert.runModal()
             if response == .alertThirdButtonReturn {
-                defaults.set(UnsavedReportQuitBehavior.alwaysQuit.rawValue, forKey: "MarcutApp.UnsavedReportQuitBehavior")
+                defaults.set(UnsavedReportQuitBehavior.alwaysQuit.rawValue, forKey: DefaultsKey.unsavedReportQuitBehavior.key)
                 return .terminateNow
             }
             if response == .alertSecondButtonReturn {
@@ -345,6 +345,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             process.executableURL = URL(fileURLWithPath: scriptPath)
             process.arguments = ["redact", "--help"]
             var env = ProcessInfo.processInfo.environment
+            env.removeValue(forKey: "MARCUT_ALLOW_REMOTE_OLLAMA")
+            env.removeValue(forKey: "MARCUT_DEVELOPER_UNSAFE_ALLOW_REMOTE_OLLAMA")
             env["PYTHONUNBUFFERED"] = "1"
             process.environment = env
 
@@ -394,13 +396,16 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             }()
             let modelName: String = {
                 if let mIdx = args.firstIndex(of: "--model"), mIdx + 1 < args.count { return args[mIdx + 1] }
-                return "llama3.1:8b"
+                return ModelCatalog.shared.defaultModelId
             }()
             let llmSkipConfidence: Double = {
+                let fallback = ModelCatalog.shared.entry(for: modelName)?.skipConfidence
+                    ?? ModelCatalog.shared.entry(for: ModelCatalog.shared.defaultModelId)?.skipConfidence
+                    ?? 0.95
                 if let cIdx = args.firstIndex(of: "--llm-skip-confidence"), cIdx + 1 < args.count {
-                    return Double(args[cIdx + 1]) ?? 0.95
+                    return Double(args[cIdx + 1]) ?? fallback
                 }
-                return 0.95
+                return fallback
             }()
 
             // Generate output file paths
@@ -529,7 +534,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             print("\n4️⃣ Skipping model download (MARCUT_DIAG_SKIP_MODEL_DOWNLOAD=1)")
         } else {
             print("\n4️⃣ Testing model download...")
-            let success = await bridge.downloadModel("llama3.1:8b") { progress in
+            let success = await bridge.downloadModel(ModelCatalog.shared.defaultModelId) { progress in
                 print("   Progress: \(Int(progress))%")
             }
             print("   Download result: \(success ? "✅ Success" : "❌ Failed")")
@@ -589,8 +594,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
         Examples:
           MarcutApp --diagnose
-          MarcutApp --redact --in /path/to/file.docx --outdir /tmp/out --mode enhanced --model llama3.1:8b
-          MarcutApp --download-model llama3.1:8b
+          MarcutApp --redact --in /path/to/file.docx --outdir /tmp/out --mode enhanced --model qwen2.5:14b
+          MarcutApp --download-model qwen2.5:14b
         """)
     }
 }
@@ -598,7 +603,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 struct MarcutAppScene: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
     @StateObject private var viewModel = DocumentRedactionViewModel()
-    @AppStorage("AppTheme") private var appThemeRaw = AppTheme.system.rawValue
+    @AppStorage(DefaultsKey.appTheme.key) private var appThemeRaw = AppTheme.system.rawValue
 
     private var appTheme: AppTheme {
         AppTheme(rawValue: appThemeRaw) ?? .system

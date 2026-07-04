@@ -83,6 +83,7 @@ import traceback
 import warnings
 import time
 import os
+import tempfile
 from typing import List, Dict, Any, Tuple, Optional, Callable, TypedDict
 from .docx_io import DocxMap, MetadataCleaningSettings
 from .docx_revisions import accept_revisions_in_docx_bytes
@@ -101,6 +102,15 @@ from .report import write_report, write_json_file, make_private_file
 import regex as re  # For consistency pass boundaries
 
 logger = logging.getLogger(__name__)
+
+def _metadata_env_enabled(name: str) -> bool:
+    return os.environ.get(name, "").strip().lower() in {"1", "true", "yes", "on"}
+
+def _metadata_env_int(name: str, default: int) -> int:
+    try:
+        return max(0, int(os.environ.get(name, str(default))))
+    except (TypeError, ValueError):
+        return default
 
 class Span(TypedDict, total=False):
     start: int
@@ -563,8 +573,16 @@ def _apply_consistency_pass(
     # Also keep full candidate objects for strict checks or fuzzy scan
     all_candidates: List[Dict[str, Any]] = []
     seen_candidate_keys = set()
+    max_candidates = _metadata_env_int("MARCUT_CONSISTENCY_MAX_CANDIDATES", 1500)
+    max_fuzzy_org_candidates = _metadata_env_int("MARCUT_CONSISTENCY_MAX_FUZZY_ORG_CANDIDATES", 250)
+    max_pattern_chars = _metadata_env_int("MARCUT_CONSISTENCY_MAX_PATTERN_CHARS", 120_000)
 
     for sp in spans:
+        if max_candidates and len(all_candidates) >= max_candidates:
+            if debug:
+                print(f"Consistency Pass: Candidate limit reached ({max_candidates}); skipping remaining candidates.")
+            break
+
         lbl = sp["label"]
         txt = sp["text"].strip()
 
@@ -640,62 +658,86 @@ def _apply_consistency_pass(
 
     # 2. Batched Rescan (Exact Matches)
 
+    def _bounded_patterns(values) -> List[str]:
+        patterns = sorted(values, key=len, reverse=True)
+        if not max_pattern_chars:
+            return patterns
+        bounded: List[str] = []
+        total_chars = 0
+        for pattern in patterns:
+            escaped_len = len(re.escape(pattern))
+            if bounded and total_chars + escaped_len > max_pattern_chars:
+                if debug:
+                    print(f"Consistency Pass: Pattern budget reached ({max_pattern_chars} chars); skipping remaining exact candidates.")
+                break
+            bounded.append(pattern)
+            total_chars += escaped_len
+        return bounded
+
     # Build regex for case-sensitive
     if case_sensitive_map:
         # Sort by length descending to match longest first
-        patterns = sorted(case_sensitive_map.keys(), key=len, reverse=True)
+        patterns = _bounded_patterns(case_sensitive_map.keys())
         # Escape and join
-        pattern_str = r"\b(?:" + "|".join(re.escape(p) for p in patterns) + r")\b"
-        try:
-            for match in re.finditer(pattern_str, text):
-                matched_text = match.group(0)
-                label = case_sensitive_map.get(matched_text)
-                if not label: continue
+        if patterns:
+            pattern_str = r"\b(?:" + "|".join(re.escape(p) for p in patterns) + r")\b"
+            try:
+                for match in re.finditer(pattern_str, text):
+                    matched_text = match.group(0)
+                    label = case_sensitive_map.get(matched_text)
+                    if not label: continue
 
-                s, e = match.span()
-                if _overlaps_existing(s, e, label, matched_text):
-                    continue
-                key = (s, e, label)
-                if key in existing_keys or key in new_keys: continue
+                    s, e = match.span()
+                    if _overlaps_existing(s, e, label, matched_text):
+                        continue
+                    key = (s, e, label)
+                    if key in existing_keys or key in new_keys: continue
 
-                new_spans.append({
-                    "start": s, "end": e, "label": label, "text": matched_text,
-                    "confidence": 0.95, "source": "consistency_pass"
-                })
-                new_keys.add(key)
-        except Exception as e:
-            if debug: print(f"Consistency Pass Error (CS): {e}")
+                    new_spans.append({
+                        "start": s, "end": e, "label": label, "text": matched_text,
+                        "confidence": 0.95, "source": "consistency_pass"
+                    })
+                    new_keys.add(key)
+            except Exception as e:
+                if debug: print(f"Consistency Pass Error (CS): {e}")
 
     # Build regex for case-insensitive (ORGs)
     if case_insensitive_map:
-        patterns = sorted(case_insensitive_map.keys(), key=len, reverse=True)
-        pattern_str = r"\b(?:" + "|".join(re.escape(p) for p in patterns) + r")\b"
-        try:
-            for match in re.finditer(pattern_str, text, flags=re.IGNORECASE):
-                matched_text = match.group(0)
-                # Lookup by lowercase
-                label = case_insensitive_map.get(matched_text.lower())
-                if not label: continue
+        patterns = _bounded_patterns(case_insensitive_map.keys())
+        if patterns:
+            pattern_str = r"\b(?:" + "|".join(re.escape(p) for p in patterns) + r")\b"
+            try:
+                for match in re.finditer(pattern_str, text, flags=re.IGNORECASE):
+                    matched_text = match.group(0)
+                    # Lookup by lowercase
+                    label = case_insensitive_map.get(matched_text.lower())
+                    if not label: continue
 
-                s, e = match.span()
-                if _overlaps_existing(s, e, label, matched_text):
-                    continue
-                key = (s, e, label)
-                if key in existing_keys or key in new_keys: continue
+                    s, e = match.span()
+                    if _overlaps_existing(s, e, label, matched_text):
+                        continue
+                    key = (s, e, label)
+                    if key in existing_keys or key in new_keys: continue
 
-                new_spans.append({
-                    "start": s, "end": e, "label": label, "text": matched_text,
-                    "confidence": 0.95, "source": "consistency_pass_ci"
-                })
-                new_keys.add(key)
-        except Exception as e:
-             if debug: print(f"Consistency Pass Error (CI): {e}")
+                    new_spans.append({
+                        "start": s, "end": e, "label": label, "text": matched_text,
+                        "confidence": 0.95, "source": "consistency_pass_ci"
+                    })
+                    new_keys.add(key)
+            except Exception as e:
+                 if debug: print(f"Consistency Pass Error (CI): {e}")
 
     # 3. Fuzzy Scan for ORGs (Per-candidate, expensive but necessary for complex forms)
     # Only iterate ORG candidates
+    fuzzy_org_count = 0
     for cand in all_candidates:
         if cand["label"] != "ORG":
             continue
+        if max_fuzzy_org_candidates and fuzzy_org_count >= max_fuzzy_org_candidates:
+            if debug:
+                print(f"Consistency Pass: Fuzzy ORG candidate limit reached ({max_fuzzy_org_candidates}).")
+            break
+        fuzzy_org_count += 1
 
         norm_tokens = cand.get("tokens") or []
         if len(norm_tokens) < 2:
@@ -1206,6 +1248,35 @@ def _build_report_settings(
     return settings
 
 
+def _sibling_temp_path(final_path: str) -> str:
+    directory = os.path.dirname(final_path) or "."
+    basename = os.path.basename(final_path)
+    stem, ext = os.path.splitext(basename)
+    fd, temp_path = tempfile.mkstemp(prefix=f".{stem}.", suffix=f".tmp{ext}", dir=directory)
+    os.close(fd)
+    try:
+        os.unlink(temp_path)
+    except FileNotFoundError:
+        pass
+    return temp_path
+
+
+def _replace_existing_temp(temp_path: Optional[str], final_path: Optional[str]) -> None:
+    if temp_path and final_path and os.path.exists(temp_path):
+        os.replace(temp_path, final_path)
+
+
+def _cleanup_temp_artifacts(paths: List[Optional[str]]) -> None:
+    for path in paths:
+        if not path:
+            continue
+        try:
+            if os.path.exists(path):
+                os.remove(path)
+        except OSError:
+            pass
+
+
 def _finalize_and_write(
     dm: DocxMap,
     text: str,
@@ -1333,29 +1404,45 @@ def _finalize_and_write(
     # Scrub metadata using user-configured settings
     dm.scrub_metadata(metadata_settings)
 
-    dm.save(output_path)
+    output_temp_path = _sibling_temp_path(output_path)
+    report_temp_path = _sibling_temp_path(report_path)
+    report_html_temp_path = os.path.splitext(report_temp_path)[0] + ".html"
+    scrub_report_temp_path: Optional[str] = None
+    scrub_html_temp_path: Optional[str] = None
+    scrub_html_final_path: Optional[str] = None
+    temp_paths: List[Optional[str]] = [output_temp_path, report_temp_path, report_html_temp_path]
 
-    redaction_changes_created = bool(replacements)
-    if metadata_settings.clean_track_changes and not redaction_changes_created:
-        try:
-            cleaned_bytes, changed = accept_revisions_in_docx_bytes(output_path, debug=debug)
-            if changed and cleaned_bytes:
-                with open(output_path, "wb") as fh:
-                    fh.write(cleaned_bytes)
-                warnings.append({
-                    "code": "TRACK_CHANGES_REMOVED",
-                    "message": "Track changes were accepted and removed per settings."
-                })
-        except Exception as e:
-            warnings.append({
-                "code": "TRACK_CHANGES_REMOVE_FAILED",
-                "message": "Unable to remove track changes after redaction.",
-                "details": str(e)
-            })
-    if scrub_report_path and scrub_before_values is not None:
-        try:
+    try:
+        dm.save(output_temp_path)
+
+        redaction_changes_created = bool(replacements)
+        if metadata_settings.clean_track_changes and not redaction_changes_created:
             try:
-                dm_after = DocxMap.load(output_path)
+                cleaned_bytes, changed = accept_revisions_in_docx_bytes(output_temp_path, debug=debug)
+                if changed and cleaned_bytes:
+                    with open(output_temp_path, "wb") as fh:
+                        fh.write(cleaned_bytes)
+                    warnings.append({
+                        "code": "TRACK_CHANGES_REMOVED",
+                        "message": "Track changes were accepted and removed per settings."
+                    })
+            except Exception as e:
+                warnings.append({
+                    "code": "TRACK_CHANGES_REMOVE_FAILED",
+                    "message": "Unable to remove track changes after redaction.",
+                    "details": str(e)
+                })
+
+        if scrub_report_path and scrub_before_values is not None:
+            scrub_report_temp_path = _sibling_temp_path(scrub_report_path)
+            scrub_html_temp_path = os.path.splitext(scrub_report_temp_path)[0] + ".html"
+            scrub_html_final_path = os.path.splitext(scrub_report_path)[0] + ".html"
+            temp_paths.extend([scrub_report_temp_path, scrub_html_temp_path])
+            report_dir = os.path.dirname(scrub_report_path)
+            if report_dir:
+                os.makedirs(report_dir, exist_ok=True)
+            try:
+                dm_after = DocxMap.load(output_temp_path)
                 scrub_after_values = _read_metadata_values(dm_after)
             except Exception:
                 scrub_after_values = _read_metadata_values(dm)
@@ -1370,15 +1457,12 @@ def _finalize_and_write(
                 report_dir=os.path.dirname(scrub_report_path),
                 warnings=warnings,
             )
-            report_dir = os.path.dirname(scrub_report_path)
-            if report_dir:
-                os.makedirs(report_dir, exist_ok=True)
-            write_json_file(scrub_report_path, report)
+            write_json_file(scrub_report_temp_path, report)
 
             # Generate HTML report alongside JSON
             try:
                 from .report_html import generate_report_from_json_file
-                html_report_path = generate_report_from_json_file(scrub_report_path)
+                html_report_path = generate_report_from_json_file(scrub_report_temp_path)
                 if not html_report_path or not os.path.exists(html_report_path):
                     raise RuntimeError("HTML report generation did not produce a file")
                 make_private_file(html_report_path)
@@ -1393,49 +1477,56 @@ def _finalize_and_write(
                     "message": "Scrub report HTML generation failed.",
                     "details": str(html_err)
                 })
-                try:
-                    write_json_file(scrub_report_path, report)
-                except Exception:
-                    pass
+                write_json_file(scrub_report_temp_path, report)
+
+        # Generate audit report
+        audit = [{
+            "start": sp["start"],
+            "end": sp["end"],
+            "label": sp["label"],
+            "entity_id": sp.get("entity_id"),
+            "confidence": sp.get("confidence", 0.0),
+            "source": sp.get("source", ""),
+            "text": sp.get("text", "")[:120],
+            "validated": sp.get("validated"),
+            "validation_result": sp.get("validation_result")
+        } for sp in spans]
+
+        try:
+            write_report(
+                report_temp_path,
+                input_path,
+                model_info,
+                audit,
+                settings=report_settings,
+                warnings=warnings,
+                suppressed=suppressed,
+            )
         except Exception as e:
-            warnings.append({
-                "code": "SCRUB_REPORT_WRITE_FAILED",
-                "message": "Scrub report could not be written.",
-                "details": str(e)
-            })
-            if debug:
-                print(f"[MARCUT_PIPELINE] Failed to write scrub report: {e}")
+            raise RedactionError(
+                message="Failed to write audit report",
+                error_code="REPORT_SAVE_FAILED",
+                technical_details=f"Report path: {report_path}, Error: {str(e)}",
+                original_error=e
+            )
 
-    # Generate audit report
-    audit = [{
-        "start": sp["start"],
-        "end": sp["end"],
-        "label": sp["label"],
-        "entity_id": sp.get("entity_id"),
-        "confidence": sp.get("confidence", 0.0),
-        "source": sp.get("source", ""),
-        "text": sp.get("text", "")[:120],
-        "validated": sp.get("validated"),
-        "validation_result": sp.get("validation_result")
-    } for sp in spans]
-
-    try:
-        write_report(
-            report_path,
-            input_path,
-            model_info,
-            audit,
-            settings=report_settings,
-            warnings=warnings,
-            suppressed=suppressed,
-        )
+        _replace_existing_temp(report_temp_path, report_path)
+        _replace_existing_temp(report_html_temp_path, os.path.splitext(report_path)[0] + ".html")
+        _replace_existing_temp(scrub_report_temp_path, scrub_report_path)
+        _replace_existing_temp(scrub_html_temp_path, scrub_html_final_path)
+        _replace_existing_temp(output_temp_path, output_path)
+    except RedactionError:
+        _cleanup_temp_artifacts(temp_paths)
+        raise
     except Exception as e:
+        _cleanup_temp_artifacts(temp_paths)
         raise RedactionError(
-            message="Failed to write audit report",
-            error_code="REPORT_SAVE_FAILED",
-            technical_details=f"Report path: {report_path}, Error: {str(e)}",
-            original_error=e
+            message="Failed to finalize output artifacts",
+            error_code="ARTIFACT_FINALIZE_FAILED",
+            technical_details=str(e),
+            original_error=e,
         )
+    _cleanup_temp_artifacts(temp_paths)
     return 0
 
 def _collect_rule_spans(text: str, debug: bool) -> List[Dict[str, Any]]:
@@ -1464,6 +1555,9 @@ def _collect_enhanced_spans(
     progress_callback=None,
     warnings: Optional[List[Dict[str, Any]]] = None,
     suppressed: Optional[List[Dict[str, Any]]] = None,
+    backend: str = "ollama",
+    llama_gguf: str = "",
+    threads: int = 4,
     think_mode: bool = False,
     format_schema: Optional[Dict] = None,
 ) -> List[Dict[str, Any]]:
@@ -1479,13 +1573,15 @@ def _collect_enhanced_spans(
 
     chunks = make_chunks(text, max_len=chunk_tokens * 4, overlap=overlap * 4)
 
-    if model_id.endswith(".gguf") or ("/" in model_id and model_id.startswith("/")):
+    model_path = llama_gguf or model_id
+    if backend == "llama_cpp" or model_path.endswith(".gguf") or ("/" in model_path and model_path.startswith("/")):
         if debug:
-            print(f"Using LlamaCpp backend with model: {model_id}")
+            print(f"Using LlamaCpp backend with model: {model_path}")
         pipeline = LlamaCppRedactionPipeline(
-            model_path=model_id,
+            model_path=model_path,
             temperature=temperature,
             seed=seed,
+            threads=threads,
         )
         model_spans = pipeline.process_document(
             text, chunks, progress_callback=progress_callback
@@ -1745,55 +1841,33 @@ def run_redaction(
             # Enhanced error handling for AI processing
             try:
                 with timed("LLM"):
-                    if llm_detail and not (model_id.endswith(".gguf") or model_id.startswith("/")):
-                        # Use timing-instrumented extraction for detailed profiling
-                        from .llm_timing import ollama_extract_with_timing
-                        prompt_context = None
-                        try:
-                            doc_context = DocumentContext()
-                            doc_context.analyze_document(text)
-                            prompt_context = build_prompt_context(doc_context)
-                        except Exception:
-                            prompt_context = None
-                        model_spans = []
-                        llm_error = None
-                        for attempt_idx, wait_s in enumerate((0, 2), start=1):
-                            try:
-                                model_spans, llm_timing_detail = ollama_extract_with_timing(
-                                    model_id, text, temperature, seed, context=prompt_context,
-                                    think_mode=think_mode, format_schema=format_schema
-                                )
-                                llm_error = None
-                                # Store in phase_timings for return
-                                phase_timings['llm_timing'] = llm_timing_detail
-                                break
-                            except Exception as e:
-                                llm_error = e
-                                if wait_s:
-                                    time.sleep(wait_s)
-                        if llm_error is not None:
-                            warnings.append({
-                                "code": "LLM_EXTRACTION_FAILED",
-                                "message": "AI extraction failed during detailed timing run after retries. Continuing with rules-only spans.",
-                                "details": str(llm_error)
-                            })
-                    else:
-                        model_spans = _collect_enhanced_spans(
-                            text,
-                            model_id,
-                            chunk_tokens,
-                            overlap,
-                            temperature,
-                            seed,
-                            llm_skip_confidence,
-                            debug,
-                            llm_concurrency=llm_concurrency,
-                            progress_callback=progress_callback,
-                            warnings=warnings,
-                            suppressed=suppressed,
-                            think_mode=think_mode,
-                            format_schema=format_schema,
-                        )
+                    detail_start = time.perf_counter()
+                    model_spans = _collect_enhanced_spans(
+                        text,
+                        model_id,
+                        chunk_tokens,
+                        overlap,
+                        temperature,
+                        seed,
+                        llm_skip_confidence,
+                        debug,
+                        llm_concurrency=llm_concurrency,
+                        progress_callback=progress_callback,
+                        warnings=warnings,
+                        suppressed=suppressed,
+                        backend=backend,
+                        llama_gguf=llama_gguf,
+                        threads=threads,
+                        think_mode=think_mode,
+                        format_schema=format_schema,
+                    )
+                    if llm_detail:
+                        llm_timing_detail = {
+                            "enhanced_extraction": time.perf_counter() - detail_start,
+                            "chunks_enabled": True,
+                            "instrumentation": "production_enhanced_path",
+                        }
+                        phase_timings["llm_timing"] = llm_timing_detail
                 if debug:
                     print(f"Enhanced AI processing found {len(model_spans)} spans")
             except Exception as e:
@@ -1806,7 +1880,7 @@ def run_redaction(
                         technical_details=f"Ollama service error: {str(e)}. Ensure Ollama is running and accessible.",
                         original_error=e
                     )
-                elif "timeout" in error_str:
+                elif "timeout" in error_str or "deadline" in error_str:
                     raise RedactionError(
                         message="AI processing timed out",
                         error_code="AI_PROCESSING_TIMEOUT",
@@ -2037,6 +2111,37 @@ def _read_metadata_values(dm) -> dict:
     values = {}
     binary_parts: List[Dict[str, Any]] = []
     text_parts: Dict[str, List[str]] = {}
+    capture_warnings: List[Dict[str, Any]] = []
+    forensic_exports_enabled = (
+        _metadata_env_enabled("MARCUT_ENABLE_FORENSIC_EXPORTS")
+        or _metadata_env_enabled("MARCUT_ENABLE_BINARY_EXPORTS")
+    )
+    max_capture_string_chars = _metadata_env_int("MARCUT_METADATA_CAPTURE_MAX_STRING_CHARS", 20_000)
+    max_binary_capture_part_bytes = _metadata_env_int("MARCUT_REPORT_EXPORT_MAX_PART_BYTES", 2 * 1024 * 1024)
+    max_binary_capture_total_bytes = _metadata_env_int("MARCUT_REPORT_EXPORT_MAX_BYTES", 10 * 1024 * 1024)
+    captured_binary_bytes = 0
+
+    def _add_capture_warning(code: str, message: str, details: str = "") -> None:
+        warning = {"code": code, "message": message}
+        if details:
+            warning["details"] = details
+        capture_warnings.append(warning)
+
+    def _bounded_text(value: str, source: str) -> str | Dict[str, Any]:
+        text = value or ""
+        if max_capture_string_chars and len(text) > max_capture_string_chars:
+            _add_capture_warning(
+                "METADATA_CAPTURE_TEXT_TRUNCATED",
+                "A metadata text/XML preview was truncated before report retention.",
+                f"{source}: {len(text)} chars > {max_capture_string_chars} chars",
+            )
+            return {
+                "preview": text[:max_capture_string_chars],
+                "truncated": True,
+                "original_chars": len(text),
+                "limit_chars": max_capture_string_chars,
+            }
+        return text
 
     def _extract_text_from_part(part_blob) -> str:
         try:
@@ -2592,7 +2697,7 @@ def _read_metadata_values(dm) -> dict:
                         'part': name,
                         'root_tag': root_tag,
                         'namespace': root_ns,
-                        'xml': xml_content,
+                        'xml': _bounded_text(xml_content, name),
                     })
                 except Exception:
                     custom_xml_parts.append({'part': name})
@@ -2880,14 +2985,30 @@ def _read_metadata_values(dm) -> dict:
             else:
                 part_type = "other"
 
-            binary_parts.append({
+            entry = {
                 "name": name.strip("/"),
                 "type": part_type,
                 "size": len(data),
                 "content_type": getattr(part, "content_type", "") or "",
                 "extension": os.path.splitext(name)[1].lower(),
-                "data": data,
-            })
+            }
+            if forensic_exports_enabled:
+                if max_binary_capture_part_bytes and len(data) > max_binary_capture_part_bytes:
+                    _add_capture_warning(
+                        "METADATA_BINARY_CAPTURE_PART_LIMIT",
+                        "An embedded binary part was summarized instead of retained because it exceeded the per-part export limit.",
+                        f"{name}: {len(data)} bytes > {max_binary_capture_part_bytes} bytes",
+                    )
+                elif max_binary_capture_total_bytes and captured_binary_bytes + len(data) > max_binary_capture_total_bytes:
+                    _add_capture_warning(
+                        "METADATA_BINARY_CAPTURE_TOTAL_LIMIT",
+                        "Additional embedded binary parts were summarized instead of retained because the export byte limit was reached.",
+                        f"limit={max_binary_capture_total_bytes}",
+                    )
+                else:
+                    entry["data"] = data
+                    captured_binary_bytes += len(data)
+            binary_parts.append(entry)
 
         # ========== EXTERNAL RELATIONSHIPS ==========
         external_targets = []
@@ -3008,7 +3129,7 @@ def _read_metadata_values(dm) -> dict:
                 fast_save_entries.append({
                     "tag": tag_name,
                     "attributes": dict(el.attrib) if el.attrib else {},
-                    "xml": etree.tostring(el, encoding='unicode'),
+                    "xml": _bounded_text(etree.tostring(el, encoding='unicode'), tag_name),
                 })
             values['fast_save'] = fast_save_entries
 
@@ -3050,9 +3171,9 @@ def _read_metadata_values(dm) -> dict:
                             'part': name,
                             'namespace': ns,
                             'element': local_name,
-                            'text': (el.text or '').strip(),
+                            'text': _bounded_text((el.text or '').strip(), f"{name}/{local_name}"),
                             'attributes': dict(el.attrib) if el.attrib else {},
-                            'xml': etree.tostring(el, encoding='unicode'),
+                            'xml': _bounded_text(etree.tostring(el, encoding='unicode'), f"{name}/{local_name}"),
                         }
                         if ns in known_namespaces:
                             continue
@@ -3066,9 +3187,10 @@ def _read_metadata_values(dm) -> dict:
                         continue
                 # Alternate content blocks
                 for ac in root.findall(".//mc:AlternateContent", namespaces={"mc": "http://schemas.openxmlformats.org/markup-compatibility/2006"}):
+                    ac_xml = etree.tostring(ac, encoding='unicode')
                     alternate_content.append({
                         "part": name,
-                        "xml": etree.tostring(ac, encoding='unicode'),
+                        "xml": _bounded_text(ac_xml, f"{name}/AlternateContent"),
                     })
             except Exception:
                 continue
@@ -3081,6 +3203,8 @@ def _read_metadata_values(dm) -> dict:
 
     if binary_parts:
         values["_binary_parts"] = binary_parts
+    if capture_warnings:
+        values["_metadata_capture_warnings"] = capture_warnings
     return values
 
 
@@ -3306,17 +3430,65 @@ def _build_scrub_report(
         except Exception:
             return {"status": "unknown"}
 
-    def _serialize_value(val):
+    max_report_string_chars = _metadata_env_int("MARCUT_METADATA_REPORT_MAX_STRING_CHARS", 20_000)
+    max_report_list_items = _metadata_env_int("MARCUT_METADATA_REPORT_MAX_LIST_ITEMS", 200)
+    max_report_dict_items = _metadata_env_int("MARCUT_METADATA_REPORT_MAX_DICT_ITEMS", 200)
+
+    def _serialize_value(val, path: str = "metadata"):
         """Serialize complex values for JSON report while preserving structure."""
         if val is None:
             return None
-        if isinstance(val, (str, int, float, bool)):
+        if isinstance(val, str):
+            if max_report_string_chars and len(val) > max_report_string_chars:
+                _add_report_warning(
+                    "METADATA_REPORT_VALUE_TRUNCATED",
+                    "A metadata report value was truncated to keep the JSON/HTML report within budget.",
+                    f"{path}: {len(val)} chars > {max_report_string_chars} chars",
+                )
+                return {
+                    "preview": val[:max_report_string_chars],
+                    "truncated": True,
+                    "original_chars": len(val),
+                    "limit_chars": max_report_string_chars,
+                }
+            return val
+        if isinstance(val, (int, float, bool)):
             return val
         if isinstance(val, (list, tuple)):
-            return [_serialize_value(v) for v in val]
+            items = list(val)
+            limit = max_report_list_items
+            if limit and len(items) > limit:
+                _add_report_warning(
+                    "METADATA_REPORT_LIST_TRUNCATED",
+                    "A metadata report list was truncated to keep the JSON/HTML report within budget.",
+                    f"{path}: {len(items)} items > {limit} items",
+                )
+                return {
+                    "items": [_serialize_value(v, f"{path}[{idx}]") for idx, v in enumerate(items[:limit])],
+                    "truncated": True,
+                    "original_count": len(items),
+                    "limit_count": limit,
+                }
+            return [_serialize_value(v, f"{path}[{idx}]") for idx, v in enumerate(items)]
         if isinstance(val, dict):
             # Remove binary data, keep metadata
-            return {k: _serialize_value(v) for k, v in val.items() if k != 'data' and not k.startswith('_')}
+            visible_items = [(k, v) for k, v in val.items() if k != 'data' and not str(k).startswith('_')]
+            limit = max_report_dict_items
+            if limit and len(visible_items) > limit:
+                _add_report_warning(
+                    "METADATA_REPORT_DICT_TRUNCATED",
+                    "A metadata report dictionary was truncated to keep the JSON/HTML report within budget.",
+                    f"{path}: {len(visible_items)} entries > {limit} entries",
+                )
+                result = {
+                    k: _serialize_value(v, f"{path}.{k}")
+                    for k, v in visible_items[:limit]
+                }
+                result["_truncated"] = True
+                result["_original_count"] = len(visible_items)
+                result["_limit_count"] = limit
+                return result
+            return {k: _serialize_value(v, f"{path}.{k}") for k, v in visible_items}
         return str(val)
 
     def _summarize_parts(parts, label):
@@ -3465,6 +3637,11 @@ def _build_scrub_report(
         if details:
             warning["details"] = details
         report_warnings.append(warning)
+
+    for source_values in (before, after):
+        for warning in source_values.get("_metadata_capture_warnings") or []:
+            if isinstance(warning, dict):
+                report_warnings.append(warning)
 
     # ========== STRUCTURED BINARY EXPORT ==========
     binary_exports = []
@@ -3812,8 +3989,8 @@ def _build_scrub_report(
                 after_val = _summarize_parts(after_val, "ink parts")
 
             # Serialize for JSON output
-            before_serialized = _serialize_value(before_val)
-            after_serialized = _serialize_value(after_val)
+            before_serialized = _serialize_value(before_val, f"{group_name}.{field_name}.before")
+            after_serialized = _serialize_value(after_val, f"{group_name}.{field_name}.after")
 
             # Determine actual status based on whether values changed
             if was_enabled:

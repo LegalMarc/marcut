@@ -19,6 +19,13 @@ from urllib.parse import quote as url_quote
 from .report_common import escape_html, get_mime_type, format_file_size, get_binary_icon
 
 
+def _make_private_file(path: str) -> None:
+    try:
+        os.chmod(path, 0o600)
+    except OSError:
+        pass
+
+
 def _get_css() -> str:
     """Return embedded CSS for the report."""
     return """
@@ -2050,6 +2057,7 @@ def generate_html_report(
     html_content = ''.join(html_parts)
     with open(output_path, 'w', encoding='utf-8') as f:
         f.write(html_content)
+    _make_private_file(output_path)
     
     return output_path
 

@@ -218,8 +218,8 @@ struct ContentView: View {
     @State private var hasCheckedEnvironment = false
     @State private var pendingDropLoads = 0
     @Environment(\.colorScheme) private var colorScheme
-    @AppStorage("MarcutApp.OutputSaveLocationPreference") private var outputSaveLocationRaw = OutputSaveLocation.alwaysAsk.rawValue
-    @AppStorage("MarcutApp.LastExplicitOutputDirectoryPath") private var lastExplicitOutputDirectoryPath = ""
+    @AppStorage(DefaultsKey.outputSaveLocationPreference.key) private var outputSaveLocationRaw = OutputSaveLocation.alwaysAsk.rawValue
+    @AppStorage(DefaultsKey.lastExplicitOutputDirectoryPath.key) private var lastExplicitOutputDirectoryPath = ""
     private let actionButtonHeight: CGFloat = 52
 
     private var outputSaveLocation: OutputSaveLocation {
@@ -228,7 +228,7 @@ struct ContentView: View {
 
     // Check if first run has been completed before
     private var hasCompletedFirstRun: Bool {
-        UserDefaults.standard.bool(forKey: "MarcutApp.hasCompletedFirstRun")
+        UserDefaults.standard.bool(forKey: DefaultsKey.hasCompletedFirstRun.key)
     }
     
     var body: some View {
@@ -285,13 +285,44 @@ struct ContentView: View {
                         .buttonStyle(.plain)
                         .disabled(isPreparing)
                         .accessibilityIdentifier("content.clearList")
+
+                        if viewModel.hasFailedDocuments {
+                            Button(action: { retryFailedDocuments() }) {
+                                HStack(spacing: 4) {
+                                    Image(systemName: "arrow.clockwise.circle.fill")
+                                        .font(.system(size: 9))
+                                    Text("Retry Failed")
+                                        .font(.system(size: 9, weight: .medium))
+                                }
+                                .padding(.horizontal, 10)
+                                .padding(.vertical, 5)
+                                .foregroundColor(CustomColors.secondaryText(for: colorScheme))
+                                .background(
+                                    RoundedRectangle(cornerRadius: 12)
+                                        .fill(CustomColors.cardBackground(for: colorScheme))
+                                        .overlay(
+                                            RoundedRectangle(cornerRadius: 12)
+                                                .stroke(CustomColors.subtleBorder(for: colorScheme), lineWidth: 1)
+                                        )
+                                )
+                            }
+                            .buttonStyle(.plain)
+                            .disabled(isPreparing || isStopping || viewModel.hasProcessingDocuments || currentProcessingTask != nil)
+                            .accessibilityIdentifier("content.retryFailed")
+                        }
                         Spacer()
                     }
                     .padding(.leading, 18) // Align with row content (matches row padding)
                 }
-                
+
                 DocumentListView(viewModel: viewModel, alertInfo: $alertInfo, onRetry: retryDocument)
                     .frame(maxHeight: .infinity)
+            }
+
+            // Batch ETA (only while actively processing a multi-document run with enough data)
+            if viewModel.hasProcessingDocuments, let batchETA = viewModel.batchETA {
+                BatchETAView(remainingSeconds: batchETA)
+                    .accessibilityIdentifier("content.batchETA")
             }
 
             // Action buttons (Redact + Scrub Metadata side by side)
@@ -439,6 +470,27 @@ struct ContentView: View {
                 message: Text(info.message),
                 dismissButton: .default(Text("OK"))
             )
+        }
+        .alert(
+            "Resume pending documents?",
+            isPresented: Binding(
+                get: { viewModel.pendingResumeRecord != nil },
+                set: { isPresented in
+                    if !isPresented {
+                        viewModel.discardPendingJob()
+                    }
+                }
+            ),
+            presenting: viewModel.pendingResumeRecord
+        ) { _ in
+            Button("Discard", role: .cancel) {
+                viewModel.discardPendingJob()
+            }
+            Button("Resume") {
+                viewModel.resumePendingJob()
+            }
+        } message: { record in
+            Text("Resume \(record.documentPaths.count) pending document(s) from your last session?")
         }
     }
     
@@ -1038,7 +1090,51 @@ struct ContentView: View {
             }
         }
     }
-    
+
+    /// Re-queues only the documents currently marked `.failed`, reusing each document's
+    /// original operation/destination via `DocumentRedactionViewModel.retryFailedDocuments`.
+    private func retryFailedDocuments() {
+        ContentView.logToFile("=== RETRY FAILED BUTTON CLICKED ===")
+
+        isStopping = false
+        isPreparing = true
+
+        Task {
+            await MainActor.run {
+                if viewModel.isPythonInitializing {
+                    alertInfo = AlertInfo(
+                        title: "Please Wait",
+                        message: "The AI engine is still warming up. Try again in a few seconds."
+                    )
+                    isPreparing = false
+                    return
+                }
+
+                if let error = viewModel.pythonInitializationError {
+                    alertInfo = AlertInfo(
+                        title: "Initialization Failed",
+                        message: error
+                    )
+                    isPreparing = false
+                    return
+                }
+
+                if !viewModel.isEnvironmentReady {
+                    alertInfo = AlertInfo(
+                        title: "Environment Not Ready",
+                        message: viewModel.environmentStatus
+                    )
+                    viewModel.requestFirstRunSetup()
+                    isPreparing = false
+                    return
+                }
+
+                isPreparing = false
+                viewModel.retryFailedDocuments()
+            }
+        }
+    }
+
     /// Scrub metadata only - no rules or LLM redaction
     /// Uses saved metadata preferences from MetadataCleaningSettings
     private func startMetadataScrub() {
@@ -1379,19 +1475,14 @@ struct DocumentRow: View {
                         accessibilityId: "document.openScrubReport.\(item.id.uuidString)"
                     )
 
-                    // Share Button
-                    if #available(macOS 13.0, *), let shareURL = item.redactedOutputURL ?? item.scrubOutputURL {
-                        ShareLink(item: shareURL) {
-                            Image(systemName: "square.and.arrow.up")
-                                .font(.system(size: 16, weight: .medium))
-                                .foregroundColor(CustomColors.accentColor(for: colorScheme))
-                                .frame(width: 28, height: 28)
-                                .contentShape(Rectangle())
-                        }
-                        .buttonStyle(.plain)
-                        .help("Share Document")
-                        .accessibilityIdentifier("document.share.\(item.id.uuidString)")
-                    }
+                    TooltipButton(
+                        action: { performUserAction(failureMessage: "The document is not available yet.") { viewModel.shareDocument(item) } },
+                        icon: "square.and.arrow.up",
+                        tooltip: "Send Document",
+                        description: "Choose between a final redacted copy or a review copy with Track Changes",
+                        isEnabled: item.redactedOutputURL != nil || item.scrubOutputURL != nil,
+                        accessibilityId: "document.share.\(item.id.uuidString)"
+                    )
                 }
                 } else if metadataReportAvailable {
                     VStack(alignment: .trailing, spacing: 6) {
@@ -1786,6 +1877,41 @@ extension DocumentRow {
     }
 }
 
+
+// Batch-level "time remaining" indicator shown above the action buttons during a multi-document
+// run, once BatchETACalculator has enough completed-document samples to produce an estimate.
+struct BatchETAView: View {
+    let remainingSeconds: TimeInterval
+    @Environment(\.colorScheme) private var colorScheme
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Image(systemName: "clock")
+                .font(.system(size: 12, weight: .medium))
+            Text("~\(formatTime(remainingSeconds)) remaining")
+                .font(.system(size: 13, weight: .medium))
+        }
+        .foregroundColor(CustomColors.secondaryText(for: colorScheme))
+        .frame(maxWidth: .infinity, alignment: .center)
+        .padding(.bottom, 4)
+    }
+
+    private func formatTime(_ timeInterval: TimeInterval) -> String {
+        let totalSeconds = max(Int(timeInterval), 0)
+        let minutes = totalSeconds / 60
+        let seconds = totalSeconds % 60
+
+        if minutes > 60 {
+            let hours = minutes / 60
+            let remainingMinutes = minutes % 60
+            return String(format: "%dh %02dm", hours, remainingMinutes)
+        } else if minutes > 0 {
+            return String(format: "%dm %02ds", minutes, seconds)
+        } else {
+            return String(format: "%ds", seconds)
+        }
+    }
+}
 
 // Countdown timer component
 struct CountdownTimerView: View {

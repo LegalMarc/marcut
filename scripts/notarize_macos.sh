@@ -180,7 +180,7 @@ if [ "${STATUS}" = "Accepted" ]; then
   echo "Stapling notarization ticket..."
   xcrun stapler staple "$DMG"
   echo "Staple complete. Verifying..."
-  spctl -a -t open --context context:primary-signature -v "$DMG" || true
+  spctl -a -t open --context context:primary-signature -v "$DMG"
   echo "NOTARIZATION: OK"
 elif [ "${STATUS}" = "Invalid" ] || [ "${STATUS}" = "Rejected" ]; then
   echo "NOTARIZATION: FAILED (status: ${STATUS})" >&2
@@ -194,8 +194,8 @@ elif [ -n "$SUBMISSION_ID" ]; then
   else
     echo "  xcrun notarytool info $SUBMISSION_ID --apple-id $NOTARYTOOL_APPLE_ID --password '***'${NOTARYTOOL_TEAM_ID:+ --team-id $NOTARYTOOL_TEAM_ID}"
   fi
-  echo "NOTARIZATION: PENDING"
-  exit 0
+  echo "NOTARIZATION: FAILED (notarytool did not return an accepted terminal status)" >&2
+  exit 1
 else
   echo "NOTARIZATION: FAILED" >&2
   echo "Notarization failed or not accepted. Output:" >&2

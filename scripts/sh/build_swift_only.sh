@@ -382,6 +382,9 @@ sync_rule_assets() {
     local dest_resources="${SWIFT_PROJECT_DIR}/Sources/MarcutApp/Resources/excluded-words.txt"
     local system_prompt_source=""
     local dest_system_prompt="${SWIFT_PROJECT_DIR}/Sources/MarcutApp/Resources/system-prompt.txt"
+    local models_json_source=""
+    local dest_models_json_py="${SWIFT_PROJECT_DIR}/Sources/MarcutApp/python_site/marcut/models.json"
+    local dest_models_json_resources="${SWIFT_PROJECT_DIR}/Sources/MarcutApp/Resources/models.json"
 
     for candidate in "assets/excluded-words.txt" "src/python/marcut/excluded-words.txt" "excluded-words.txt"; do
         if [ -f "$candidate" ]; then
@@ -412,7 +415,24 @@ sync_rule_assets() {
     fi
 
     rsync -a "$system_prompt_source" "$dest_system_prompt"
-    echo -e "${BLUE}🔄 Synced excluded-words + system-prompt assets into app resources${NC}"
+
+    for candidate in "assets/models.json" "src/python/marcut/models.json" "models.json"; do
+        if [ -f "$candidate" ]; then
+            models_json_source="$candidate"
+            break
+        fi
+    done
+
+    if [ -z "$models_json_source" ]; then
+        echo -e "${RED}❌ Cannot find models.json (checked assets/ and src/python/marcut)${NC}"
+        exit 1
+    fi
+
+    mkdir -p "$(dirname "$dest_models_json_py")" "$(dirname "$dest_models_json_resources")"
+    rsync -a "$models_json_source" "$dest_models_json_py"
+    rsync -a "$models_json_source" "$dest_models_json_resources"
+
+    echo -e "${BLUE}🔄 Synced excluded-words + system-prompt + models.json assets into app resources${NC}"
 }
 
 step_cleanup() {
@@ -943,7 +963,8 @@ step_create_dmg() {
     ditto "${APP_BUNDLE}" "${staging_dir}/${APP_NAME}.app"
     ln -s /Applications "${staging_dir}/Applications"
 
-    if ! hdiutil create -volname "${APP_NAME}" -srcfolder "${staging_dir}" -ov -format UDRW "${temp_dmg}"; then
+    local size_mb=$(du -sm "${APP_BUNDLE}" | awk '{print $1 + 100}')
+    if ! hdiutil create -size "${size_mb}m" -volname "${APP_NAME}" -fs HFS+ -ov "${temp_dmg}"; then
         echo -e "${RED}❌ Failed to create staging DMG at ${temp_dmg}${NC}"
         rm -rf "${staging_dir}"
         exit 1
@@ -955,17 +976,17 @@ step_create_dmg() {
         sleep 1
     fi
 
+    local custom_mount_dir="$(mktemp -d "${OUTPUT_ROOT}/dmg_mount.XXXX")"
     local attach_output
-    attach_output="$(hdiutil attach -readwrite -owners on -noverify -noautoopen "${temp_dmg}")"
-    local mount_dir
-    mount_dir="$(echo "${attach_output}" | awk 'END {print $3}')"
+    attach_output="$(hdiutil attach -readwrite -owners off -noverify -noautoopen -mountpoint "${custom_mount_dir}" "${temp_dmg}")"
+    local mount_dir="${custom_mount_dir}"
     if [ -n "${mount_dir}" ] && [ -d "${mount_dir}" ]; then
         if ! touch "${mount_dir}/.write_test" 2>/dev/null; then
             hdiutil detach "${mount_dir}" >/dev/null 2>&1 || true
             local shadow_file="${temp_dmg}.shadow"
             rm -f "${shadow_file}"
-            attach_output="$(hdiutil attach -readwrite -owners on -noverify -noautoopen -shadow "${shadow_file}" "${temp_dmg}")"
-            mount_dir="$(echo "${attach_output}" | awk 'END {print $3}')"
+            attach_output="$(hdiutil attach -readwrite -owners off -noverify -noautoopen -mountpoint "${custom_mount_dir}" -shadow "${shadow_file}" "${temp_dmg}")"
+            mount_dir="${custom_mount_dir}"
         else
             rm -f "${mount_dir}/.write_test"
         fi
@@ -975,8 +996,12 @@ step_create_dmg() {
         echo -e "${RED}❌ Failed to mount DMG for customization${NC}"
         rm -f "${temp_dmg}"
         rm -rf "${staging_dir}"
+        rm -rf "${custom_mount_dir}"
         exit 1
     fi
+
+    echo -e "${BLUE}==> Copying app payload securely into mounted DMG...${NC}"
+    ditto "${staging_dir}/" "${mount_dir}/" || true
 
     local volume_name
     volume_name="$(basename "${mount_dir}")"
@@ -1039,11 +1064,13 @@ EOF
         rm -f "${temp_dmg}"
         rm -f "${temp_dmg}.shadow"
         rm -rf "${staging_dir}"
+        rm -rf "${custom_mount_dir}"
         exit 1
     fi
     rm -f "${temp_dmg}"
     rm -f "${temp_dmg}.shadow"
     rm -rf "${staging_dir}"
+    rm -rf "${custom_mount_dir}"
 
     echo -e "${GREEN}✅ DMG created at ${FINAL_DMG}${NC}"
     if [ "${AUTO_BUMP_NEXT_VERSION}" = "1" ]; then

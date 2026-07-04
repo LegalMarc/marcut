@@ -66,6 +66,24 @@ jobs:
           echo "CI_SIGNING_AVAILABLE=true" >> "$GITHUB_ENV"
           echo "Using signing identity: $SIGN_IDENTITY"
 
+      - name: Require notarization inputs on release tags
+        if: ${{ startsWith(github.ref, 'refs/tags/') }}
+        run: |
+          if [ "${CI_SIGNING_AVAILABLE:-false}" != "true" ]; then
+            echo "Release tags require a signing identity."
+            exit 1
+          fi
+          case "${CUSTOM_SIGN_IDENTITY:-}" in
+            Developer\ ID\ Application:*) ;;
+            *)
+              echo "Release tags require a Developer ID Application identity; got '${CUSTOM_SIGN_IDENTITY:-unset}'."
+              exit 1
+              ;;
+          esac
+          test -n "${ASC_API_KEY_ID:-}" || { echo "Missing ASC_API_KEY_ID"; exit 1; }
+          test -n "${ASC_API_KEY_ISSUER:-}" || { echo "Missing ASC_API_KEY_ISSUER"; exit 1; }
+          test -n "${ASC_API_KEY_BASE64:-}" || { echo "Missing ASC_API_KEY_BASE64"; exit 1; }
+
       - name: Prepare stub Ollama for packaging
         run: |
           cat > ollama_binary <<'SH'
@@ -87,7 +105,7 @@ jobs:
         run: |
           if [ "${CI_SIGNING_AVAILABLE:-false}" = "true" ]; then
             chmod +x scripts/sh/build_appstore_release.sh
-            ./scripts/sh/build_appstore_release.sh --skip-notarization
+            MARCUT_ALLOW_NOTARIZATION_SKIP=1 ./scripts/sh/build_appstore_release.sh --skip-notarization
           else
             chmod +x scripts/sh/build_swift_only.sh
             ./scripts/sh/build_swift_only.sh

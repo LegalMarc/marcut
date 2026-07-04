@@ -46,6 +46,9 @@ jobs:
       - name: Swift unit tests
         run: swift test --package-path src/swift/MarcutApp
 
+      - name: Release preflight gate
+        run: bash scripts/release_preflight.sh
+
       - name: Build Debug DMG (Swift-only)
         run: |
           chmod +x scripts/sh/build_swift_only.sh

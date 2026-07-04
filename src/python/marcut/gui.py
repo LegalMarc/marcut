@@ -17,6 +17,8 @@ from datetime import datetime
 import time
 import requests
 from marcut.network_utils import normalize_ollama_base_url, ollama_cli_host_arg
+from marcut.model_naming import find_matching_model
+from marcut.model_config import default_model_id
 
 # Add parent directory to path for imports when running standalone
 if __name__ == "__main__":
@@ -75,7 +77,7 @@ class MarcutGUI:
         # Variables
         self.file_path = None
         self.ollama_process = None
-        self.model_name = "llama3.1:8b"
+        self.model_name = default_model_id()
         
         self.setup_ui()
         # Defer setup so the window can render first
@@ -239,7 +241,7 @@ class MarcutGUI:
         
     def service_running_api(self) -> bool:
         try:
-            r = requests.get(f"{_ollama_base_url()}/api/tags", timeout=2)
+            r = requests.get(f"{_ollama_base_url()}/api/tags", timeout=10)
             return r.status_code == 200
         except Exception:
             return False
@@ -278,13 +280,12 @@ class MarcutGUI:
     def check_model_api(self) -> bool:
         """Check via API if the required model is present."""
         try:
-            r = requests.get(f"{_ollama_base_url()}/api/tags", timeout=5)
+            r = requests.get(f"{_ollama_base_url()}/api/tags", timeout=20)
             if r.status_code != 200:
                 return False
             data = r.json() or {}
             names = [m.get('name','') for m in data.get('models', [])]
-            base = self.model_name.split(':')[0]
-            return any(self.model_name in n or n.startswith(base) for n in names)
+            return find_matching_model(self.model_name, names)
         except Exception:
             return False
         
@@ -581,7 +582,7 @@ class MarcutGUI:
                 # Check if already running by trying to connect
                 import requests
                 try:
-                    response = requests.get(f"{_ollama_base_url()}/api/tags", timeout=2)
+                    response = requests.get(f"{_ollama_base_url()}/api/tags", timeout=10)
                     if response.status_code == 200:
                         print(f"[DEBUG] Ollama already running")
                         self.ollama_status.config(text="✅ Ollama running")
@@ -616,7 +617,7 @@ class MarcutGUI:
                 for i in range(15):
                     time.sleep(1)
                     try:
-                        response = requests.get(f"{_ollama_base_url()}/api/tags", timeout=1)
+                        response = requests.get(f"{_ollama_base_url()}/api/tags", timeout=5)
                         if response.status_code == 200:
                             print(f"[DEBUG] Ollama service started successfully")
                             self.ollama_status.config(text="✅ Ollama running")
@@ -639,17 +640,14 @@ class MarcutGUI:
         """Check if the model is available when using embedded Ollama"""
         try:
             import requests
-            response = requests.get(f"{_ollama_base_url()}/api/tags", timeout=5)
+            response = requests.get(f"{_ollama_base_url()}/api/tags", timeout=20)
             if response.status_code == 200:
                 models_data = response.json()
                 available_models = [model['name'] for model in models_data.get('models', [])]
                 print(f"[DEBUG] Available models: {available_models}")
-                
-                # Check for exact match or prefix match
-                model_found = any(
-                    self.model_name in model or model.startswith(self.model_name.split(':')[0]) 
-                    for model in available_models
-                )
+
+                # Exact (library/model/tag) match -- see marcut.model_naming for rules
+                model_found = find_matching_model(self.model_name, available_models)
                 
                 if model_found:
                     self.model_status.config(text=f"✅ Model {self.model_name} ready")
