@@ -94,10 +94,23 @@ step_markdown_links() {
   python3 scripts/check_markdown_links.py
 }
 
+resolve_config_path() {
+  # Mirrors the fallback in scripts/sh/build_swift_only.sh: a real developer
+  # checkout has an untracked build-scripts/config.json with local signing
+  # details, but a fresh CI checkout never does, so fall back to the tracked
+  # example (public placeholders only, safe to run version/field checks on).
+  if [ -f "build-scripts/config.json" ]; then
+    echo "build-scripts/config.json"
+  elif [ -f "build-scripts/config.example.json" ]; then
+    echo "build-scripts/config.example.json"
+  fi
+}
+
 step_version_sync() {
-  local config_path="build-scripts/config.json"
-  if [ ! -f "$config_path" ]; then
-    err "Missing $config_path"
+  local config_path
+  config_path=$(resolve_config_path)
+  if [ -z "$config_path" ]; then
+    err "Missing build-scripts/config.json (and no build-scripts/config.example.json fallback)"
     return 1
   fi
 
@@ -114,7 +127,7 @@ step_version_sync() {
   if last_tag=$(git describe --tags --abbrev=0 2>/dev/null); then
     local last_tag_version="${last_tag#v}"
     if [ "$version" = "$last_tag_version" ]; then
-      err "build-scripts/config.json version ($version) matches the last tagged release ($last_tag); bump version/build_number for a new release"
+      err "$config_path version ($version) matches the last tagged release ($last_tag); bump version/build_number for a new release"
       return 1
     fi
     log "Version $version differs from last tagged release $last_tag"
@@ -127,6 +140,10 @@ step_version_sync() {
 
 step_secrets_check() {
   local config_path="build-scripts/config.json"
+  if [ ! -f "$config_path" ]; then
+    log "$config_path not present (using build-scripts/config.example.json); nothing to check"
+    return 0
+  fi
   if git ls-files --error-unmatch "$config_path" >/dev/null 2>&1; then
     err "$config_path is tracked by git; it must stay untracked (use build-scripts/config.example.json instead)"
     return 1
