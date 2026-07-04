@@ -183,13 +183,14 @@ final class DocumentRedactionViewModel: ObservableObject {
     /// (duration, size) samples for documents completed so far in the current run. Reset at the
     /// start of every `processAllDocuments` call.
     private var batchETASamples: [BatchETASample] = []
-    private let heartbeatTimeout: TimeInterval = 30.0
+    private let heartbeatTimeout: TimeInterval = 120.0
     // Note: retryCounts was removed along with retry logic - heartbeat stalls now immediately fail
     private var hasPrefetchedModels = false
 
-    enum FirstRunEntryPoint {
+    enum FirstRunEntryPoint: Equatable {
         case onboarding
         case manageModels
+        case downloadSpecificModel(String)
     }
 
     @Published var firstRunEntryPoint: FirstRunEntryPoint = .onboarding
@@ -309,9 +310,10 @@ final class DocumentRedactionViewModel: ObservableObject {
         if shouldLog {
             // Log all document statuses in a batch to avoid opening the file 1000s of times
             var batchLog = ""
+            batchLog.reserveCapacity(items.count * 100)
             batchLog += "[\(timestamp)] Total documents: \(items.count)\n"
             for (index, item) in items.enumerated() {
-                batchLog += "[\(timestamp)] Doc \(index): \(item.url.lastPathComponent) - Status: \(item.status)\n"
+                batchLog += "[\(timestamp)] Doc \(index): \(item.id.uuidString) - Status: \(item.status)\n"
             }
             let validItems = items.filter { needsRedaction($0, includeRetryItems: includeRetryItems) }
             batchLog += "[\(timestamp)] Valid items for processing: \(validItems.count)\n"
@@ -1185,6 +1187,7 @@ final class DocumentRedactionViewModel: ObservableObject {
                 debug: debug,
                 mode: useEnhanced ? settings.mode.rawValue : "rules",
                 llmSkipConfidence: settings.llmConfidenceThresholdValue,
+                llmConcurrency: settings.llmConcurrency,
                 chunkTokens: settings.chunkTokens,
                 overlap: settings.overlap,
                 temperature: settings.temperature,
@@ -2018,13 +2021,13 @@ final class DocumentRedactionViewModel: ObservableObject {
         pythonBridge.updateLoggingPreference(settings.debug)
     }
 
-    func requestFirstRunSetup(fromManageModels: Bool = false) {
-        if !fromManageModels && shouldSuppressModelSetupPrompt {
+    func requestFirstRunSetup(entryPoint: FirstRunEntryPoint = .onboarding) {
+        if entryPoint == .onboarding && shouldSuppressModelSetupPrompt {
             DebugLogger.shared.log("🧽 Skipping setup prompt (metadata-only usage, no models installed)", component: "DocumentRedactionViewModel")
             shouldShowFirstRunSetup = false
             return
         }
-        firstRunEntryPoint = fromManageModels ? .manageModels : .onboarding
+        firstRunEntryPoint = entryPoint
         shouldShowFirstRunSetup = true
     }
 
@@ -2210,7 +2213,7 @@ final class DocumentRedactionViewModel: ObservableObject {
             if pythonBridge.installedModels.isEmpty {
                 return "⚠️ No AI models available - Will download on first use"
             } else {
-                return "⚠️ No supported models - Install llama3.1:8b or similar"
+                return "⚠️ No supported models - Install qwen2.5:14b or similar"
             }
         } else {
             return "✅ Ready with \(supportedModels.count) AI model(s)"

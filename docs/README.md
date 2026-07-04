@@ -31,13 +31,13 @@ pip install -e .
 ```
 
 2) Install and run Ollama, and pull a model
-- Recommended model: llama3.1:8b
+- Recommended model: qwen2.5:14b
 
 ```bash
 # macOS
 # Install from https://ollama.ai or `brew install ollama`
 ollama serve &
-ollama pull llama3.1:8b
+ollama pull qwen2.5:14b
 ```
 
 3) Run redaction (enhanced pipeline)
@@ -48,7 +48,7 @@ marcut redact \
   --out runs/out.docx \
   --report runs/out.json \
   --backend ollama \
-  --model llama3.1:8b \
+  --model qwen2.5:14b \
   --enhanced \
   --debug
 ```
@@ -61,7 +61,7 @@ run_redaction_enhanced(
     input_path='sample-files/Sample 123 Consent.docx',
     output_path='runs/out.docx',
     report_path='runs/out.json',
-    model_id='llama3.1:8b',
+    model_id='qwen2.5:14b',
     chunk_tokens=1000, overlap=150, temperature=0.1, seed=42, debug=True
 )
 ```

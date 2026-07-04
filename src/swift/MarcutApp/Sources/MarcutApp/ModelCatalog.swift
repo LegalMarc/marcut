@@ -26,6 +26,8 @@ struct ModelCatalogEntry: Codable, Equatable, Identifiable {
             return Color.orange
         case "green":
             return Color.green
+        case "purple":
+            return Color.purple
         default:
             return CustomColors.accentColor(for: colorScheme)
         }
@@ -68,12 +70,12 @@ final class ModelCatalog {
             // resource is somehow missing; matches the values that were
             // previously hardcoded here.
             let fallback = ModelCatalogEntry(
-                id: "llama3.1:8b",
-                displayName: "Llama 3.1 8B",
-                description: "Gold standard. The most accurate model tested.",
-                setupDescription: "Gold standard. The most accurate model tested. Recommended.",
-                processingTime: "~45s",
-                sizeLabel: "4.7 GB",
+                id: "qwen2.5:14b",
+                displayName: "Qwen 2.5 14B",
+                description: "Gold standard. Best accuracy for legal & complex documents.",
+                setupDescription: "Gold standard. Best accuracy for legal & complex documents. Recommended.",
+                processingTime: "~50s",
+                sizeLabel: "9.0 GB",
                 badge: "Best",
                 accentColor: "accent",
                 temperature: 0.1,

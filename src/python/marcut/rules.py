@@ -157,7 +157,7 @@ def _is_excluded_combo(text: str) -> bool:
         }
     generic_connectors.add("&")
 
-    tokens = re.findall(r"[A-Za-z0-9']+|&", text)
+    tokens = re.findall(r"[A-Za-z0-9'/-]+|&", text)
     if not tokens:
         return False
 

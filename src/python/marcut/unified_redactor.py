@@ -26,6 +26,9 @@ python_stdlib = project_root / "MarcutApp" / "Sources" / "MarcutApp" / "Resource
 # Start from existing sys.path to retain stdlib, then prepend our preferred roots
 clean_path = []
 for p in sys.path:
+    if not p:
+        clean_path.append(p)
+        continue
     name = Path(p).name.lower()
     # Drop direct marcut package roots and older embedded python_site copies under Contents
     if name == "marcut":
@@ -71,10 +74,10 @@ def validate_model_name(model: str) -> bool:
     # Allow simple file paths for GGUF models (e.g., /path/to/model.gguf)
     # but still restrict characters to safe set
     if model.endswith(".gguf") or "/" in model:
-        # Relaxed check for paths, but still no shell metachars like ; | & $ > < `
-        return not any(char in model for char in ";|&><$`")
+        # Tighter check: Allow only valid path characters
+        return bool(re.match(r"^[a-zA-Z0-9_.\-/:~\\]+$", model))
     
-    # Strict check for Ollama model names (e.g., llama3.1:8b)
+    # Strict check for Ollama model names (e.g., qwen2.5:14b)
     return bool(re.match(r"^[a-zA-Z0-9_\-\.:]+$", model))
 
 
@@ -160,7 +163,10 @@ def run_unified_redaction(
     llm_skip_confidence: float = 0.95,
     llama_gguf: Optional[str] = None,
     threads: int = 4,
+    llm_concurrency: int = 2,
     progress_callback=None,
+    think_mode: bool = False,
+    format_schema: Optional[Dict] = None,
 ) -> Dict[str, Any]:
     """
     Unified redaction entry point.
@@ -170,7 +176,7 @@ def run_unified_redaction(
         output_path: Path for output redacted DOCX file
         report_path: Path for JSON report file
         mode: Processing mode ('rules', 'enhanced', 'rules_override', 'constrained_overrides', 'llm_overrides')
-        model: Model identifier (e.g., 'mock', 'llama3.1:8b')
+        model: Model identifier (e.g., 'mock', 'qwen2.5:14b')
         backend: Processing backend ('auto', 'ollama', 'mock')
         debug: Enable debug logging
         chunk_tokens: Token chunk size for processing
@@ -245,7 +251,10 @@ def run_unified_redaction(
             llm_skip_confidence=llm_skip_confidence,
             llama_gguf=llama_gguf or "",
             threads=threads,
+            llm_concurrency=llm_concurrency,
             progress_callback=progress_callback,
+            think_mode=think_mode,
+            format_schema=format_schema,
         )
         
         # Extract LLM timing if available
@@ -316,7 +325,7 @@ Examples:
   python unified_redactor.py --in document.docx --out redacted.docx --report report.json --mode rules
 
   # LLM-enhanced redaction
-  python unified_redactor.py --in document.docx --out redacted.docx --report report.json --mode enhanced --model llama3.2:3b
+  python unified_redactor.py --in document.docx --out redacted.docx --report report.json --mode enhanced --model qwen2.5:14b
 
   # Debug mode with custom logging
   python unified_redactor.py --in document.docx --out redacted.docx --report report.json --debug --log debug.log
@@ -333,7 +342,7 @@ Examples:
         help='Processing mode (default: rules)'
     )
     parser.add_argument('--model', default='mock',
-                       help='Model to use (default: mock, e.g., llama3.2:3b for LLM)')
+                       help='Model to use (default: mock, e.g., qwen2.5:14b for LLM)')
     parser.add_argument('--backend', default='auto', choices=['auto', 'ollama', 'mock'],
                        help='Processing backend (default: auto)')
     parser.add_argument('--debug', action='store_true', help='Enable debug logging')
@@ -343,8 +352,22 @@ Examples:
     parser.add_argument('--temperature', type=float, default=0.1, help='LLM temperature (default: 0.1)')
     parser.add_argument('--seed', type=int, default=42, help='Random seed (default: 42)')
     parser.add_argument('--llm-skip-confidence', type=float, default=0.95, help='Confidence threshold for LLM skips (default: 0.95)')
+    parser.add_argument('--llm-concurrency', type=int, default=2, help='Concurrent Ollama extraction workers (default: 2)')
+    parser.add_argument('--think', action='store_true', help='Enable thinking mode for Ollama models')
+    parser.add_argument('--format-schema', help='Path to JSON schema file for constrained decoding')
 
-    args = parser.parse_args()
+    args, _ = parser.parse_known_args()
+
+    format_schema_dict = None
+    if args.format_schema:
+        if os.path.exists(args.format_schema):
+            with open(args.format_schema, 'r') as f:
+                format_schema_dict = json.load(f)
+        else:
+            try:
+                format_schema_dict = json.loads(args.format_schema)
+            except json.JSONDecodeError:
+                print(f"Warning: format scheme {args.format_schema} is not a valid file or JSON string.", file=sys.stderr)
 
     # Run unified redaction
     result = run_unified_redaction(
@@ -359,8 +382,11 @@ Examples:
         overlap=args.overlap,
         temperature=args.temperature,
         seed=args.seed,
+        llm_concurrency=args.llm_concurrency,
         llm_skip_confidence=args.llm_skip_confidence,
-        log_path=args.log
+        log_path=args.log,
+        think_mode=args.think,
+        format_schema=format_schema_dict,
     )
 
     # Exit with appropriate code

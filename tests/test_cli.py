@@ -105,13 +105,16 @@ class TestBuildParser:
         # Check defaults
         assert args.mode == "enhanced"  # default mode
         assert args.backend == "ollama"  # default backend
-        assert args.model == "llama3.1:8b"  # default model
+        assert args.model == "qwen2.5:14b"  # default model
         assert args.threads == 4
         assert args.chunk_tokens == 1000
         assert args.overlap == 150
         assert args.temp == 0.1
         assert args.seed == 42
         assert args.llm_skip_confidence == 0.95
+        assert args.llm_concurrency == 2
+        assert args.think is False
+        assert args.format_schema is None
         assert args.debug is False
         assert args.no_qa is False
         assert args.metadata_preset is None

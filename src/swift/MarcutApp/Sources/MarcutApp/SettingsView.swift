@@ -7,7 +7,7 @@ enum AppTheme: String, CaseIterable {
     case system = "system"
     case light = "light"
     case dark = "dark"
-    
+
     var displayName: String {
         switch self {
         case .system: return "Follow System"
@@ -15,7 +15,7 @@ enum AppTheme: String, CaseIterable {
         case .dark: return "Dark"
         }
     }
-    
+
     var appearance: NSAppearance? {
         switch self {
         case .system: return nil
@@ -40,6 +40,7 @@ struct SettingsView: View {
     @Environment(\.colorScheme) private var colorScheme
     @State private var searchQuery = ""
     @State private var pendingManageModels = false
+    @State private var pendingDownloadModel: String? = nil
     @State private var showingExcludedWordsEditor = false
     @State private var showingSystemPromptEditor = false
     @State private var showingMetadataEditor = false
@@ -113,7 +114,7 @@ struct SettingsView: View {
             "Rules Engine", "Select which deterministic rules run.", "Invert Selection"
         ],
         .aiModel: [
-            "AI Model", "Select AI Model", "Llama 3.1 8B", "Mistral 7B", "Llama 3.2 3B",
+            "AI Model", "Select AI Model", "Qwen 3.5 35B A3B", "Qwen 2.5 14B", "Qwen 2.5 7B", "Phi-4 Mini 3.8B",
             "AI System Prompt", "Customize Prompt…", "Manage Models…", "Reveal Models…"
         ],
         .advancedAI: [
@@ -213,7 +214,7 @@ struct SettingsView: View {
 
         self._localSettings = State(initialValue: initialSettings)
     }
-    
+
     var body: some View {
         VStack(spacing: 24) {
             headerView
@@ -254,7 +255,12 @@ struct SettingsView: View {
             if pendingManageModels {
                 pendingManageModels = false
                 DispatchQueue.main.async {
-                    viewModel.requestFirstRunSetup(fromManageModels: true)
+                    viewModel.requestFirstRunSetup(entryPoint: .manageModels)
+                }
+            } else if let modelToDownload = pendingDownloadModel {
+                pendingDownloadModel = nil
+                DispatchQueue.main.async {
+                    viewModel.requestFirstRunSetup(entryPoint: .downloadSpecificModel(modelToDownload))
                 }
             }
         }
@@ -312,7 +318,7 @@ struct SettingsView: View {
                 .font(.title2)
                 .fontWeight(.semibold)
                 .foregroundColor(CustomColors.primaryText(for: colorScheme))
-            
+
             Text("Configure how documents are processed and redacted")
                 .font(.body)
                 .foregroundColor(CustomColors.secondaryText(for: colorScheme))
@@ -397,7 +403,7 @@ struct SettingsView: View {
                     .onAppear {
                         Task { await PermissionManager.shared.refreshNotificationStatus() }
                     }
-                    
+
                     Toggle(isOn: $permissionManager.userEnabledNotifications) {
                         VStack(alignment: .leading) {
                             Text("Enable Completion Banners")
@@ -416,7 +422,7 @@ struct SettingsView: View {
                     }
                     .toggleStyle(.switch)
                     .accessibilityIdentifier("settings.notifications.toggle")
-                    
+
                     if PermissionManager.shared.notificationStatus == .denied {
                         Button("Open System Settings (Permission Denied)") {
                              if let url = URL(string: "x-apple.systempreferences:com.apple.preference.notifications") {
@@ -504,14 +510,14 @@ struct SettingsView: View {
                     }
                     .accessibilityIdentifier("settings.quitWarning.segmented")
                 }
-                
+
                 VStack(alignment: .leading, spacing: 6) {
                     Text("Appearance")
                         .font(.system(size: 14, weight: .medium))
                     Text("Choose light, dark, or follow system appearance.")
                         .font(.system(size: 12))
                         .foregroundColor(CustomColors.secondaryText(for: colorScheme))
-                    
+
                     Picker("", selection: appThemeBinding) {
                         ForEach(AppTheme.allCases, id: \.self) { theme in
                             Text(theme.displayName).tag(theme)
@@ -521,9 +527,9 @@ struct SettingsView: View {
                     .labelsHidden()
                     .accessibilityIdentifier("settings.appearance.theme")
                 }
-                
+
                 Divider()
-                
+
                 VStack(alignment: .leading, spacing: 6) {
                     Text("Metadata Cleaning")
                         .font(.system(size: 14, weight: .medium))
@@ -537,9 +543,9 @@ struct SettingsView: View {
                     .controlSize(.small)
                     .accessibilityIdentifier("settings.metadata.configure")
                 }
-                
+
                 Divider()
-                
+
                 VStack(alignment: .leading, spacing: 6) {
                     HStack {
                         Text("Excluded Terms")
@@ -567,7 +573,7 @@ struct SettingsView: View {
                     Text("Phrases that should never be redacted.")
                         .font(.system(size: 12))
                         .foregroundColor(CustomColors.secondaryText(for: colorScheme))
-                    
+
                     HStack {
                         Button(isCustomExcludedWords ? "Edit Custom List…" : "Customize…") {
                             openExcludedWordsEditor()
@@ -575,7 +581,7 @@ struct SettingsView: View {
                         .buttonStyle(.bordered)
                         .controlSize(.small)
                         .accessibilityIdentifier("settings.excludedWords.edit")
-                        
+
                         if isCustomExcludedWords {
                             Button("Reset to Defaults") {
                                 resetExcludedWordsToDefault()
@@ -687,7 +693,11 @@ struct SettingsView: View {
                         accentColor: model.resolvedAccentColor(for: colorScheme),
                         isSelected: localSettings.model == model.id,
                         isInstalled: viewModel.availableModels.contains(model.id),
-                        accessibilityId: "settings.model.\(model.id)"
+                        accessibilityId: "settings.model.\(model.id)",
+                        onDownload: {
+                            pendingDownloadModel = model.id
+                            dismiss()
+                        }
                     ) {
                         localSettings.model = model.id
                     }
@@ -722,7 +732,7 @@ struct SettingsView: View {
                                 .cornerRadius(4)
                         }
                     }
-                    
+
                     HStack(spacing: 8) {
                         Button(isCustomSystemPrompt ? "Edit Custom Prompt…" : "Customize Prompt…") {
                             openSystemPromptEditor()
@@ -730,7 +740,7 @@ struct SettingsView: View {
                         .buttonStyle(.bordered)
                         .controlSize(.small)
                         .accessibilityIdentifier("settings.systemPrompt.edit")
-                        
+
                         if isCustomSystemPrompt {
                             Button("Reset to Defaults") {
                                 resetSystemPromptToDefault()
@@ -742,7 +752,35 @@ struct SettingsView: View {
                     }
                 }
                 .padding(.top, 4)
-                
+
+                Divider()
+                    .padding(.vertical, 4)
+
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("LLM Processing Concurrency")
+                        .font(.system(size: 14, weight: .medium))
+                    Text("Higher concurrency extracts entities faster but uses significantly more system Unified Memory.")
+                        .font(.system(size: 12))
+                        .foregroundColor(CustomColors.secondaryText(for: colorScheme))
+
+                    HStack {
+                        Slider(
+                            value: Binding(
+                                get: { Double(localSettings.llmConcurrency) },
+                                set: { localSettings.llmConcurrency = Int($0) }
+                            ),
+                            in: 1...5,
+                            step: 1
+                        )
+                        .accessibilityIdentifier("settings.llmConcurrency.slider")
+
+                        Text("\(localSettings.llmConcurrency) worker\((localSettings.llmConcurrency > 1) ? "s" : "")")
+                            .font(.system(size: 13, weight: .semibold))
+                            .frame(width: 80, alignment: .trailing)
+                    }
+                }
+                .padding(.top, 4)
+
                 Divider()
                     .padding(.vertical, 4)
 
@@ -896,7 +934,7 @@ struct SettingsView: View {
                     .font(.system(size: 12))
                     .foregroundColor(CustomColors.secondaryText(for: colorScheme))
             }
-            
+
             VStack(alignment: .leading, spacing: 8) {
                 Text("Chunk Size: \(localSettings.chunkTokens) tokens")
                     .font(.system(size: 14, weight: .medium))
@@ -910,7 +948,7 @@ struct SettingsView: View {
                     .font(.system(size: 12))
                     .foregroundColor(CustomColors.secondaryText(for: colorScheme))
             }
-            
+
             VStack(alignment: .leading, spacing: 8) {
                 Text("Chunk Overlap: \(localSettings.overlap) tokens")
                     .font(.system(size: 14, weight: .medium))
@@ -929,14 +967,14 @@ struct SettingsView: View {
                 Text("Processing Timeout: \(timeoutDisplay)")
                     .font(.system(size: 14, weight: .medium))
                     .foregroundColor(CustomColors.primaryText(for: colorScheme))
-                
+
                 Slider(value: timeoutSliderIndex, in: 0...Double(timeoutSteps.count - 1), step: 1)
                     .accessibilityIdentifier("settings.ai.timeout")
                 Text("Maximum time per document. Increase for very large documents. Use ∞ to disable timeout entirely.")
                     .font(.system(size: 12))
                     .foregroundColor(CustomColors.secondaryText(for: colorScheme))
             }
-            
+
             VStack(alignment: .leading, spacing: 8) {
                 Text("Random Seed: \(localSettings.seed)")
                     .font(.system(size: 14, weight: .medium))
@@ -1012,7 +1050,7 @@ struct SettingsView: View {
             .buttonStyle(.bordered)
             .controlSize(.large)
             .accessibilityIdentifier("settings.cancel")
-            
+
             Button("Save Settings") {
                 viewModel.updateSettings(localSettings)
                 dismiss()
@@ -1495,19 +1533,41 @@ struct FirstRunSetupView: View {
         case complete
     }
 
+    @State private var autoStartDownload = false
+
     private var isManageFlow: Bool {
-        viewModel.firstRunEntryPoint == .manageModels
+        viewModel.firstRunEntryPoint != .onboarding
     }
 
     init(viewModel: DocumentRedactionViewModel, onComplete: @escaping () -> Void) {
         self.viewModel = viewModel
         self.onComplete = onComplete
-        let initialStep: SetupStep = viewModel.firstRunEntryPoint == .manageModels ? .modelSelection : .welcome
+
+        var initialStep: SetupStep = .welcome
+        // Default dynamically falls back to the normal recommendation.
+        var resolvedModel = ModelCatalog.shared.defaultModelId
+        var shouldAutoDownload = false
+
+        switch viewModel.firstRunEntryPoint {
+        case .manageModels:
+            initialStep = .modelSelection
+        case .downloadSpecificModel(let targetModelId):
+            initialStep = .modelSelection
+            resolvedModel = targetModelId
+            shouldAutoDownload = true
+        case .onboarding:
+            initialStep = .welcome
+        }
+
+        if !shouldAutoDownload {
+            let supportedModelIds = ModelCatalog.shared.modelIds
+            let preferred = viewModel.availableModels.first ?? viewModel.settings.model
+            resolvedModel = supportedModelIds.contains(preferred) ? preferred : ModelCatalog.shared.defaultModelId
+        }
+
         _setupStep = State(initialValue: initialStep)
-        let supportedModelIds = ModelCatalog.shared.modelIds
-        let preferred = viewModel.availableModels.first ?? viewModel.settings.model
-        let resolved = supportedModelIds.contains(preferred) ? preferred : ModelCatalog.shared.defaultModelId
-        _selectedModel = State(initialValue: resolved)
+        _selectedModel = State(initialValue: resolvedModel)
+        _autoStartDownload = State(initialValue: shouldAutoDownload)
     }
 
     var body: some View {
@@ -1587,9 +1647,12 @@ struct FirstRunSetupView: View {
                 .padding(24)
         }
         .onAppear {
-            // If a supported model already exists and we're not in the manage-models flow,
-            // skip the download prompt and finish onboarding immediately.
-            if !isManageFlow && hasInstalledSupportedModel {
+            if autoStartDownload {
+                autoStartDownload = false
+                downloadModel()
+            } else if !isManageFlow && hasInstalledSupportedModel {
+                // If a supported model already exists and we're not in the manage-models flow,
+                // skip the download prompt and finish onboarding immediately.
                 viewModel.markFirstRunComplete()
                 onComplete()
             }
@@ -1878,10 +1941,11 @@ struct ModelSelectionRow: View {
     let onSelect: () -> Void
     let isInstalled: Bool
     let accessibilityId: String?
+    let onDownload: (() -> Void)?
     @Environment(\.colorScheme) private var colorScheme
 
     // Convenience initializers for different use cases
-    init(modelId: String, displayName: String, description: String, processingTime: String, accentColor: Color, isSelected: Bool, isInstalled: Bool, accessibilityId: String? = nil, onSelect: @escaping () -> Void) {
+    init(modelId: String, displayName: String, description: String, processingTime: String, accentColor: Color, isSelected: Bool, isInstalled: Bool, accessibilityId: String? = nil, onDownload: (() -> Void)? = nil, onSelect: @escaping () -> Void) {
         self.modelId = modelId
         self.displayName = displayName
         self.description = description
@@ -1893,9 +1957,10 @@ struct ModelSelectionRow: View {
         self.onSelect = onSelect
         self.isInstalled = isInstalled
         self.accessibilityId = accessibilityId
+        self.onDownload = onDownload
     }
 
-    init(modelId: String, displayName: String, description: String, size: String, badge: String, isSelected: Bool, isInstalled: Bool, accessibilityId: String? = nil, onSelect: @escaping () -> Void) {
+    init(modelId: String, displayName: String, description: String, size: String, badge: String, isSelected: Bool, isInstalled: Bool, accessibilityId: String? = nil, onDownload: (() -> Void)? = nil, onSelect: @escaping () -> Void) {
         self.modelId = modelId
         self.displayName = displayName
         self.description = description
@@ -1907,6 +1972,7 @@ struct ModelSelectionRow: View {
         self.onSelect = onSelect
         self.isInstalled = isInstalled
         self.accessibilityId = accessibilityId
+        self.onDownload = onDownload
     }
 
     var body: some View {
@@ -1967,6 +2033,12 @@ struct ModelSelectionRow: View {
                                 Capsule()
                                     .fill(statusColor.opacity(0.15))
                             )
+                            .contentShape(Capsule())
+                            .onTapGesture {
+                                if !isInstalled {
+                                    onDownload?()
+                                }
+                            }
                     }
                 }
             }

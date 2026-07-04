@@ -107,13 +107,9 @@ final class MarcutAppTests: XCTestCase {
 
     func testButtonOrderInActionButtons() throws {
         // Test that Clear All appears before Redact Documents in the button layout
-        let testViewModel = createTestViewModel()
-
-        // Create ContentView with test view model
+        // Create ContentView and verify the view can be constructed.
         let contentView = ContentView()
-        // Note: In a real implementation, we'd inject the test view model
 
-        // For unit testing, we verify the button order logic exists
         XCTAssertNotNil(contentView, "ContentView should be created successfully")
     }
 
@@ -158,7 +154,7 @@ final class MarcutAppTests: XCTestCase {
 
     func testModelSelectionOptions() throws {
         // Test that the correct 3 models are available
-        let expectedModels = ["llama3.1:8b", "mistral:7b", "llama3.2:3b"]
+        let expectedModels = ["qwen2.5:14b", "qwen2.5:7b", "phi4-mini:3.8b"]
 
         // Test model configuration in settings
         let settings = RedactionSettings()
@@ -169,9 +165,9 @@ final class MarcutAppTests: XCTestCase {
 
         // Test model descriptions exist (in a real test, we'd verify the UI)
         let modelDescriptions = [
-            "llama3.1:8b": "Best accuracy for legal & complex documents",
-            "mistral:7b": "Excellent at following instructions",
-            "llama3.2:3b": "Quick processing for simple documents"
+            "qwen2.5:14b": "Gold standard. Best accuracy for legal & complex documents.",
+            "qwen2.5:7b": "Balanced. Excellent extraction with lower memory usage.",
+            "phi4-mini:3.8b": "Fast & lightweight. Good for simple documents."
         ]
 
         for model in expectedModels {
@@ -184,11 +180,11 @@ final class MarcutAppTests: XCTestCase {
         var settings = RedactionSettings()
         let originalModel = settings.model
 
-        settings.model = "mistral:7b"
-        XCTAssertEqual(settings.model, "mistral:7b", "Model selection should persist")
+        settings.model = "qwen2.5:7b"
+        XCTAssertEqual(settings.model, "qwen2.5:7b", "Model selection should persist")
 
-        settings.model = "llama3.2:3b"
-        XCTAssertEqual(settings.model, "llama3.2:3b", "Model selection should update")
+        settings.model = "phi4-mini:3.8b"
+        XCTAssertEqual(settings.model, "phi4-mini:3.8b", "Model selection should update")
 
         // Reset to original
         settings.model = originalModel
@@ -202,32 +198,38 @@ final class MarcutAppTests: XCTestCase {
         // `assets/models.json`), via the production loader `ModelCatalog`.
         let catalog = ModelCatalog.shared
 
-        XCTAssertEqual(catalog.defaultModelId, "llama3.1:8b")
-        XCTAssertEqual(catalog.modelIds, ["llama3.1:8b", "mistral:7b", "llama3.2:3b"])
+        XCTAssertEqual(catalog.defaultModelId, "qwen2.5:14b")
+        XCTAssertEqual(catalog.modelIds, ["qwen3.5:35b", "qwen2.5:14b", "qwen2.5:7b", "phi4-mini:3.8b"])
 
-        guard let llama31 = catalog.entry(for: "llama3.1:8b") else {
-            return XCTFail("llama3.1:8b missing from catalog")
+        guard let qwen25_14b = catalog.entry(for: "qwen2.5:14b") else {
+            return XCTFail("qwen2.5:14b missing from catalog")
         }
-        XCTAssertEqual(llama31.displayName, "Llama 3.1 8B")
-        XCTAssertEqual(llama31.description, "Gold standard. The most accurate model tested.")
-        XCTAssertEqual(llama31.setupDescription, "Gold standard. The most accurate model tested. Recommended.")
-        XCTAssertEqual(llama31.processingTime, "~45s")
-        XCTAssertEqual(llama31.sizeLabel, "4.7 GB")
-        XCTAssertEqual(llama31.badge, "Best")
-        XCTAssertEqual(llama31.temperature, 0.1, accuracy: 0.0001)
-        XCTAssertEqual(llama31.skipConfidence, 0.95, accuracy: 0.0001)
+        XCTAssertEqual(qwen25_14b.displayName, "Qwen 2.5 14B")
+        XCTAssertEqual(qwen25_14b.description, "Gold standard. Best accuracy for legal & complex documents.")
+        XCTAssertEqual(qwen25_14b.setupDescription, "Gold standard. Best accuracy for legal & complex documents. Recommended.")
+        XCTAssertEqual(qwen25_14b.processingTime, "~50s")
+        XCTAssertEqual(qwen25_14b.sizeLabel, "9.0 GB")
+        XCTAssertEqual(qwen25_14b.badge, "Best")
+        XCTAssertEqual(qwen25_14b.temperature, 0.1, accuracy: 0.0001)
+        XCTAssertEqual(qwen25_14b.skipConfidence, 0.95, accuracy: 0.0001)
 
-        guard let mistral = catalog.entry(for: "mistral:7b") else {
-            return XCTFail("mistral:7b missing from catalog")
+        guard let qwen35_35b = catalog.entry(for: "qwen3.5:35b") else {
+            return XCTFail("qwen3.5:35b missing from catalog")
         }
-        XCTAssertEqual(mistral.badge, "Balanced")
-        XCTAssertEqual(mistral.accentColor, "orange")
+        XCTAssertEqual(qwen35_35b.badge, "Ultra")
+        XCTAssertEqual(qwen35_35b.accentColor, "purple")
 
-        guard let llama32 = catalog.entry(for: "llama3.2:3b") else {
-            return XCTFail("llama3.2:3b missing from catalog")
+        guard let qwen25_7b = catalog.entry(for: "qwen2.5:7b") else {
+            return XCTFail("qwen2.5:7b missing from catalog")
         }
-        XCTAssertEqual(llama32.badge, "Fast")
-        XCTAssertEqual(llama32.accentColor, "green")
+        XCTAssertEqual(qwen25_7b.badge, "Balanced")
+        XCTAssertEqual(qwen25_7b.accentColor, "orange")
+
+        guard let phi4Mini = catalog.entry(for: "phi4-mini:3.8b") else {
+            return XCTFail("phi4-mini:3.8b missing from catalog")
+        }
+        XCTAssertEqual(phi4Mini.badge, "Fast")
+        XCTAssertEqual(phi4Mini.accentColor, "green")
 
         XCTAssertNil(catalog.entry(for: "not-a-real-model:1b"))
     }
@@ -435,17 +437,17 @@ final class MarcutAppTests: XCTestCase {
 
     func testModelSelectionRowAccessibilityIdentifier() throws {
         let row = ModelSelectionRow(
-            modelId: "llama3.1:8b",
-            displayName: "Llama 3.1 8B",
+            modelId: "qwen2.5:14b",
+            displayName: "Qwen 2.5 14B",
             description: "Gold standard",
-            processingTime: "~45s",
+            processingTime: "~50s",
             accentColor: .blue,
             isSelected: false,
             isInstalled: false,
-            accessibilityId: "settings.model.llama3.1:8b"
+            accessibilityId: "settings.model.qwen2.5:14b"
         ) {}
 
-        XCTAssertEqual(row.accessibilityId, "settings.model.llama3.1:8b")
+        XCTAssertEqual(row.accessibilityId, "settings.model.qwen2.5:14b")
     }
 
     // MARK: - Settings Search Tests

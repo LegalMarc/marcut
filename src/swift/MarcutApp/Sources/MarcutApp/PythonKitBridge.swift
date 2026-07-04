@@ -1146,6 +1146,7 @@ public final class PythonKitRunner {
         debug: Bool,
         mode: String,
         llmSkipConfidence: Double = 0.95,
+        llmConcurrency: Int = 2,
         chunkTokens: Int = 500,
         overlap: Int = 120,
         temperature: Double = 0.1,
@@ -1314,6 +1315,7 @@ public final class PythonKitRunner {
                     temperature: temperature,
                     seed: seed,
                     llm_skip_confidence: llmSkipConfidence,
+                    llm_concurrency: llmConcurrency,
                     debug: debug,
                     progress_callback: progressCallback
                 )
@@ -1389,6 +1391,7 @@ public final class PythonKitRunner {
         debug: Bool,
         mode: String,
         llmSkipConfidence: Double = 0.95,
+        llmConcurrency: Int = 2,
         chunkTokens: Int = 500,
         overlap: Int = 120,
         temperature: Double = 0.1,
@@ -1417,6 +1420,7 @@ public final class PythonKitRunner {
                         debug: debug,
                         mode: mode,
                         llmSkipConfidence: llmSkipConfidence,
+                        llmConcurrency: llmConcurrency,
                         chunkTokens: chunkTokens,
                         overlap: overlap,
                         temperature: temperature,

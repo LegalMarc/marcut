@@ -33,7 +33,7 @@ class TestValidateModelName:
     def test_simple_ollama_model(self):
         """Test standard Ollama model names."""
         assert validate_model_name("llama3") is True
-        assert validate_model_name("llama3.1:8b") is True
+        assert validate_model_name("qwen2.5:14b") is True
         assert validate_model_name("phi4:mini-instruct") is True
         assert validate_model_name("gpt-4") is True
 
@@ -155,7 +155,7 @@ class TestValidateParameters:
                 temp_docx,
                 "/tmp/output.docx",
                 "/tmp/report.json",
-                model="llama3.1:8b",
+                model="qwen2.5:14b",
                 backend="mock"
             )
 

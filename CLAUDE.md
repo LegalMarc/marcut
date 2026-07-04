@@ -222,7 +222,7 @@ timeout=60  # Increased from 30 seconds for larger chunks
 #### 3. Disabled JSON Format Constraint
 ```python
 # marcut/model.py - Lines 242, 258
-# "format": "json",  # Disabled - causes hangs with llama3.1:8b
+# "format": "json",  # Disabled - causes hangs with qwen2.5:14b
 ```
 
 ### Test Results
@@ -273,7 +273,7 @@ marcut redact \
   --out runs/out.docx \
   --report runs/out.json \
   --backend ollama \
-  --model llama3.1:8b \
+  --model qwen2.5:14b \
   --enhanced \
   --debug
 ```
@@ -283,7 +283,7 @@ marcut redact \
 # Install and start Ollama
 brew install ollama
 ollama serve &
-ollama pull llama3.1:8b
+ollama pull qwen2.5:14b
 ```
 
 ### Swift App Building
@@ -393,7 +393,7 @@ Use `marcut/model_mock_llm.py` for testing without requiring live Ollama service
 
 ### LLM Requirements
 - LLM detection is **required** for legal documents - rules alone miss names and organizations
-- Recommended model: llama3.1:8b
+- Recommended model: qwen2.5:14b
 - Enhanced pipeline provides two-pass validation for higher precision
 - All processing is local-first with no external API calls
 

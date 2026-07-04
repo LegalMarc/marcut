@@ -11,10 +11,10 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(__file__)), 'src
 from marcut.unified_redactor import run_unified_redaction
 
 def main():
-    parser = argparse.ArgumentParser(description="Generate Ground Truth JSONs using Qwen3.5 27b")
+    parser = argparse.ArgumentParser(description="Generate model-assisted ground truth JSONs for review")
     parser.add_argument('--input-dir', default='./.marcut_artifacts/ignored-resources/sample-files-marcut')
     parser.add_argument('--output-dir', default='./.marcut_artifacts/ground_truth')
-    parser.add_argument('--model', default='qwen3.5:27b')
+    parser.add_argument('--model', default='qwen2.5:14b')
     args = parser.parse_args()
 
     input_dir = Path(os.path.abspath(args.input_dir))

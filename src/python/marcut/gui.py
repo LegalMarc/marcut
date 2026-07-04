@@ -241,7 +241,7 @@ class MarcutGUI:
         
     def service_running_api(self) -> bool:
         try:
-            r = requests.get(f"{_ollama_base_url()}/api/tags", timeout=2)
+            r = requests.get(f"{_ollama_base_url()}/api/tags", timeout=10)
             return r.status_code == 200
         except Exception:
             return False
@@ -280,7 +280,7 @@ class MarcutGUI:
     def check_model_api(self) -> bool:
         """Check via API if the required model is present."""
         try:
-            r = requests.get(f"{_ollama_base_url()}/api/tags", timeout=5)
+            r = requests.get(f"{_ollama_base_url()}/api/tags", timeout=20)
             if r.status_code != 200:
                 return False
             data = r.json() or {}
@@ -582,7 +582,7 @@ class MarcutGUI:
                 # Check if already running by trying to connect
                 import requests
                 try:
-                    response = requests.get(f"{_ollama_base_url()}/api/tags", timeout=2)
+                    response = requests.get(f"{_ollama_base_url()}/api/tags", timeout=10)
                     if response.status_code == 200:
                         print(f"[DEBUG] Ollama already running")
                         self.ollama_status.config(text="✅ Ollama running")
@@ -617,7 +617,7 @@ class MarcutGUI:
                 for i in range(15):
                     time.sleep(1)
                     try:
-                        response = requests.get(f"{_ollama_base_url()}/api/tags", timeout=1)
+                        response = requests.get(f"{_ollama_base_url()}/api/tags", timeout=5)
                         if response.status_code == 200:
                             print(f"[DEBUG] Ollama service started successfully")
                             self.ollama_status.config(text="✅ Ollama running")
@@ -640,7 +640,7 @@ class MarcutGUI:
         """Check if the model is available when using embedded Ollama"""
         try:
             import requests
-            response = requests.get(f"{_ollama_base_url()}/api/tags", timeout=5)
+            response = requests.get(f"{_ollama_base_url()}/api/tags", timeout=20)
             if response.status_code == 200:
                 models_data = response.json()
                 available_models = [model['name'] for model in models_data.get('models', [])]

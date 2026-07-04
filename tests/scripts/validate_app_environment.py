@@ -372,7 +372,7 @@ class AppEnvironmentValidator:
         print("\n🧠 Testing AI Model Discovery...")
 
         # Check for common models
-        common_models = ["llama3.1:8b", "llama3.1:7b", "llama3:8b", "llama3:7b"]
+        common_models = ["qwen2.5:14b", "qwen2.5:7b", "phi4-mini:3.8b", "qwen3.5:35b"]
         available_models = []
 
         # Try to get models from Ollama API
@@ -420,7 +420,7 @@ class AppEnvironmentValidator:
         if available_models:  # Service is running
             try:
                 # Check if we can access model info (doesn't download, just checks availability)
-                test_model = "llama3.1:8b"
+                test_model = "qwen2.5:14b"
                 request = urllib.request.Request(
                     f"http://localhost:11434/api/show",
                     data=json.dumps({"name": test_model}).encode(),

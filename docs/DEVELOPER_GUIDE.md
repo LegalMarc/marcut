@@ -301,7 +301,7 @@ To avoid macOS quarantine issues with runtime-extracted binaries, the Ollama run
 ### Model Management
 ```bash
 # Model download (uses embedded Ollama)
-./MarcutApp --cli --download-model llama3.1:8b
+./MarcutApp --cli --download-model qwen2.5:14b
 
 # Model storage (Application Support)
 ~/Library/Application Support/MarcutApp/models/

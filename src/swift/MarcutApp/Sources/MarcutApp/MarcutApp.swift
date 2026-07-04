@@ -594,8 +594,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
         Examples:
           MarcutApp --diagnose
-          MarcutApp --redact --in /path/to/file.docx --outdir /tmp/out --mode enhanced --model llama3.1:8b
-          MarcutApp --download-model llama3.1:8b
+          MarcutApp --redact --in /path/to/file.docx --outdir /tmp/out --mode enhanced --model qwen2.5:14b
+          MarcutApp --download-model qwen2.5:14b
         """)
     }
 }

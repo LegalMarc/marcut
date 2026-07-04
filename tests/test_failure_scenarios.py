@@ -192,7 +192,7 @@ class TestLLMTimeoutHandling:
             mock_post.side_effect = requests.exceptions.Timeout("Connection timed out")
             
             with pytest.raises(RuntimeError) as exc_info:
-                ollama_extract('llama3.1:8b', 'test text', 0.7, 42)
+                ollama_extract('qwen2.5:14b', 'test text', 0.7, 42)
             
             # Should wrap as "not reachable" error
             assert "not reachable" in str(exc_info.value).lower() or "timeout" in str(exc_info.value).lower()
@@ -206,7 +206,7 @@ class TestLLMTimeoutHandling:
             mock_post.side_effect = requests.exceptions.ReadTimeout("Read timed out")
             
             with pytest.raises(RuntimeError):
-                ollama_extract('llama3.1:8b', 'test text', 0.7, 42)
+                ollama_extract('qwen2.5:14b', 'test text', 0.7, 42)
     
     @pytest.mark.skipif(not MARCUT_AVAILABLE, reason="marcut not installed")
     def test_connect_timeout_handling(self):
@@ -217,7 +217,7 @@ class TestLLMTimeoutHandling:
             mock_post.side_effect = requests.exceptions.ConnectTimeout("Connection timed out")
             
             with pytest.raises(RuntimeError):
-                ollama_extract('llama3.1:8b', 'test text', 0.7, 42)
+                ollama_extract('qwen2.5:14b', 'test text', 0.7, 42)
 
 
 # =============================================================================
@@ -238,7 +238,7 @@ class TestOllamaUnavailable:
             )
             
             with pytest.raises(RuntimeError) as exc_info:
-                ollama_extract('llama3.1:8b', 'test text', 0.7, 42)
+                ollama_extract('qwen2.5:14b', 'test text', 0.7, 42)
             
             assert "not reachable" in str(exc_info.value).lower()
     
@@ -254,7 +254,7 @@ class TestOllamaUnavailable:
                 )
                 
                 with pytest.raises(RuntimeError):
-                    ollama_extract('llama3.1:8b', 'test text', 0.7, 42)
+                    ollama_extract('qwen2.5:14b', 'test text', 0.7, 42)
     
     @pytest.mark.skipif(not MARCUT_AVAILABLE, reason="marcut not installed")
     def test_http_500_error(self):
@@ -271,7 +271,7 @@ class TestOllamaUnavailable:
             mock_post.return_value = mock_response
             
             with pytest.raises(RuntimeError):
-                ollama_extract('llama3.1:8b', 'test text', 0.7, 42)
+                ollama_extract('qwen2.5:14b', 'test text', 0.7, 42)
     
     @pytest.mark.skipif(not MARCUT_AVAILABLE, reason="marcut not installed")
     def test_model_not_found(self):
@@ -560,7 +560,7 @@ class TestDocumentRedaction:
         dm = DocxMap.load(str(sample_docx_path))
         text = dm.text[:2000]
         
-        result = ollama_extract('llama3.1:8b', text, 0.7, 42)
+        result = ollama_extract('qwen2.5:14b', text, 0.7, 42)
         assert isinstance(result, list)
     
     @pytest.mark.skipif(not MARCUT_AVAILABLE, reason="marcut not installed")
@@ -575,7 +575,7 @@ class TestDocumentRedaction:
             output_path=str(output_path),
             report_path=str(report_path),
             mode="enhanced",
-            model_id="llama3.1:8b",
+            model_id="qwen2.5:14b",
             chunk_tokens=500,
             overlap=50,
             temperature=0.7,

@@ -29,34 +29,45 @@ from marcut.model_config import (
 REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 
 EXPECTED_MODELS = {
-    "llama3.1:8b": {
-        "display_name": "Llama 3.1 8B",
-        "description": "Gold standard. The most accurate model tested.",
-        "setup_description": "Gold standard. The most accurate model tested. Recommended.",
-        "processing_time": "~45s",
-        "size_label": "4.7 GB",
+    "qwen3.5:35b": {
+        "display_name": "Qwen 3.5 35B A3B",
+        "description": "Absolute highest accuracy. (Requires 24GB+ RAM).",
+        "setup_description": "Absolute highest accuracy. (Requires 24GB+ RAM).",
+        "processing_time": "~120s",
+        "size_label": "22 GB",
+        "badge": "Ultra",
+        "accent_color": "purple",
+        "temperature": 0.1,
+        "skip_confidence": 0.95,
+    },
+    "qwen2.5:14b": {
+        "display_name": "Qwen 2.5 14B",
+        "description": "Gold standard. Best accuracy for legal & complex documents.",
+        "setup_description": "Gold standard. Best accuracy for legal & complex documents. Recommended.",
+        "processing_time": "~50s",
+        "size_label": "9.0 GB",
         "badge": "Best",
         "accent_color": "accent",
         "temperature": 0.1,
         "skip_confidence": 0.95,
     },
-    "mistral:7b": {
-        "display_name": "Mistral 7B",
-        "description": "Solid alternative, but less consistent than Llama 3.1.",
-        "setup_description": "Solid alternative, but less consistent than Llama 3.1.",
-        "processing_time": "~35s",
-        "size_label": "4.1 GB",
+    "qwen2.5:7b": {
+        "display_name": "Qwen 2.5 7B",
+        "description": "Balanced. Excellent extraction with lower memory usage.",
+        "setup_description": "Balanced. Excellent extraction with lower memory usage.",
+        "processing_time": "~30s",
+        "size_label": "4.7 GB",
         "badge": "Balanced",
         "accent_color": "orange",
         "temperature": 0.1,
         "skip_confidence": 0.95,
     },
-    "llama3.2:3b": {
-        "display_name": "Llama 3.2 3B",
-        "description": "Very fast, but frequently misses entities. Use with caution.",
-        "setup_description": "Very fast, but frequently misses entities. Use with caution.",
-        "processing_time": "~20s",
-        "size_label": "2.0 GB",
+    "phi4-mini:3.8b": {
+        "display_name": "Phi-4 Mini 3.8B",
+        "description": "Fast & lightweight. Good for simple documents.",
+        "setup_description": "Fast & lightweight. Good for simple documents.",
+        "processing_time": "~25s",
+        "size_label": "2.5 GB",
         "badge": "Fast",
         "accent_color": "green",
         "temperature": 0.1,
@@ -84,24 +95,24 @@ class TestListModels:
 
 class TestGetModel:
     def test_known_model_id_returns_config(self):
-        model = get_model("mistral:7b")
+        model = get_model("qwen2.5:7b")
         assert model is not None
-        assert model.display_name == "Mistral 7B"
+        assert model.display_name == "Qwen 2.5 7B"
 
     def test_unknown_model_id_returns_none(self):
         assert get_model("not-a-real-model:1b") is None
 
 
 class TestDefaultModel:
-    def test_default_model_id_is_llama_3_1_8b(self):
-        # Preserves the pre-refactor hardcoded default across cli.py,
+    def test_default_model_id_is_qwen2_5_14b(self):
+        # Matches the hardcoded default previously duplicated across cli.py,
         # gui.py, ollama_manager.py, and the Swift side.
-        assert default_model_id() == "llama3.1:8b"
+        assert default_model_id() == "qwen2.5:14b"
 
     def test_default_model_returns_full_config(self):
         model = default_model()
         assert model.id == default_model_id()
-        assert model == ModelConfig(id="llama3.1:8b", **EXPECTED_MODELS["llama3.1:8b"])
+        assert model == ModelConfig(id="qwen2.5:14b", **EXPECTED_MODELS["qwen2.5:14b"])
 
     def test_default_temperature_and_skip_confidence(self):
         assert default_temperature() == 0.1

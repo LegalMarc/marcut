@@ -369,6 +369,8 @@ class DocxMap:
             return
         try:
             self._rewrite_docx_zip(path, settings)
+        except (OSError, MemoryError):
+            raise
         except Exception as exc:
             # Best-effort hardening; don't fail save on post-processing errors.
             self._append_warning(
@@ -486,7 +488,7 @@ class DocxMap:
                     break
                 length = (data[i] << 8) + data[i + 1]
                 segment_start = i - 1
-                segment_end = i + length
+                segment_end = min(i + length, len(data))
                 if marker in (0xE1, 0xED):  # APP1/APP13
                     changed = True
                 else:

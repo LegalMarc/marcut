@@ -9,7 +9,7 @@ from typing import List, Dict, Set
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(__file__)), 'src', 'python'))
 from marcut.unified_redactor import run_unified_redaction
 
-MODELS = ["qwen3.5:4b", "qwen3.5:9b", "qwen3.5:27b", "qwen3.5:35b"]
+MODELS = ["phi4-mini:3.8b", "qwen2.5:7b", "qwen2.5:14b", "qwen3.5:35b"]
 
 def load_spans(report_path: Path) -> List[Dict]:
     if not report_path.exists():
@@ -46,7 +46,7 @@ def main():
     parser = argparse.ArgumentParser(description="Run Qwen3.5 PII Extraction Experiment")
     parser.add_argument('--input-dir', default='./.marcut_artifacts/ignored-resources/sample-files-marcut')
     parser.add_argument('--gt-dir', default='./.marcut_artifacts/ground_truth')
-    parser.add_argument('--out-csv', default='experiment_results.csv')
+    parser.add_argument('--out-csv', default='docs/LLM_UPGRADE_EXPERIMENT_RESULTS.csv')
     args = parser.parse_args()
 
     input_dir = Path(os.path.abspath(args.input_dir))

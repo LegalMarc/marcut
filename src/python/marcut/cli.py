@@ -1,4 +1,5 @@
 import argparse, sys
+import json
 import os
 import shlex
 from .unified_redactor import run_unified_redaction
@@ -43,6 +44,9 @@ def build():
     r.add_argument("--temp", type=float, default=default_temperature())
     r.add_argument("--seed", type=int, default=42)
     r.add_argument("--llm-skip-confidence", type=float, default=default_skip_confidence())
+    r.add_argument("--llm-concurrency", type=int, default=2)
+    r.add_argument("--think", action="store_true", help="Enable Ollama thinking mode when the selected model supports it.")
+    r.add_argument("--format-schema", default=None, help="JSON schema path or inline JSON for Ollama structured output.")
     r.add_argument("--no-qa", action="store_true")
     r.add_argument("--debug", action="store_true")
     r.add_argument("--timing", action="store_true", help="Show detailed phase timing breakdown")
@@ -98,6 +102,18 @@ def build():
 
 def main():
     a = build().parse_args()
+
+    format_schema = None
+    if getattr(a, "format_schema", None):
+        schema_arg = a.format_schema
+        if os.path.exists(schema_arg):
+            with open(schema_arg, "r", encoding="utf-8") as fh:
+                format_schema = json.load(fh)
+        else:
+            try:
+                format_schema = json.loads(schema_arg)
+            except json.JSONDecodeError as exc:
+                raise SystemExit(f"--format-schema must be a JSON file path or inline JSON: {exc}") from exc
 
     metadata_overrides = list(getattr(a, "metadata_overrides", []) or [])
     raw_metadata_args = getattr(a, "metadata_args", None)
@@ -159,10 +175,13 @@ def main():
             llm_skip_confidence=a.llm_skip_confidence,
             llama_gguf=a.llama_gguf,
             threads=a.threads,
+            llm_concurrency=a.llm_concurrency,
             log_path=f"/tmp/marcut_cli_{a.mode}_{a.model.replace(':', '_')}.log" if a.debug else None,
             timing=getattr(a, 'timing', False) or getattr(a, 'llm_detail', False),
             llm_detail=getattr(a, 'llm_detail', False),
             progress_callback=progress_callback,
+            think_mode=a.think,
+            format_schema=format_schema,
         )
 
         if result['success']:

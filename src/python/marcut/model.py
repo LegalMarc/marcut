@@ -611,6 +611,7 @@ def ollama_extract(
                 "prompt": prompt,
                 "format": format_value,
                 "stream": False,  # CRITICAL: Disable streaming to get single JSON response
+                "think": False,   # Disable thinking mode for Qwen 3.5 and similar models
                 "options": {
                     "temperature": max(temperature, 0.1),
                     "seed": seed,
@@ -623,7 +624,8 @@ def ollama_extract(
         )
         resp.raise_for_status()
         payload = resp.json()
-        return payload.get("response", "")
+        # Support both standard and thinking-model response fields
+        return payload.get("response") or payload.get("thinking", "")
 
     def _schema_fallback_allowed(err: requests.exceptions.HTTPError) -> bool:
         resp = err.response
