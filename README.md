@@ -8,7 +8,7 @@ Marcut is a native macOS application for legal and professional document redacti
 ![Python](https://img.shields.io/badge/python-3.11%2B-blue.svg)
 ![Build](https://img.shields.io/badge/build-passing-brightgreen.svg)
 
-![Architecture Overview](docs/Architecture%20Diagram.jpg)
+See [Technical Architecture](docs/TECHNICAL_ARCHITECTURE.md) for a system design overview.
 
 ## 🚀 Key Features
 
@@ -65,7 +65,7 @@ We welcome contributions! Please see [CONTRIBUTING.md](docs/CONTRIBUTING.md) for
 
 ## 📄 License
 
-This project is licensed under the MIT License - see the LICENSE.txt file for details.
+This project is licensed under the MIT License - see the LICENSE file for details.
 
 ---
 *Built with SwiftUI, PythonKit, BeeWare, and local Ollama.*

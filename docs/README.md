@@ -2,7 +2,7 @@
 
 Local-first DOCX redaction that produces Microsoft Word documents with track changes. Uses a mandatory hybrid approach (rules + LLM) plus an optional enhanced two-pass LLM validation for high precision.
 
-**Status**: Public-beta hardening in progress for version `0.5.96`; Swift GUI and Python CLI are operational, but public distribution still requires a Developer ID signed, notarized, stapled, Gatekeeper-verified DMG.
+**Status**: Public-beta hardening (T0-T14, see `docs/backlog/pre_public_beta_audit_remediation_2026-05-13.md`) is complete for version `0.5.97`. A Developer ID signed, notarized, stapled, Gatekeeper-verified DMG has been produced and verified (`docs/release/entitlement_governance_verification.md`); remaining pre-release steps are the manual RELEASE_CHECKLIST.md walkthrough (Quick Look launch, functionality spot-check, tagging).
 
 Important: LLM detection is REQUIRED for legal documents. Rules alone miss names and organizations.
 
@@ -11,7 +11,7 @@ Important: LLM detection is REQUIRED for legal documents. Rules alone miss names
 - Rule-based detection for structured PII (emails, phones, dates, money, credit cards with Luhn, URLs, IP)
 - Enhanced two-pass LLM pipeline for names/organizations with selective validation
 - Simple CLI and sample scripts
-- Native macOS SwiftUI app with embedded Ollama. The current configured release target is `MarcutApp-v0.5.96-AppStore.dmg`.
+- Native macOS SwiftUI app with embedded Ollama. The current configured release target is `MarcutApp-v0.5.97-AppStore.dmg`.
 
 ## Quick start
 
@@ -77,11 +77,11 @@ run_redaction_enhanced(
 - docs/DEVELOPER_GUIDE.md – architecture and extension notes
 
 ## Next steps
-- Partial redaction support (subspans when validation returns PARTIAL_REDACT)
-- Batch runner using the enhanced pipeline
-- Configurable thresholds
+
+Batch processing and configurable thresholds (confidence, temperature, chunk size/overlap) already ship in both the CLI and the app. See `docs/BACKLOG.md` for what's actually still open, including design-spike docs under `docs/design/` for the larger architectural ideas (streaming progress, view-controller decomposition, a stricter Swift/Python bridge schema, and others) that need a design decision before implementation.
 
 ## Notarization & distribution (DMG you can share)
+- Run `bash scripts/release_preflight.sh` first -- it gates tests, SBOM, dependency audit, markdown links, version-sync, and the secrets check in one command; see `docs/RELEASE_CHECKLIST.md`.
 - Use the Full Release workflow: `python3 build_tui.py` → Build Workflows → **Full Release Build (Clean & Archive)**.
 - Prereqs: Developer ID Application certificate installed; notarization credentials saved to `~/.config/marcut/notarize.env` (either App Store Connect API key: `ASC_API_KEY_ID/ISSUER/BASE64` or Apple ID + app-specific password).
 - The build signs the DMG, submits for notarization, staples the ticket, and then the bundle audit runs Gatekeeper on the notarized DMG.
