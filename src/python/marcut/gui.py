@@ -443,9 +443,9 @@ class MarcutGUI:
                     
             except Exception as e:
                 self.model_status.config(text=f"❌ Error downloading model")
-                self.root.after(0, lambda: messagebox.showerror(
+                self.root.after(0, lambda msg=str(e): messagebox.showerror(
                     "Download Error",
-                    f"An error occurred while downloading the model:\n{str(e)}"
+                    f"An error occurred while downloading the model:\n{msg}"
                 ))
                 print(f"Error downloading model: {e}")
             finally:
@@ -726,9 +726,9 @@ class MarcutGUI:
             except Exception as e:
                 print(f"[DEBUG] Exception during model download: {e}")
                 self.model_status.config(text=f"❌ Download error")
-                self.root.after(0, lambda: messagebox.showerror(
+                self.root.after(0, lambda msg=str(e): messagebox.showerror(
                     "Download Error",
-                    f"An error occurred while downloading the model:\n\n{str(e)}"
+                    f"An error occurred while downloading the model:\n\n{msg}"
                 ))
             finally:
                 self.progress.stop()
