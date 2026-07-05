@@ -59,6 +59,10 @@ Marcut is a native macOS redaction application that combines a deterministic rul
   - `python_stdlib/` is included as a controlled stdlib overlay.
 - **Pinned dependencies** (see `requirements-pinned.txt`): python-docx, lxml, regex, requests, numpy, dateparser, pydantic, rapidfuzz, tqdm.
 
+#### Model Catalog
+- The recommended-models list and their parameters (temperature, skip-confidence, display metadata) live in a single `models.json`, mirrored byte-identically across three locations that must stay in sync: `assets/models.json`, `src/python/marcut/models.json`, and `src/swift/MarcutApp/Sources/MarcutApp/Resources/models.json` (the same pattern used for `excluded-words.txt`).
+- `marcut/model_config.py` (Python) and `ModelCatalog.swift`/`BundleResourceLocator.swift` (Swift) are mirrored loaders that resolve the bundled resource path in both dev and production bundle layouts.
+
 #### 3. Local LLM Service (Ollama)
 - **Purpose**: Local inference for entity extraction in enhanced mode.
 - **Key components**:
@@ -207,6 +211,7 @@ Marcut.app/
 ### Loopback Enforcement
 - **Host**: `OLLAMA_HOST` / `MARCUT_OLLAMA_HOST` are sanitized to `127.0.0.1`.
 - **Port**: The port may vary, but inference remains on the local loopback interface.
+- **Public runtime lockdown**: Public app/CLI runs ignore the legacy `MARCUT_ALLOW_REMOTE_OLLAMA` variable entirely. A source-developer-only `MARCUT_DEVELOPER_UNSAFE_ALLOW_REMOTE_OLLAMA=1` override exists for local development against a remote host; it must never be used with confidential documents and is stripped from the environment before any packaged/public build launches Python.
 
 ---
 
@@ -225,8 +230,17 @@ Marcut.app/
 - **Output**: Track changes and report generation scale with span count.
 
 ### Instrumentation
-- `--llm-detail` provides sub-phase timing (load, prompt eval, generation) for Ollama.
+- `--llm-detail` provides sub-phase timing (load, prompt eval, generation) for Ollama; it wraps the same production extraction path rather than replacing it, so enabling it never changes what gets redacted.
 - Phase timings are returned by the pipeline for diagnostics and UI progress.
+
+### Cancellation and Deadlines
+- `marcut/cancellation.py` provides a shared deadline primitive (`ProcessingDeadlineExceeded`, `check_processing_deadline()`, `remaining_seconds()`) read from the `MARCUT_PROCESSING_DEADLINE_MONOTONIC` environment variable.
+- `PythonKitRunner` sets this deadline marker for each timed processing phase and clears it on completion, cancellation, or before a new run.
+- Ollama HTTP requests, the enhanced extraction/validation thread pool, and chunk-processing waits all check the deadline and bound their own timeouts to the remaining time, so a hung request or a user-initiated Stop is bounded rather than left to run to completion.
+
+### Reliability: Transactional Artifact Writes
+- Final redaction artifacts (DOCX, audit report JSON/HTML, scrub report JSON/HTML) are staged to same-directory hidden temp files and only renamed into their final names after the full artifact set writes successfully.
+- A failure or cancellation after partial staging cleans up the temp files rather than leaving a misleading final DOCX with no matching report.
 
 ---
 
@@ -288,6 +302,12 @@ Canonical entrypoint for humans: `build_tui.py`.
 - **Deep signing**: Python.framework, python_site extensions, and Ollama binary.
 - **Entitlements**: App Sandbox, local network (Ollama), user-selected file access.
 - **DMG notarization**: Mandatory for public direct distribution builds; local/test skips require the explicit `MARCUT_ALLOW_NOTARIZATION_SKIP=1` override and are not releasable artifacts.
+- **`scripts/verify_entitlements.sh`**: prints app/helper entitlements from a built bundle and fails on forbidden debug/runtime-bypass entitlements (`disable-library-validation`, `allow-jit`, `get-task-allow`). `build_tui.py` runs it automatically after a Developer ID DMG build or existing-DMG notarization.
+
+### Dependency and SBOM Governance
+- `scripts/generate_python_sbom.py` builds a CycloneDX-style SBOM from either the staged repo checkout (default; matches CI's per-PR gate) or `--bundle-root /path/to/MarcutApp.app` (a real built bundle, used for final release verification), including transitive PyPI packages, SwiftPM dependencies from `Package.resolved`, and manual-review entries for the BeeWare `Python.framework` and embedded Ollama binary.
+- `scripts/check_dependency_vulnerabilities.py --sbom docs/release/python-sbom.json` scans shipped PyPI components against OSV.
+- `scripts/release_preflight.sh` gates a release on tests, SBOM freshness, the vulnerability scan, markdown links, version-sync against the last git tag, and a secrets check, in one command.
 
 ---
 
