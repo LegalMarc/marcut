@@ -1,8 +1,8 @@
 # Metadata Hardening Implementation Guide
 
-> **Version:** 1.0  
-> **Date:** December 2024  
-> **Status:** Complete (104 fixes implemented)
+> **Version:** 1.1  
+> **Date:** July 2026  
+> **Status:** Complete (104 fixes implemented); size-budget hardening added under the T9 remediation ticket
 
 ## Overview
 
@@ -272,25 +272,57 @@ Summary: 14 cleaned, 0 remaining, 1 embedded docs
 
 ## CLI Arguments
 
-All settings can be controlled via CLI flags:
+Metadata cleaning is **not** a standalone top-level CLI command - there is no `marcut --scrub-metadata` flag. Metadata cleaning always runs as part of `marcut redact`, and is controlled by one of three mutually-reinforcing options on that subcommand (see `src/python/marcut/cli.py`):
 
 ```bash
-# Full metadata scrub (all enabled)
-marcut --scrub-metadata input.docx output.docx
+# Use a named preset (maximum / balanced / none / custom)
+marcut redact --in input.docx --out output.docx --report report.json \
+  --mode rules \
+  --metadata-preset balanced
 
-# Disable specific operations
-marcut --scrub-metadata \
-  --no-clean-exif \
-  --no-clean-style-names \
-  input.docx output.docx
+# Pass exact per-field checkbox state as JSON (field name -> bool)
+marcut redact --in input.docx --out output.docx --report report.json \
+  --mode rules \
+  --metadata-settings-json '{"clean_author": true, "clean_exif": false}'
+
+# Pass raw override flags as a single string (parsed with shlex)
+marcut redact --in input.docx --out output.docx --report report.json \
+  --mode rules \
+  --metadata-args "--no-clean-exif --no-clean-style-names"
 ```
 
-Available flags include:
+Under the hood, `cli.py` collects `--metadata-args`, `--metadata-preset`, and `--metadata-settings-json`, plus any of the individual `--no-clean-*` / `--clean-*` override flags passed directly (these are hidden/`argparse.SUPPRESS`'d convenience flags, not documented top-level switches), joins them, and exports the result as the `MARCUT_METADATA_ARGS` (and `MARCUT_METADATA_PRESET` / `MARCUT_METADATA_SETTINGS_JSON`) environment variable(s) before invoking the redaction pipeline. The pipeline and `docx_io.py` read those environment variables, not command-line flags directly.
+
+Available `--no-clean-*` / `--clean-*` override flags include:
 - `--no-clean-company`, `--no-clean-author`
 - `--no-clean-exif`, `--no-clean-thumbnails`
 - `--no-clean-ext-links`, `--no-clean-unc-paths`
 - `--no-clean-style-names`, `--no-clean-chart-labels`
-- And 96 more...
+- And more, one pair per entry in `docx_io.py`'s `CLI_ARG_PAIRS` (which backs all 104 settings)
+
+## Metadata & Report Size Budgets (T9 Remediation)
+
+To prevent pathologically large or adversarial documents (e.g. huge embedded binaries, enormous XML text runs, or thousands of custom properties) from producing unbounded memory usage or multi-hundred-MB JSON/HTML reports, `src/python/marcut/pipeline.py` enforces a set of size budgets during metadata capture and report generation. All limits are configurable via environment variables and default to sane, generous values; a limit of `0` disables that particular cap.
+
+| Env Var | Default | Effect |
+|---------|---------|--------|
+| `MARCUT_METADATA_CAPTURE_MAX_STRING_CHARS` | 20,000 chars | Caps the length of any single metadata text/XML value captured for before/after forensic comparison. Longer values are stored as a truncated `{preview, truncated, original_chars, limit_chars}` object instead, and a `METADATA_CAPTURE_TEXT_TRUNCATED` warning is recorded. |
+| `MARCUT_METADATA_REPORT_MAX_STRING_CHARS` | 20,000 chars | Same truncation behavior, applied when serializing values into the final JSON/HTML report (`_serialize_value`), recorded as `METADATA_REPORT_VALUE_TRUNCATED`. |
+| `MARCUT_METADATA_REPORT_MAX_LIST_ITEMS` | 200 items | Caps how many items from a list-valued metadata field are serialized into the report. |
+| `MARCUT_METADATA_REPORT_MAX_DICT_ITEMS` | 200 items | Caps how many key/value pairs from a dict-valued metadata field are serialized into the report. |
+| `MARCUT_REPORT_EXPORT_MAX_PART_BYTES` | 2 MiB (2 * 1024 * 1024) | Skips exporting/capturing any single embedded binary part (image, font, OLE object, etc.) larger than this, recording a `FORENSIC_BINARY_EXPORT_PART_LIMIT` warning. |
+| `MARCUT_REPORT_EXPORT_MAX_BYTES` | 10 MiB (10 * 1024 * 1024) | Caps the total bytes of embedded binaries exported to the report's `binaries/` directory across the whole document; export stops once the running total would exceed this, recording `FORENSIC_BINARY_EXPORT_TOTAL_LIMIT`. |
+
+Binary/forensic exports are opt-in and gated separately from the size budgets above:
+
+| Env Var | Default | Effect |
+|---------|---------|--------|
+| `MARCUT_ENABLE_FORENSIC_EXPORTS` | disabled | Enables writing embedded binary parts (images, fonts, OLE objects, etc.) and the forensic "deep explorer" view to disk under the report directory. |
+| `MARCUT_ENABLE_BINARY_EXPORTS` | disabled | Alias/equivalent trigger for binary export - either variable being truthy enables binary export (`_metadata_env_enabled("MARCUT_ENABLE_FORENSIC_EXPORTS") or _metadata_env_enabled("MARCUT_ENABLE_BINARY_EXPORTS")`). |
+
+When binary parts exist but forensic/binary exports are **not** enabled, the report records a `FORENSIC_BINARY_EXPORTS_DISABLED` informational warning instead of silently dropping the data, so it's clear from the report itself that binaries were present but not written to disk.
+
+Related, less commonly needed knobs also gated by the same forensic-export flags: `MARCUT_REPORT_EXPORT_MAX_COUNT` (default 50 - max number of exported binary parts) and the deep-explorer-specific `MARCUT_ENABLE_DEEP_EXPLORER`, `MARCUT_DEEP_EXPLORER_MAX_PARTS` (100), `MARCUT_DEEP_EXPLORER_MAX_BYTES` (10 MiB), `MARCUT_DEEP_EXPLORER_MAX_PART_BYTES` (512 KiB), and `MARCUT_DEEP_EXPLORER_MAX_TEXT_CHARS` (20,000).
 
 ## Safety Measures
 
