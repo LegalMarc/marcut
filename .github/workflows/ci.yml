@@ -7,28 +7,47 @@ on:
 
 jobs:
   smoke:
-    runs-on: macos-14
+    runs-on: [self-hosted, marcut-local]
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
       - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
+        run: python3.11 --version
+
+      - name: Network diagnostics
+        run: |
+          echo "curl pypi.org:"; curl -sS -m 5 -o /dev/null -w "http_code=%{http_code} time=%{time_total}\n" https://pypi.org || echo "curl FAILED rc=$?"
+          echo "curl files.pythonhosted.org:"; curl -sS -m 5 -o /dev/null -w "http_code=%{http_code} time=%{time_total}\n" https://files.pythonhosted.org || echo "curl FAILED rc=$?"
+          echo "curl pypi simple index for pip:"; curl -sS -m 5 -o /dev/null -w "http_code=%{http_code} time=%{time_total}\n" https://pypi.org/simple/pip/ || echo "curl FAILED rc=$?"
+          echo "--- pip install -v -U pip with 15s self-timeout ---"
+          python3.11 -m pip install -v -U pip > /tmp/pip_verbose.log 2>&1 &
+          PIPPID=$!
+          for i in $(seq 1 15); do
+            if ! kill -0 $PIPPID 2>/dev/null; then break; fi
+            sleep 1
+          done
+          if kill -0 $PIPPID 2>/dev/null; then
+            echo "PIP STILL RUNNING AFTER 15s -- killing and dumping log"
+            kill -9 $PIPPID
+          else
+            echo "pip completed within 15s"
+          fi
+          echo "--- last 40 lines of verbose pip log ---"
+          tail -40 /tmp/pip_verbose.log
 
       - name: Install Python dependencies
         run: |
-          python -m pip install -U pip
-          pip install -e .
-          pip install pytest
-          python scripts/check_dependency_vulnerabilities.py requirements-pinned.txt
-          python scripts/generate_python_sbom.py --check
-          python scripts/check_markdown_links.py
+          python3.11 -m pip install -U pip
+          python3.11 -m pip install -e .
+          python3.11 -m pip install pytest
+          python3.11 scripts/check_dependency_vulnerabilities.py requirements-pinned.txt
+          python3.11 scripts/generate_python_sbom.py --check
+          python3.11 scripts/check_markdown_links.py
 
       - name: Python smoke tests (rules-only)
         run: |
-          pytest -q tests/test_rules.py tests/test_rule_filter.py
+          python3.11 -m pytest -q tests/test_rules.py tests/test_rule_filter.py
 
       - name: Swift build (compile-only)
         run: |

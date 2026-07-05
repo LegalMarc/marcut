@@ -8,7 +8,7 @@ on:
 
 jobs:
   full-e2e:
-    runs-on: macos-14
+    runs-on: [self-hosted, marcut-local]
     timeout-minutes: 30
     env:
       MACOS_CERT_P12_BASE64: ${{ secrets.MACOS_CERT_P12_BASE64 }}
