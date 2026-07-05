@@ -2,6 +2,45 @@
 
 All notable changes to this project will be documented in this file.
 
+## 2026-07-04
+- **Release**: Produce a real Developer ID DMG (`MarcutApp-v0.5.96-AppStore.dmg`, later reconciled to `0.5.97`) via `scripts/sh/build_devid_release.sh` against a freshly-provisioned BeeWare `Python.framework`: signed with a Developer ID Application identity, submitted to Apple's notary service (accepted), stapled, and Gatekeeper-verified (`spctl` reports `accepted`/`source=Notarized Developer ID`). Full evidence, entitlement dump, and SBOM cross-check recorded in `docs/release/entitlement_governance_verification.md`'s Final Artifact Verification section.
+- **Fix**: Give `scripts/release_preflight.sh`'s version-sync and secrets-check steps the same `config.json` → `config.example.json` fallback already used elsewhere, so the preflight gate can actually run on a fresh CI checkout where the untracked local signing config doesn't exist.
+- **Chore**: Bump the interim project version to `0.5.97` to unblock the preflight version-sync gate after reconciling stacked remediation branches; the real product version/App Store number bump is deferred to upcoming release-prep work.
+- **Chore**: Reconcile the pre-public-beta remediation stack's conflict resolutions (model catalog architecture, PythonBridge injection fix, unredacted-path-logging fix, and related Python/Swift merges) cleanly onto this branch's own history.
+
+## 2026-07-03
+
+### Pre-public-beta remediation (T0-T14)
+Full ticket detail in `docs/backlog/pre_public_beta_audit_remediation_2026-05-13.md` and `docs/backlog/pre_public_beta_audit_tickets.md`.
+- **Feature**: Replace the single DOCX `ShareLink` with an explicit choice between **Send Final Redacted Copy** (creates a separate copy, accepts Marcut's redaction Track Changes into it, and runs maximum-privacy metadata scrubbing before sharing) and **Send Review Copy** (requires explicit confirmation that Track Changes and metadata may still contain recoverable original text) (T1).
+- **Security**: Replace the legacy `MARCUT_ALLOW_REMOTE_OLLAMA` override with an explicitly-named `MARCUT_DEVELOPER_UNSAFE_ALLOW_REMOTE_OLLAMA` developer-only escape hatch; public runtime paths (Swift subprocess/environment sync and Python's `get_ollama_base_url`) now strip or ignore both variable names so inference stays loopback-only by default and can't be silently redirected to a remote host (T2).
+- **Security**: Apply owner-only `0o600` permissions to all sensitive report artifacts — JSON and HTML audit/scrub/metadata reports from both the Python writers and Swift-side writes/exports (T3).
+- **Fix**: Make `--llm-detail` observe the actual production enhanced extraction path (instead of a separate non-chunked extractor) so detail mode no longer changes redaction output, while still emitting timing metadata and preserving normal failure semantics (T4).
+- **Feature**: Forward `--backend llama_cpp --llama-gguf <path> --threads <n>` end-to-end into the unified redaction pipeline and the enhanced GGUF backend, fail clearly when no GGUF path is provided, and thread the configured seed/temperature through Ollama chunk-extraction and validation requests instead of hardcoding them (T5).
+- **Reliability**: Add a cancellation/deadline system — `marcut/cancellation.py` (`ProcessingDeadlineExceeded`, `processing_deadline()`, `check_processing_deadline()`) reads `MARCUT_PROCESSING_DEADLINE_MONOTONIC`; Ollama HTTP requests, LLM timing, validation, and enhanced thread-pool waits now check the deadline and bound their timeouts to remaining processing time. Swift's `PythonKitRunner` sets/clears the deadline marker per phase and now calls `PyErr_SetInterrupt()` immediately on user stop instead of waiting on the async cancellation path (T6).
+- **Reliability**: Make redaction finalization transactional — DOCX, audit JSON/HTML, and scrub JSON/HTML are staged to same-directory hidden temp files first and only `os.replace()`d into final names once the whole artifact set is written successfully, with temp files cleaned up on any failure or cancellation (T7).
+- **Reliability**: Add an idle-output watchdog to the `ollama pull` CLI fallback (terminates stalled pulls with an actionable error) and wait for `/api/show` readiness after a model appears on disk, both at download-completion time and again before processing starts, closing a race where a model looks installed but isn't yet ready to serve requests (T8).
+- **Security**: Bound metadata capture and report serialization sizes — embedded binary parts are summarized by default instead of retaining raw bytes, custom XML/fast-save/unknown-namespace previews are truncated under `MARCUT_METADATA_CAPTURE_MAX_STRING_CHARS`, and report JSON now applies string/list/dict budgets (`MARCUT_METADATA_REPORT_MAX_STRING_CHARS`, `MARCUT_METADATA_REPORT_MAX_LIST_ITEMS`, `MARCUT_METADATA_REPORT_MAX_DICT_ITEMS`) with warning codes for truncated values; explicit forensic/binary export remains available but bounded and owner-only (T9).
+- **Performance**: Bound consistency-pass candidate/pattern scans with explicit environment-configurable budgets (total candidates, fuzzy ORG candidates, regex pattern text size) to prevent pathological unique-ORG scans on large documents, and add a synthetic large-DOCX production-path performance gate exercising body text, tables, headers/footers, comments, and metadata through `pipeline.run_redaction(..., mode="rules")` (T10).
+- **Security**: Make release notarization fail closed — `scripts/notarize_macos.sh` no longer treats a pending notarytool status as success or swallows a failed post-staple Gatekeeper check with `|| true`; `build_appstore_release.sh` exits on code-signature verification failure; all notarization-skip paths (missing keychain profile, explicit skip) now require an explicit `MARCUT_ALLOW_NOTARIZATION_SKIP=1` override; the tag/nightly E2E workflow gained a fail-closed prerequisite step requiring signing identity and notarization secrets before a release-tag job can proceed (T11).
+- **Security**: Generate the Python SBOM from actual shipped bundle components rather than direct dependency pins — `scripts/generate_python_sbom.py` now walks the staged `python_site` (or a built `MarcutApp.app` via `--bundle-root`) for transitive PyPI packages, SwiftPM dependencies from `Package.resolved`, and manual-review entries for the BeeWare `Python.framework` and embedded Ollama binary; `docs/release/python-sbom.json` regenerated (23 shipped components); `check_dependency_vulnerabilities.py` gained `--sbom` to scan shipped components via OSV (T12).
+- **Docs**: Refresh `docs/release/public_beta_qualification.md` with current `0.5.96`+ evidence (superseding the stale `0.5.95` note), document the two DOCX send paths, and update release-checklist/SBOM guidance to point at the actual built app bundle (T13).
+- **Security**: Add `scripts/verify_entitlements.sh` and `docs/release/entitlement_governance_verification.md` to verify built app/helper entitlements contain no forbidden debug/runtime-bypass entries, and wire final entitlement/SBOM/vulnerability/stapler/Gatekeeper checks into `build_tui.py` after Developer ID builds; document repository governance evidence (CODEOWNERS, PR template, CI workflows, branch protection ruleset) (T14).
+
+### New features
+- **Feature**: Add a search bar to `SettingsView` to filter settings sections and redaction rules.
+- **Feature**: Add a native macOS notification when a model download completes.
+- **Feature**: Add a "Retry Failed" button to re-queue only failed documents in a batch.
+- **Feature**: Add an in-app log viewer sheet to Settings.
+- **Feature**: Add export/import of redaction settings as a JSON profile.
+- **Feature**: Add a live match preview to the excluded-words editor.
+- **Feature**: Show estimated time remaining during batch redaction.
+- **Feature**: Persist pending batch jobs and offer to resume them after an app restart.
+- **Refactor**: Centralize UserDefaults keys into a typed `DefaultsKey` enum.
+- **Refactor**: Unify model-name parsing between `gui.py` and `PythonBridge.swift`.
+- **Refactor**: Move hardcoded Ollama model tags/parameters into a shared `models.json`, mirrored across `assets/`, `src/python/marcut/`, and Swift resources, with `model_config.py`/`ModelCatalog.swift` loaders and a `BundleResourceLocator.swift` helper for dev/production bundle resolution — pure data-location change, no recommendation-behavior change.
+- **Build**: Add `scripts/release_preflight.sh`, gating automatable `RELEASE_CHECKLIST` steps (Python/Swift tests, SBOM generate+check, dependency vulnerability audit, markdown link check, version-sync, secrets check) into CI ahead of `macos-build-verify` and the release checklist.
+
 ## 2026-05-13
 - **Fix**: Stop treating plain legal terms such as `Agreement` as `DOCID` redactions.
 - **Fix**: Preserve specific legal entities such as `TIME USA, LLC` through ORG filtering instead of suppressing them as generic contract wording.
