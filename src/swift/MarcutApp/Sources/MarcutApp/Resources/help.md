@@ -38,7 +38,9 @@ If you only need a quick result, read the Start Here section. If you are automat
   - [Install and First Run](#install-and-first-run)
   - [Import Documents](#import-documents)
   - [Settings Explained](#settings-explained)
+  - [Redaction Settings Profiles](#redaction-settings-profiles)
   - [Running Redaction](#running-redaction)
+  - [Resuming Interrupted Batches](#resuming-interrupted-batches)
   - [Reviewing Results](#reviewing-results)
   - [Output Naming (GUI and headless)](#output-naming-gui-and-headless)
   - [Logs and Diagnostics](#logs-and-diagnostics)
@@ -302,6 +304,8 @@ Model storage paths:
 
 ### Settings Explained
 
+Use the search field at the top of Settings to filter by setting name; matching rows and sections stay visible and everything else is hidden as you type.
+
 Processing Mode
 - Rules Only: deterministic PII detection (fast, no model).
 - Rules + AI: rules plus LLM extraction and validation (recommended).
@@ -323,6 +327,7 @@ Excluded Terms
 - Terms or regex patterns in this file are excluded from redaction.
 - Matching is case-insensitive; leading determiners and simple plurals are ignored.
 - Exclusions apply to both deterministic rules and AI validation.
+- The editor includes a live preview: type a test phrase and see instantly whether it matches one of your exclusion entries, using the same matching logic the pipeline applies at redaction time, before you run it on a real document.
 
 Advanced AI Settings (Advanced mode)
 - LLM Confidence (0 to 100): higher = stricter about skipping (more redaction).
@@ -339,7 +344,14 @@ Debug
 
 Notifications
 - System notifications can be enabled for completion banners.
-- The app may request permission the first time notifications are used.
+- A native notification is also posted automatically when a model finishes downloading, so you can switch away from the app while a large model downloads.
+- The app requests notification permission the first time it actually needs to post one, not at launch.
+
+### Redaction Settings Profiles
+
+- Use Export Profile in Settings to save your current metadata-cleaning and redaction settings as a single JSON file, useful for sharing a standard configuration across a legal team.
+- Use Import Profile to load a previously exported file; importing fully replaces the current settings rather than merging with them.
+- Profiles include a schema version. Importing a file from an incompatible or newer schema version is rejected with a clear error, and no settings are changed.
 
 ### Running Redaction
 
@@ -347,7 +359,8 @@ Notifications
 2. Choose an output folder.
 3. The app checks the environment (Python runtime and model readiness).
 4. Progress stages appear for each document: Loading, Detecting Data, AI Analysis, Validating, Merging, Creating Output.
-5. You can cancel processing with Stop.
+5. For a batch of 3 or more documents, an estimated-time-remaining figure appears once at least 2 documents have completed, based on the observed processing rate so far in that run. With fewer completed documents there isn't enough data yet, so no estimate is shown.
+6. You can cancel processing with Stop. Stopping is responsive: an active Ollama request or hanging extraction is interrupted promptly rather than waiting for the current document to finish, and no partial output is written for a cancelled document.
 
 Metadata-only option
 - Use Scrub Metadata to clean metadata without redacting text.
@@ -356,12 +369,22 @@ Metadata-only option
 
 Tip: process one document first to confirm the rules and output, then run batches.
 
+### Resuming Interrupted Batches
+
+- If the app quits or crashes while documents are still pending or processing, it remembers the queue.
+- On the next launch, if pending work was found, the app offers to resume: choose Resume to reload those documents in a pending state, or Discard to clear the record.
+- Resuming reloads the document list only; you still start processing yourself with Redact Documents. A document that was actively processing when the app quit goes back to pending, not to whatever partial state it was in.
+- A batch that finished normally leaves nothing to resume, so no prompt appears on the next launch.
+
 ### Reviewing Results
 
 Each completed document row includes:
 - Open Redacted Document.
 - View Audit Report.
 - Show in Finder.
+- Send Document (see Redaction Tags and Track Changes for the Send Final Redacted Copy vs Send Review Copy choice).
+
+If a batch has one or more failed documents, a Retry Failed button appears. It re-queues only the documents currently marked failed; completed documents are left untouched.
 
 Open the DOCX in Word to review track changes and accept or reject redactions before sharing the document outside your review workflow.
 
@@ -384,6 +407,8 @@ macOS app (headless)
 - If `--outdir` is omitted, outputs are written next to the input.
 
 ### Logs and Diagnostics
+
+Use View Logs in Settings to read the most recent log file directly in the app, with a Reveal in Finder button if you need the actual file. This is the easiest way to check logs without navigating Finder manually.
 
 Logs live in:
 - `~/Library/Application Support/MarcutApp/logs/`
@@ -584,6 +609,14 @@ Core runtime
 - `MARCUT_METADATA_ARGS`: space-separated metadata cleaning flags (advanced).
 - `MARCUT_SCRUB_REPORT_PATH`: override path for the scrub report JSON.
 - `MARCUT_DEBUG_PATH=1`: print Python `sys.path` at startup (advanced diagnostics).
+- `MARCUT_DEVELOPER_UNSAFE_ALLOW_REMOTE_OLLAMA=1`: source-developer-only override to allow a non-loopback Ollama host; never use with confidential documents (see Network Access Summary).
+- `MARCUT_PROCESSING_DEADLINE_MONOTONIC`: internal deadline marker (monotonic clock value) used to bound Ollama requests and interrupt hanging extraction; set automatically by the app, not intended for manual use.
+
+Reliability and size budgets (advanced; sensible defaults apply if unset)
+- `MARCUT_METADATA_CAPTURE_MAX_STRING_CHARS`, `MARCUT_REPORT_EXPORT_MAX_PART_BYTES`, `MARCUT_REPORT_EXPORT_MAX_BYTES`: bound how much raw metadata/custom-XML content is captured before it is summarized instead of retained in full. See Metadata Cleaning Controls in `docs/METADATA_HARDENING.md`.
+- `MARCUT_METADATA_REPORT_MAX_STRING_CHARS`, `MARCUT_METADATA_REPORT_MAX_LIST_ITEMS`, `MARCUT_METADATA_REPORT_MAX_DICT_ITEMS`: bound field sizes when the scrub report JSON is serialized, with truncation warnings recorded in the report.
+- `MARCUT_ENABLE_FORENSIC_EXPORTS` / `MARCUT_ENABLE_BINARY_EXPORTS`: opt in to retaining raw embedded binary parts (bounded by the export byte limits above) instead of a summary; off by default.
+- `MARCUT_CONSISTENCY_MAX_CANDIDATES`, `MARCUT_CONSISTENCY_MAX_FUZZY_ORG_CANDIDATES`, `MARCUT_CONSISTENCY_MAX_PATTERN_CHARS`: bound the consistency-pass rescan on documents with very large numbers of unique candidate entities. See `docs/PERFORMANCE_OPTIMIZATION.md`.
 
 App diagnostics
 - `MARCUT_USE_PYTHONKIT=false`: force CLI fallback instead of in-process PythonKit.
@@ -1271,7 +1304,7 @@ A: Any editor that shows track changes can work, but Word is the most reliable.
 
 - macOS app version is shown in About MarcutApp.
 - CLI version is defined in `pyproject.toml` (use `pip show marcut`).
-- Project history lives in `CHANGELOG.md` and `docs/RELEASE_NOTES_v0.2.2.md`.
+- Project history lives in `docs/CHANGELOG.md`.
 
 ## Licensing and Third-Party Notices
 
@@ -1285,28 +1318,27 @@ License file base path:
 - `MarcutApp.app/Contents/Resources/python_site/<package>-<version>.dist-info/licenses/`
 - CPython license: `MarcutApp.app/Contents/Frameworks/Python.framework/Versions/3.11/LICENSE.txt`
 
-Included packages:
+Included packages (versions tracked in `docs/release/python-sbom.json`; regenerate that file and this list together if dependencies change):
 - **CPython 3.11.x** — PSF License (see CPython license path above).
 - **annotated-types 0.7.0** — MIT (licenses/LICENSE).
-- **certifi 2026.1.4** — MPL-2.0 (licenses/LICENSE).
-- **charset-normalizer 3.4.4** — MIT (licenses/LICENSE).
-- **dateparser 1.2.2** — BSD (licenses/LICENSE).
-- **idna 3.11** — see bundled license file (licenses/LICENSE.md).
-- **lxml 6.0.2** — BSD-3-Clause (licenses/LICENSE.txt).
-- **numpy 2.4.1** — see bundled license file (licenses/LICENSE.txt).
-- **pydantic 2.12.5** — see bundled license file (licenses/LICENSE).
-- **pydantic-core 2.41.5** — see bundled license file (licenses/LICENSE).
+- **certifi 2026.6.17** — MPL-2.0 (licenses/LICENSE).
+- **charset-normalizer 3.4.7** — MIT (licenses/LICENSE).
+- **dateparser 1.2.0** — BSD (licenses/LICENSE).
+- **idna 3.18** — see bundled license file (licenses/LICENSE.md).
+- **lxml 6.1.0** — BSD-3-Clause (licenses/LICENSE.txt).
+- **numpy 2.2.0** — see bundled license file (licenses/LICENSE.txt).
+- **pydantic 2.10.3** — see bundled license file (licenses/LICENSE).
+- **pydantic-core 2.27.1** — see bundled license file (licenses/LICENSE).
 - **python-dateutil 2.9.0.post0** — see bundled license file (licenses/LICENSE).
-- **python-docx 1.2.0** — MIT (licenses/LICENSE).
-- **pytz 2025.2** — MIT (licenses/LICENSE.txt).
-- **rapidfuzz 3.14.3** — see bundled license file (licenses/LICENSE).
-- **regex 2026.1.15** — see bundled license file (licenses/LICENSE.txt).
-- **requests 2.32.5** — Apache-2.0 (licenses/LICENSE).
+- **python-docx 1.1.2** — MIT (licenses/LICENSE).
+- **pytz 2026.2** — MIT (licenses/LICENSE.txt).
+- **rapidfuzz 3.14.5** — see bundled license file (licenses/LICENSE).
+- **regex 2024.11.6** — see bundled license file (licenses/LICENSE.txt).
+- **requests 2.33.0** — Apache-2.0 (licenses/LICENSE).
 - **six 1.17.0** — MIT (licenses/LICENSE).
 - **tqdm 4.67.1** — MPL-2.0/MIT (licenses/LICENCE).
-- **typing-extensions 4.15.0** — see bundled license file (licenses/LICENSE).
-- **typing-inspection 0.4.2** — see bundled license file (licenses/LICENSE).
-- **tzlocal 5.3.1** — MIT (licenses/LICENSE.txt).
-- **urllib3 2.6.3** — see bundled license file (licenses/LICENSE.txt).
+- **typing-extensions 4.16.0** — see bundled license file (licenses/LICENSE).
+- **tzlocal 5.4.4** — MIT (licenses/LICENSE.txt).
+- **urllib3 2.7.0** — see bundled license file (licenses/LICENSE.txt).
 
 If any package version changes, the authoritative license text is the one shipped in the app bundle.
