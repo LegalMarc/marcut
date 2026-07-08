@@ -1972,6 +1972,7 @@ class DocxMap:
         try:
             clean_visible = settings.clean_review_comments_visible
             clean_hidden = settings.clean_review_comments_hidden
+            retained_count = 0
             if clean_visible or clean_hidden:
                 if clean_comments_all:
                     self._strip_comment_markers()
@@ -1985,6 +1986,26 @@ class DocxMap:
                             ids_to_remove.add(cid)
                     self._remove_comment_entries(ids_to_remove)
                     self._strip_comment_markers_by_ids(ids_to_remove)
+                    retained_count = len(set(visibility_map) - ids_to_remove)
+            else:
+                # Both visibility classes are being kept: nothing is removed,
+                # so every existing comment (if any) survives untouched.
+                retained_count = len(self._comment_visibility_map())
+
+            # Review comment text is never scanned by the redaction pipeline
+            # (rules/LLM only see word/document.xml + headers/footers/
+            # footnotes/endnotes/textboxes/content controls -- comments.xml
+            # paragraph content is out of scope). When settings fully remove
+            # comments this is moot; but when any comment is retained, its
+            # text -- including any PII it contains -- ships unredacted.
+            # Disclose that loudly rather than leaking it silently.
+            if retained_count:
+                self._append_warning(
+                    "REVIEW_COMMENTS_NOT_SCANNED",
+                    f"{retained_count} review comment(s) were kept per your metadata "
+                    "settings. Comment text is not scanned for PII by the redaction "
+                    "pipeline and may contain unredacted sensitive information.",
+                )
         except Exception as exc:
             self._append_warning(
                 "COMMENT_MARKER_CLEAN_FAILED",
