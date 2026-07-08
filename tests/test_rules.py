@@ -10,7 +10,8 @@ import os
 from marcut.rules import (
     run_rules, EMAIL, PHONE, SSN, CURRENCY, DATE, URL, IPV4, ADDRESS,
     SIGNATURE_NAME, INDIVIDUAL_NAME, luhn_ok, COMPANY_SUFFIX, NUMBER_BRACKET,
-    _is_excluded, _is_generic_org_span, _is_excluded_combo, _is_specific_org_span
+    _is_excluded, _is_generic_org_span, _is_excluded_combo, _is_specific_org_span,
+    _trim_org_jurisdiction_suffix
 )
 
 
@@ -483,6 +484,62 @@ class TestCompanySuffixPattern:
 
         assert any(s["text"] == "TIME USA, LLC" for s in orgs)
         assert _is_specific_org_span("TIME USA, LLC") is True
+
+    def test_org_suffix_does_not_bridge_paragraph_boundary(self):
+        """COMPANY_SUFFIX's inter-token separator must not let \\s match \\n: a
+        signature-block NAME line immediately before an unrelated ORG-suffix line
+        must not be absorbed into one bogus cross-boundary ORG span."""
+        text = " Sam Jacobs\nName:   Alex Rivera\nVertex Analytics Group LLC\n"
+        spans = run_rules(text)
+
+        orgs = [s for s in spans if s["label"] == "ORG"]
+        names = [s for s in spans if s["label"] == "NAME"]
+
+        assert any(s["text"] == "Vertex Analytics Group LLC" for s in orgs)
+        assert not any("\n" in s["text"] for s in orgs)
+        assert any(s["text"] == "Alex Rivera" for s in names)
+
+    def test_org_suffix_tail_extension_does_not_bridge_paragraph_boundary(self):
+        """_extend_org_suffix_tail's leading separator must not cross a paragraph
+        boundary either, e.g. a table cell that merely starts with "LLC" must not
+        be fused onto an unrelated ORG name in the preceding cell/paragraph."""
+        text = "Vertex Analytics Group\nLLC filed a motion.\n"
+        spans = run_rules(text)
+        orgs = [s for s in spans if s["label"] == "ORG"]
+
+        assert any(s["text"] == "Vertex Analytics Group" for s in orgs)
+        assert not any("\n" in s["text"] for s in orgs)
+
+        # Same-line extension must still work.
+        text2 = "Vertex Analytics Group LLC filed a motion.\n"
+        orgs2 = [s for s in run_rules(text2) if s["label"] == "ORG"]
+        assert any(s["text"] == "Vertex Analytics Group LLC" for s in orgs2)
+
+    def test_jurisdiction_tail_trimmed_from_org_span(self):
+        """_trim_org_jurisdiction_suffix must actually trim jurisdiction clauses.
+
+        Regression: every \\s inside _JURISDICTION_TAIL_RE was written as a
+        double-escaped "\\\\s" inside a raw string, which regex compiles to a
+        literal backslash followed by 's' -- so the pattern never matched
+        anything at all, silently disabling this trimming entirely.
+        """
+        assert _trim_org_jurisdiction_suffix(
+            "EXOS, LLC, a Delaware limited liability company"
+        ) == "EXOS, LLC"
+        assert _trim_org_jurisdiction_suffix(
+            "TIME USA, LLC, a New York limited liability company"
+        ) == "TIME USA, LLC"
+        assert _trim_org_jurisdiction_suffix(
+            "Acme Inc, a District of Columbia corporation"
+        ) == "Acme Inc"
+        assert _trim_org_jurisdiction_suffix(
+            "Vertex Analytics Group LLC"
+        ) == "Vertex Analytics Group LLC"
+
+    def test_jurisdiction_tail_does_not_bridge_paragraph_boundary(self):
+        """The now-fixed jurisdiction-tail regex must still not match across \\n."""
+        text = "EXOS, LLC, a Delaware\nlimited liability company"
+        assert _trim_org_jurisdiction_suffix(text) == text
 
 
 class TestRunRulesIntegration:

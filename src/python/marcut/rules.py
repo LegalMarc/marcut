@@ -206,30 +206,35 @@ _US_JURISDICTIONS = (
     r"Alabama|Alaska|Arizona|Arkansas|California|Colorado|Connecticut|Delaware|"
     r"Florida|Georgia|Hawaii|Idaho|Illinois|Indiana|Iowa|Kansas|Kentucky|Louisiana|"
     r"Maine|Maryland|Massachusetts|Michigan|Minnesota|Mississippi|Missouri|Montana|"
-    r"Nebraska|Nevada|New\\s+Hampshire|New\\s+Jersey|New\\s+Mexico|New\\s+York|"
-    r"North\\s+Carolina|North\\s+Dakota|Ohio|Oklahoma|Oregon|Pennsylvania|"
-    r"Rhode\\s+Island|South\\s+Carolina|South\\s+Dakota|Tennessee|Texas|Utah|"
-    r"Vermont|Virginia|Washington|West\\s+Virginia|Wisconsin|Wyoming|"
-    r"District\\s+of\\s+Columbia|D\\.C\\."
+    r"Nebraska|Nevada|New[^\S\n]+Hampshire|New[^\S\n]+Jersey|New[^\S\n]+Mexico|New[^\S\n]+York|"
+    r"North[^\S\n]+Carolina|North[^\S\n]+Dakota|Ohio|Oklahoma|Oregon|Pennsylvania|"
+    r"Rhode[^\S\n]+Island|South[^\S\n]+Carolina|South[^\S\n]+Dakota|Tennessee|Texas|Utah|"
+    r"Vermont|Virginia|Washington|West[^\S\n]+Virginia|Wisconsin|Wyoming|"
+    r"District[^\S\n]+of[^\S\n]+Columbia|D\.C\."
 )
+# NOTE: separators below use [^\S\n] (whitespace excluding newline), not \s, so this
+# match can never bridge a paragraph/table-cell boundary -- see COMPANY_SUFFIX above.
+# Previously these were written as literal "\\s" inside raw strings, which regex
+# compiles to "a literal backslash followed by 's'" -- i.e. this pattern never matched
+# anything at all, silently disabling jurisdiction-tail trimming entirely.
 _JURISDICTION_TAIL_RE = re.compile(
     rf"(?ix)"
-    rf"(?:,\\s*)?"
-    rf"(?:a|an)\\s+"
-    rf"(?:{_US_JURISDICTIONS})\\s+"
+    rf"(?:,[^\S\n]*)?"
+    rf"(?:a|an)[^\S\n]+"
+    rf"(?:{_US_JURISDICTIONS})[^\S\n]+"
     rf"(?:"
-        rf"limited\\s+liability\\s+company|"
-        rf"limited\\s+liability\\s+partnership|"
-        rf"limited\\s+partnership|"
-        rf"general\\s+partnership|"
-        rf"corporation|inc\\.?|company|"
-        rf"llc|l\\.l\\.c\\.|l\\.c\\.|lc|"
-        rf"llp|l\\.l\\.p\\.|"
-        rf"lp|l\\.p\\.|"
-        rf"plc|p\\.l\\.c\\.|"
-        rf"statutory\\s+trust|business\\s+trust"
+        rf"limited[^\S\n]+liability[^\S\n]+company|"
+        rf"limited[^\S\n]+liability[^\S\n]+partnership|"
+        rf"limited[^\S\n]+partnership|"
+        rf"general[^\S\n]+partnership|"
+        rf"corporation|inc\.?|company|"
+        rf"llc|l\.l\.c\.|l\.c\.|lc|"
+        rf"llp|l\.l\.p\.|"
+        rf"lp|l\.p\.|"
+        rf"plc|p\.l\.c\.|"
+        rf"statutory[^\S\n]+trust|business[^\S\n]+trust"
     rf")"
-    rf"\\s*$"
+    rf"[^\S\n]*$"
 )
 
 # Entity suffixes containing periods that should NOT trigger sentence boundary detection
@@ -465,7 +470,8 @@ COMPANY_SUFFIX = re.compile(
             r"|"
             r"(?i:and|of|the|for|a|an|&|de|la)"  # Connector (case-insensitive)
         r")"
-        r",?\s+"                    # Required space (with optional comma) after each token
+        r",?[^\S\n]+"                # Required same-line space (with optional comma) after each token;
+                                     # excludes \n so a match can't bridge a paragraph/table-cell boundary
     r"){1,10}?"                     # Scan 1 to 10 tokens forward, preferring nearest suffix
     r"(?:"
     r"(?i:Incorporated|Corporation|Company|Limited)|"
@@ -518,7 +524,9 @@ _LEADING_ORG_CONNECTOR_RE = re.compile(
     r"(?i)^\s*(?:,?\s*)?(?:and|or|by|between|with|from|to)\s+"
 )
 _ORG_SUFFIX_TRAIL_AFTER_RE = re.compile(
-    r"^[\s,]+(?:"
+    # Leading separator is same-line whitespace only (plus comma); excludes \n so a
+    # preliminary ORG match can't be extended across a paragraph/table-cell boundary.
+    r"^(?:[^\S\n]|,)+(?:"
     r"inc\.?|corp\.?|co\.?|ltd\.?|llc|l\.l\.c\.|llp|l\.l\.p\.|lp|l\.p\.|"
     r"pllc|plc|p\.l\.c\.|gmbh|s\.a\.s\.|s\.a\.|s\.r\.l\.|b\.v\.|n\.v\.?"
     r")\.?(?=$|[\s,;:\)\]\}])",
