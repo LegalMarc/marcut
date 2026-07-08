@@ -817,6 +817,87 @@ def ollama_validate(
     raise RuntimeError(f"Ollama validation failed after {len(retry_plan)} attempts: {last_error}")
 
 
+def _drop_invalid_entity_offsets(
+    text: str,
+    entities: List["Entity"],
+    warnings: List[Dict[str, Any]],
+) -> List["Entity"]:
+    """Enforce the invariant text[start:end] == entity.text, dropping violations.
+
+    Chunk-relative spans are rebased to document coordinates as soon as each
+    chunk's entities are extracted, so this is defense-in-depth rather than
+    the primary correctness mechanism -- but it guarantees a corrupted span
+    never reaches the rest of the pipeline; violations are dropped and
+    logged instead of silently emitted (coordinates with issue A5's broader
+    bounds/consistency guard at span-application time).
+    """
+    valid: List[Entity] = []
+    for entity in entities:
+        in_bounds = 0 <= entity.start < entity.end <= len(text)
+        if in_bounds and text[entity.start:entity.end] == entity.text:
+            valid.append(entity)
+            continue
+        warnings.append({
+            "code": "LLM_ENTITY_OFFSET_MISMATCH",
+            "message": "Dropped an extracted entity whose offsets did not match its text.",
+            "details": f"label={entity.label} start={entity.start} end={entity.end} text={entity.text!r}",
+        })
+    return valid
+
+
+def _resolve_overlapping_entity(current: "Entity", candidate: "Entity") -> "Entity":
+    """Choose which of two overlapping same-label entities to keep.
+
+    Prefers, in order: a positive redaction decision (fail closed -- if
+    either detection says redact, keep the one that redacts), the longer/
+    more complete span, then higher confidence. Ties keep `current`.
+    """
+    current_key = (bool(current.needs_redaction), current.end - current.start, current.confidence)
+    candidate_key = (bool(candidate.needs_redaction), candidate.end - candidate.start, candidate.confidence)
+    return candidate if candidate_key > current_key else current
+
+
+def _dedupe_chunk_overlap_entities(entities: List["Entity"]) -> List["Entity"]:
+    """Collapse same-label entities that only differ because of chunk overlap.
+
+    `chunker.make_chunks` deliberately overlaps adjacent chunks so a mention
+    near a chunk boundary is never silently dropped. As a side effect, a
+    mention that survives intact in more than one chunk is extracted once
+    per chunk that sees it in full, and a mention straddling the boundary
+    can additionally surface as a truncated fragment alongside the full
+    mention recovered from the neighboring chunk. Both show up as
+    overlapping same-label spans at (nearly) the same location; keep a
+    single, best-scoring entity per overlapping cluster instead of emitting
+    every detection. Separate, non-overlapping repeats of the same text
+    elsewhere in the document are untouched -- only spans that actually
+    overlap are merged.
+    """
+    by_label: Dict[str, List[Entity]] = {}
+    for entity in entities:
+        by_label.setdefault(entity.label, []).append(entity)
+
+    deduped: List[Entity] = []
+    for group in by_label.values():
+        group.sort(key=lambda e: (e.start, e.end))
+        current: Optional[Entity] = None
+        reach = 0
+        for entity in group:
+            if current is None:
+                current = entity
+                reach = entity.end
+            elif entity.start < reach:
+                current = _resolve_overlapping_entity(current, entity)
+                reach = max(reach, entity.end)
+            else:
+                deduped.append(current)
+                current = entity
+                reach = entity.end
+        if current is not None:
+            deduped.append(current)
+
+    return deduped
+
+
 class IntelligentRedactionPipeline:
     """Main pipeline for intelligent entity extraction and validation."""
 
@@ -1197,6 +1278,13 @@ class IntelligentRedactionPipeline:
 
         if tracker:
             tracker.update_phase(ProcessingPhase.LLM_EXTRACTION, 1.0, "AI extraction complete")
+
+        # Chunks overlap by design (see chunker.make_chunks), so a mention
+        # near a chunk boundary can be extracted more than once. Enforce the
+        # offset invariant and collapse same-label overlap-window duplicates
+        # before converting to the output format.
+        all_entities = _drop_invalid_entity_offsets(text, all_entities, warnings)
+        all_entities = _dedupe_chunk_overlap_entities(all_entities)
 
         # Convert to output format
         output_spans = []
