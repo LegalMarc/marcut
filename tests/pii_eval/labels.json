@@ -1,0 +1,18 @@
+{
+  "notes": "Gold labels for the synthetic corpus built by tests/pii_eval/corpus.py (issue A1). Each 'text' is the literal substring the rules-only pipeline is expected to redact for that entity -- verified by hand against marcut.pipeline.run_redaction(mode='rules') output. Matching in tests/pii_eval/scoring.py uses bidirectional substring containment (not exact offsets or exact equality), so a harmless boundary trim by a rule regex (e.g. a dropped leading parenthesis on a phone number) does not itself count as a miss.",
+  "entities": [
+    {"label": "EMAIL", "text": "jane.doe@example.com", "location": "body"},
+    {"label": "PHONE", "text": "415) 555-0182", "location": "body"},
+    {"label": "SSN", "text": "123-45-6789", "location": "body"},
+    {"label": "CARD", "text": "4111-1111-1111-1111", "location": "body"},
+    {"label": "MONEY", "text": "12,500.00", "location": "body"},
+    {"label": "DATE", "text": "January 15, 2024", "location": "body"},
+    {"label": "ORG", "text": "Acme Redwood Corp.", "location": "body"},
+    {"label": "LOC", "text": "742 Evergreen Terrace, Springfield, IL 62704", "location": "body"},
+    {"label": "NAME", "text": "Sam Jacobs", "location": "body_signature"},
+    {"label": "ORG", "text": "Vertex Analytics Group LLC", "location": "table"},
+    {"label": "NAME", "text": "Jordan Casey", "location": "header"},
+    {"label": "EMAIL", "text": "jordan.casey@example.com", "location": "header"},
+    {"label": "NAME", "text": "Taylor Brooks", "location": "footer"}
+  ]
+}
