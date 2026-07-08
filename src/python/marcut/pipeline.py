@@ -1361,7 +1361,21 @@ def _finalize_and_write(
 
     # Apply track changes and save
     dm.apply_replacements(replacements, track_changes=True)
-    warnings.extend(getattr(dm, "warnings", []) or [])
+
+    _dm_warnings_synced = 0
+
+    def _sync_dm_warnings() -> None:
+        # dm.warnings keeps growing across apply_replacements/harden_document/
+        # scrub_metadata/save; re-sync after each call site so anything
+        # appended later (e.g. a metadata-scrub warning) isn't silently
+        # dropped from the audit report by a one-time snapshot.
+        nonlocal _dm_warnings_synced
+        current = getattr(dm, "warnings", []) or []
+        if len(current) > _dm_warnings_synced:
+            warnings.extend(current[_dm_warnings_synced:])
+            _dm_warnings_synced = len(current)
+
+    _sync_dm_warnings()
 
     # Parse metadata cleaning settings from environment (set by Swift UI)
     metadata_args_str = os.environ.get("MARCUT_METADATA_ARGS", "")
@@ -1400,9 +1414,11 @@ def _finalize_and_write(
         except ImportError:
             scrub_images = False
         dm.harden_document(scrub_all_images=scrub_images, settings=metadata_settings)
+        _sync_dm_warnings()
 
     # Scrub metadata using user-configured settings
     dm.scrub_metadata(metadata_settings)
+    _sync_dm_warnings()
 
     output_temp_path = _sibling_temp_path(output_path)
     report_temp_path = _sibling_temp_path(report_path)
@@ -1414,6 +1430,7 @@ def _finalize_and_write(
 
     try:
         dm.save(output_temp_path)
+        _sync_dm_warnings()
 
         redaction_changes_created = bool(replacements)
         if metadata_settings.clean_track_changes and not redaction_changes_created:

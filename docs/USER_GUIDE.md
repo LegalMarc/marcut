@@ -80,6 +80,42 @@ exit_code, timings = run_redaction(
 - JSON report with spans, labels, entity IDs (for NAME/ORG/BRAND), confidence, and sources
 - Optional metadata scrub report (`*_scrub_report.json`) with before/after values
 
+### Redaction coverage by document part
+
+The rules/LLM detection pipeline scans -- and, when a match is found, writes
+track changes (`w:ins`/`w:del`) into -- every part of the DOCX that can carry
+running text:
+
+| Document part | Scanned for PII | Redacted with track changes |
+| --- | --- | --- |
+| Main body (paragraphs) | Yes | Yes |
+| Tables (including nested tables, and tables inside headers/footers/footnotes/endnotes) | Yes | Yes |
+| Headers and footers (default, first-page, even-page) | Yes | Yes |
+| Footnotes | Yes | Yes |
+| Endnotes | Yes | Yes |
+| Textboxes / drawings (legacy VML and modern DrawingML) | Yes | Yes |
+| Content controls / structured document tags (block-level and inline) | Yes | Yes |
+| Review comments (`word/comments.xml`) | No | No (see below) |
+
+**Review comments are a documented exception.** Comment text itself (as
+opposed to the body text a comment is anchored to) is never scanned by the
+redaction pipeline. By default this is safe: the metadata-cleaning defaults
+(`clean_review_comments_visible` and `clean_review_comments_hidden`, both
+`True`) remove the entire comments part from the output, so no comment text
+-- redacted or not -- ships at all. If you explicitly retain comments (for
+example with `--no-clean-review-comments-visible`), any PII inside a
+retained comment is **not** redacted and ships verbatim. In that case the
+JSON report includes a `REVIEW_COMMENTS_NOT_SCANNED` warning so the gap is
+disclosed rather than silent -- treat retained comments as unreviewed and
+redact them manually in Word if they may contain sensitive information.
+
+Similarly, `clean_headers_footers` (`True` by default) wholesale-removes
+headers/footers as a metadata-hardening measure (a common letterhead/
+branding leakage vector). If you disable it with `--no-clean-headers-footers`
+to keep a required legend or page-numbering header, the table above applies:
+any PII in the retained header/footer is redacted with track changes like
+any other part.
+
 ## Troubleshooting
 - "Ollama not installed": The CLI checks for the `ollama` binary in PATH. If your server is running but the binary is missing, install Ollama or fix PATH.
 - Empty/low ORG or NAME detection: Ensure the model is running and selected (e.g., `--model qwen2.5:14b`).
