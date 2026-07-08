@@ -14,9 +14,21 @@ This guide explains how to run Marcut to produce Word documents with track chang
 ### Redaction Settings
 - **Rules Only vs Enhanced** - The mode picker determines whether documents pass through just the deterministic rules engine or the full rules+LLM pipeline.
 - **Rules Engine tweaks** - In any mode you can click **Edit Excluded Terms...** to edit the boilerplate list (`excluded-words.txt`). Changes save under Application Support and apply to both CLI and GUI immediately.
+- **Live match preview** - The excluded-words editor includes a preview field: type any phrase and it instantly shows whether the current exclusion rules would match it, using the same matching logic as the redaction pipeline. Useful for checking a new exclusion entry before saving.
 - **Advanced AI settings** - When Enhanced is selected, the "Advanced AI Settings" card appears with sliders for temperature, chunk size/overlap, processing timeout, and seed. There is also an **Edit System Prompt...** button for customizing the LLM instruction template. The card is hidden in Rules Only mode to avoid confusion but your values are preserved when you switch back.
 - **Future preference** - Consider adding a toggle to default excluded-term spans to "do not redact" in Enhanced, with the validator opting in to redaction when needed.
 - New overrides do not require an app restart; both GUI and CLI read the updated files automatically.
+
+### Settings Window
+- The Settings window has a **search bar** at the top - type to filter the settings list down to matching sections and individual controls (for example, typing "exif" jumps straight to the metadata EXIF-stripping toggle).
+- **Export Profile... / Import Profile...** - Save your current metadata-cleaning and redaction settings to a JSON file, or load a previously saved one. Useful for keeping a consistent configuration across machines or sharing a vetted settings profile with a colleague. Import validates the file and shows an error alert if it isn't a valid profile.
+- **View Logs** - Opens an in-app log viewer that reads the app's log files directly, so you can review recent activity without leaving the app or hunting through Finder. **Open App Log**, **Open Ollama Log**, and **Clear Logs** remain available for opening logs externally or resetting them.
+- **Notifications** - When enabled (and authorized in System Settings), Marcut posts a native macOS notification when a model download finishes, so you don't have to keep the app in the foreground while a large model pulls.
+
+### Batch Processing
+- While processing multiple documents, the toolbar shows an **estimated time remaining** for the batch once enough documents have completed to produce a reliable estimate. Early in a run (too few samples), no estimate is shown rather than a misleading one.
+- **Retry Failed** - After a batch finishes with one or more failures, a **Retry Failed** button appears that re-queues only the documents that failed, using their original settings and destination, without touching documents that already succeeded.
+- **Resumable batch jobs** - If the app quits or crashes mid-batch, the next launch offers to resume: a "Resume pending documents?" prompt lists how many documents were still pending and lets you resume them with the same settings, or discard the saved job and start fresh.
 
 ## Source / CLI (from repo)
 
@@ -53,9 +65,20 @@ marcut redact \
 
 Notes:
 - Use `--mode rules` for rules-only processing (no Ollama required).
-- Use `--mode enhanced` for the two-pass LLM pipeline.
-- Use `--backend llama_cpp` with `--llama-gguf <path>` to run a local GGUF model.
+- Use `--mode enhanced` for the two-pass LLM pipeline (`rules_override`, `constrained_overrides`, and `llm_overrides` are related variants of the rules+AI pipeline).
+- Use `--backend llama_cpp` with `--llama-gguf <path>` to run a local GGUF model instead of Ollama.
+- `--threads <n>` sets the worker thread count used by the local `llama_cpp` backend (default 4); it has no effect with `--backend ollama`.
+- `--timing` prints a phase-by-phase timing breakdown; `--llm-detail` additionally breaks the LLM phase into sub-components (model load, prompt eval, generation, network overhead, parsing, entity location) and implies `--timing`. See `docs/PERFORMANCE_OPTIMIZATION.md` for details.
 - If the CLI preflight says Ollama is not installed but the server is running, add the `ollama` binary to PATH.
+
+### Remote Ollama is locked down by default
+By default Marcut only talks to a **loopback** Ollama instance (`127.0.0.1`, `localhost`, or `::1`), regardless of what `OLLAMA_HOST` is set to - any non-loopback host is silently rewritten back to `127.0.0.1`. This is a safety measure: redaction input is often confidential, and it should never be sent to a remote Ollama server by accident.
+
+An escape hatch exists for developers who genuinely need to point at a remote/networked Ollama host during development:
+```
+export MARCUT_DEVELOPER_UNSAFE_ALLOW_REMOTE_OLLAMA=1
+```
+This is an **explicit, unsafe, developer-only override**. Do not set it when processing confidential or client documents - it disables the loopback guarantee and allows document text to be sent to whatever host `OLLAMA_HOST` points to.
 
 ### Run redaction (programmatically)
 ```python

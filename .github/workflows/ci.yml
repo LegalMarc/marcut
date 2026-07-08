@@ -6,6 +6,38 @@ on:
   pull_request:
 
 jobs:
+  hygiene:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Forbid committed documents and local test artifacts
+        run: |
+          if git ls-files | grep -E -i '\.(docx|doc|pdf|dmg)$|^sample-files/'; then
+            echo "::error::Documents and sample-files/ contents are confidential/local-only and must never be committed."
+            exit 1
+          fi
+          echo "No forbidden artifacts tracked."
+
+      - name: Version sync (pyproject.toml vs build-scripts/config.example.json)
+        run: |
+          python3 - <<'EOF'
+          import json, re, sys
+          m = re.search(r'^version\s*=\s*"([^"]+)"', open("pyproject.toml").read(), re.M)
+          py_version = m.group(1) if m else ""
+          cfg = json.load(open("build-scripts/config.example.json"))
+          cfg_version = cfg.get("version", "")
+          if not py_version or py_version != cfg_version:
+              sys.exit(f"Version mismatch: pyproject.toml={py_version!r} vs config.example.json={cfg_version!r}")
+          print(f"Version in sync: {py_version}")
+          EOF
+
+      - name: Ruff (error-tier lint gate)
+        run: |
+          pip install ruff
+          ruff check --select E9,F63,F7,F82 src/python tests
+
   smoke:
     runs-on: macos-14
     steps:

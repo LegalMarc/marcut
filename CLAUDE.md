@@ -10,241 +10,37 @@ Marcut is a local-first DOCX redaction tool that produces Microsoft Word documen
 
 - Never push or offer to push to any remote unless explicitly asked by the user.
 
-## Current Status (September 2024)
+## Current Status (July 2026)
 
-### ✅ RESOLVED: PythonKit + BeeWare Architecture Implementation (September 18, 2024)
+Version `0.5.97`. The PythonKit + BeeWare architecture (see `docs/historical/claude_md_status_september_2024.md` for the original migration/debugging history) has been stable in production since; a real Developer ID signed, notarized, stapled, Gatekeeper-verified DMG has been built and verified end to end.
 
-**Major Architecture Change**: Successfully transitioned from subprocess-based Python execution to direct PythonKit integration using BeeWare Python framework. This eliminates all spawn/signing/entitlement issues and provides robust, fail-fast Python execution within the Swift process.
+The pre-public-beta remediation stack (T0-T14, see `docs/backlog/pre_public_beta_audit_remediation_2026-05-13.md`) is complete: DOCX send-choice consolidation, remote-Ollama lockdown, owner-only report permissions, `--llm-detail` parity, GGUF/`--threads` forwarding, a cancellation/deadline system (`marcut/cancellation.py`), transactional artifact writes, model-download readiness checks, metadata/report size budgets, large-DOCX consistency-pass limits, fail-closed notarization, shipped-bundle SBOM coverage, and entitlement/governance verification.
 
-#### Implementation Completed:
+13 additional features have also shipped: settings search bar, native download-completion notifications, redaction-settings profile export/import, a "Retry Failed" button, an in-app log viewer, a live excluded-word match preview, batch ETA display, batch job persistence/resume, a centralized `DefaultsKey` UserDefaults enum, unified model-name-parsing between `gui.py` and `PythonBridge.swift`, and a `models.json` model catalog (see Core Architecture below).
 
-**Core Architecture Transition**:
-- ✅ **PythonKit Integration** - Direct Swift-Python integration without subprocess
-- ✅ **BeeWare Python.framework** - Universal2 framework (Python 3.11-b7) with App Store compatibility
-- ✅ **Deterministic Initialization** - Phase markers (PK_INIT_START → PK_INIT_COMPLETE) with strict timeouts
-- ✅ **Bundle Structure** - Production (Contents/Frameworks/) vs Development (MarcutApp_MarcutApp.bundle/) path resolution
-- ✅ **Deep Code Signing** - All .so/.dylib files in framework and python_site properly signed
-
-#### Working Status (September 18, 2024):
-- ✅ **Swift-Python Integration** - Direct Python execution via PythonKit (0.41s end-to-end)
-- ✅ **Framework Detection** - Automatic dev/production bundle path resolution
-- ✅ **Timeout System** - 10s per phase, 30s total with deterministic logging
-- ✅ **End-to-End Processing** - Successfully generates test_redacted.docx + test_report.json
-- ✅ **Dependency Resolution** - Python 3.11 compatibility for lxml/docx/numpy
-- ✅ **Build Pipeline** - Updated scripts/sh/build_appstore_release.sh for BeeWare framework integration
-
-#### Design Goals Achieved:
-
-**Robust**: Comprehensive timeout system with phase markers prevents hangs
-```swift
-// 10s per step, 30s total timeout with deterministic logging
-PK_INIT_START → PK_FRAMEWORK_FOUND → PK_ENV_SET → PK_LIB_LOADED → PK_IMPORT_OK → PK_INIT_COMPLETE
-```
-
-**Fail Fast**: Immediate errors on framework missing, import failures, or timeouts
-```swift
-guard let cfg = locateFramework() else {
-    throw PythonInitError.notFound  // Immediate failure, no retries
-}
-```
-
-**No Fallbacks**: Single code path using PythonKit only (subprocess support removed during transition)
-```swift
-// Direct PythonKit execution - no subprocess fallback
-let pipeline = try Python.attemptImport("marcut.pipeline")
-let code = Int(pipeline.run_redaction_enhanced(...))
-```
-
-**Speedy**: 0.41s end-to-end processing, well under timeout limits
-```
-PK_INIT_COMPLETE: 0.12s
-PK_ENHANCED_OLLAMA_COMPLETE: exit_code=0 total=0.41s
-```
-
-**App Store Compatible**: BeeWare Universal2 framework with proper deep signing
-- No subprocess execution (avoiding sandbox restrictions)
-- All native extensions properly code signed
-- Framework structure follows Apple guidelines
-
-#### Technical Implementation:
-
-**PythonKit Bridge** (`Sources/MarcutApp/PythonKitBridge.swift`):
-```swift
-final class PythonKitRunner {
-    private func withTimeout<T>(operation: String, stepTimeout: TimeInterval = 10.0, totalTimeout: TimeInterval = 30.0) throws -> T
-    func runEnhancedOllama(inputPath: String, outputPath: String, reportPath: String, model: String, debug: Bool) -> Bool
-}
-```
-
-**Framework Integration** (`setup_beeware_framework.sh`):
-```bash
-# Downloads BeeWare Python 3.11-b7 (101MB framework)
-# Installs dependencies to python_site (81MB)
-# Deep signs all .so/.dylib files for App Store compatibility
-```
-
-**Production Build** (`scripts/sh/build_appstore_release.sh`):
-```bash
-# Copies framework to Contents/Frameworks/ (production structure)
-# Signs BeeWare framework and python_site dependencies
-# Verifies framework presence before final packaging
-```
-
-### Investigation History (September 15-16, 2024)
-
-#### Problem Discovery:
-- User reported documents immediately showing "[Failed]" status after "Redact Documents" button
-- Initial assumption: Document processing pipeline failure
-- Debugging approach: Added comprehensive logging system
-
-#### Debugging Journey (Versions 0.2.9 → 0.3.7):
-
-**v0.2.9-v0.3.0**: Added logging to DocumentRedactionViewModel and PythonBridge
-- Result: No log files created, suggesting app not launching
-
-**v0.3.1**: Added DebugLogger centralized logging system with Settings toggle
-- Result: App crashed during initialization due to assertion failure in main app init
-
-**v0.3.2**: Fixed critical crash by removing problematic init() method
-- Result: App launched but still no logs, AttributeGraph cycles discovered
-
-**v0.3.3-v0.3.4**: Added console debugging and direct logging fallbacks
-- Result: Found AttributeGraph cycles preventing normal execution
-
-**v0.3.5**: Attempted to break cycles by removing @Published properties and init dependencies
-- Result: Cycles persisted, issue deeper in UI architecture
-
-**v0.3.6**: Simplified UI to isolate cycle sources
-- Result: Even minimal UI showed cycles, issue in core binding system
-
-**v0.3.7**: Implemented comprehensive SwiftUI debugging with environment variables
-- Result: **BREAKTHROUGH** - App actually works! Console shows full functionality
-
-#### Key Findings from v0.3.7 Analysis:
-```
-✅ App launched successfully - AppDelegate and ContentView both executed
-✅ Environment detected correctly - "Environment ready: false" (expected for first run)
-✅ Ollama functionality working - Model download completed successfully
-✅ UI responsive - "Button clicked" shows interaction works
-✅ No crashes - App ran stable until killed
-```
-
-**AttributeGraph cycles are warnings, not blocking errors** - the app is fully functional despite the cycles.
-
-### Debugging Approaches Evaluated:
-
-#### Approach 1: Progressive Feature Addition ✅ COMPLETED
-**Strategy**: Add logging incrementally to isolate failure point
-**Implementation**: Added logging to ViewModel → PythonBridge → AppDelegate → ContentView
-**Result**: Successfully identified that app was not launching, then discovered cycles were cosmetic
-
-#### Approach 2: Architecture Simplification ⏸️ PARTIALLY TESTED
-**Strategy**: Strip complex UI to isolate cycle sources
-**Implementation**: Replaced full UI with minimal components in v0.3.6
-**Result**: Cycles persisted even with minimal UI, indicating deeper architectural issue
-
-#### Approach 3: Direct Binary Analysis ✅ SUCCESSFUL
-**Strategy**: Use SwiftUI debugging tools to trace AttributeGraph cycles
-**Implementation**: v0.3.7 with environment variables and console monitoring
-**Tools Used**:
-- `SWIFTUI_DEBUG_ATTRIBUTE_GRAPH=1`
-- `SWIFTUI_DEBUG_UPDATES=1`
-- `SWIFTUI_DEBUG_LAYOUT=1`
-- `SWIFTUI_DEBUG_IDENTITY=1`
-**Result**: **BREAKTHROUGH** - Discovered app works despite warning cycles
-
-#### Approach 4: Revert to Known Good State ⏳ PENDING
-**Strategy**: Start from cd9ac23 and add features incrementally
-**Status**: Not yet attempted, may be unnecessary given Approach 3 success
-
-### Current Recommendations (September 16, 2024):
-
-#### Option 1: Test Document Processing (RECOMMENDED)
-**Rationale**: App is functional, test core feature before optimizing warnings
-**Next Steps**:
-- Test document drag-and-drop functionality
-- Verify end-to-end redaction pipeline
-- Confirm original "[Failed]" issue is resolved
-
-#### Option 2: AttributeGraph Cycle Cleanup
-**Rationale**: Professional polish, potential performance improvements
-**Approach**: Target specific attribute IDs (176748, 181112, 215632) identified in logs
-**Priority**: Medium (after core functionality confirmed)
-
-#### Option 3: Production Debug System
-**Rationale**: Maintain debugging capabilities for production issues
-**Tasks**:
-- Refine DebugLogger integration
-- Default debug mode to OFF for production
-- Add debug toggle UI functionality
-
-#### Option 4: Accept Cycles and Ship
-**Rationale**: Cycles are cosmetic warnings, focus on user value
-**Approach**: Document known issue, prioritize feature completion
-
-### Technical Debt Notes:
-
-#### Known Issues:
-- SwiftUI AttributeGraph cycles (cosmetic warnings)
-- DebugLogger initialization timing
-- Complex UI binding patterns in DocumentRow/DocumentListView
-
-#### Future Improvements:
-- Cycle elimination for performance optimization
-- Streamlined debug system
-- UI component refactoring
-
-### Historical Working State (Commit cd9ac23)
-
-#### 1. Fixed Ollama Timeout Issue
-```python
-# marcut/model_enhanced.py - Line 147
-# Replaced complex enhanced extraction with simple extraction
-from .model import ollama_extract
-try:
-    simple_spans = ollama_extract(
-        self.model_id,
-        chunk_text,
-        self.temperature,
-        seed=42  # Fixed seed for consistency
-    )
-except Exception as e:
-    print(f"Error extracting entities from chunk: {e}")
-    simple_spans = []
-```
-
-#### 2. Increased Timeouts
-```python
-# marcut/model.py - Lines 248, 261
-timeout=60  # Increased from 30 seconds for larger chunks
-```
-
-#### 3. Disabled JSON Format Constraint
-```python
-# marcut/model.py - Lines 242, 258
-# "format": "json",  # Disabled - causes hangs with qwen2.5:14b
-```
-
-### Test Results
-Successfully processed multiple documents:
-- **Compliance-Cert.docx**: 46 entities detected, track changes generated
-- **loan-term-sheeet.docx**: 30 entities detected, successful redaction
-- **Sample files**: All test documents process without timeouts
+See `docs/CHANGELOG.md` for the full history and `docs/BACKLOG.md` for what's still open (several items have design-spike docs under `docs/design/` that should be read before implementation — a few carry real correctness/privacy risk if built without that analysis).
 
 ## Core Architecture
 
 ### Main Components
-- **marcut/pipeline.py** - Core redaction pipelines (`run_redaction()` for classic, `run_redaction_enhanced()` for two-pass LLM)
-- **marcut/model.py** - LLM extraction via Ollama API (fixed timeout issues)
-- **marcut/model_enhanced.py** - Enhanced two-pass LLM extractor/validator with document-level context
-- **marcut/rules.py** - Rule-based structured PII detection (emails, phones, credit cards, dates, money)
-- **marcut/docx_io.py** - Microsoft Word track changes writer using revision elements
-- **marcut/gui.py** - Tkinter GUI for the desktop application
-- **marcut/cli.py** - Command-line interface with `marcut` script entry point
-- **marcut/bootstrapper.py** - Application bootstrapping and embedded Ollama management
-- **marcut/ollama_manager.py** - Ollama lifecycle management and model download
-- **MarcutApp/Sources/MarcutApp/PythonKitBridge.swift** - PythonKit integration with BeeWare framework and timeout system
-- **MarcutApp/Sources/MarcutApp/PythonBridge.swift** - Legacy subprocess wrapper (transition period only)
+
+All Python sources live under `src/python/marcut/`, all Swift sources under `src/swift/MarcutApp/Sources/MarcutApp/`.
+
+- **pipeline.py** - Core redaction pipeline (`run_redaction()`), transactional artifact staging, metadata/report size budgets, consistency-pass candidate limits
+- **model.py** - Ollama extraction helpers; deadline-bounded HTTP requests
+- **model_enhanced.py** - Enhanced two-pass LLM extractor/validator with document-level context, cancellation-aware
+- **cancellation.py** - Shared processing-deadline primitive (`ProcessingDeadlineExceeded`, `MARCUT_PROCESSING_DEADLINE_MONOTONIC`)
+- **rules.py** - Rule-based structured PII detection (emails, phones, credit cards, dates, money)
+- **docx_io.py** - Microsoft Word track changes writer, metadata scrubbing/hardening using revision elements
+- **model_config.py** - Loader for the shared `models.json` model catalog
+- **gui.py** - Tkinter GUI (still used by `bootstrapper.py`/`native_setup.py`, not the primary macOS app UI)
+- **cli.py** - Command-line interface with `marcut` script entry point
+- **unified_redactor.py** - Shared entry point used by both the CLI and the Swift app
+- **bootstrapper.py** - Application bootstrapping and embedded Ollama management
+- **ollama_manager.py** - Ollama lifecycle management and model download
+- **PythonKitBridge.swift** - PythonKit integration: BeeWare framework init, timeout system, deadline-marker env var
+- **PythonBridge.swift** - Ollama process management, model download/readiness, notifications; used alongside PythonKit, not a legacy fallback
+- **ModelCatalog.swift** / **BundleResourceLocator.swift** - Swift-side loader for the shared `models.json` catalog
 
 ### Processing Pipeline
 1. Rule-based detection for structured PII
@@ -269,7 +65,7 @@ pip install -e .
 ```bash
 # Enhanced pipeline (recommended)
 marcut redact \
-  --in sample-files/Shareholder-Consent.docx \
+  --in "sample-files/Consent.docx" \
   --out runs/out.docx \
   --report runs/out.json \
   --backend ollama \
@@ -289,27 +85,31 @@ ollama pull qwen2.5:14b
 ### Swift App Building
 ```bash
 # Set up BeeWare Python framework (one-time setup)
-./setup_beeware_framework.sh
+bash build-scripts/setup_beeware_framework.sh
 
 # Build Swift app
-cd MarcutApp
-swift build
+swift build --package-path src/swift/MarcutApp
 
-# Create production DMG with embedded framework
-cd ..
-./scripts/sh/build_appstore_release.sh
+# Release preflight (tests, SBOM, dependency audit, markdown links, version-sync, secrets check)
+bash scripts/release_preflight.sh
 
-# Output: MarcutApp-Production-v0.3.x.dmg (~200MB with BeeWare framework)
+# Create a Developer ID signed, notarized DMG (requires a Developer ID
+# Application cert and notarization credentials at ~/.config/marcut/notarize.env)
+bash scripts/sh/build_devid_release.sh
+
+# Output: .marcut_artifacts/ignored-resources/MarcutApp-v<version>-AppStore.dmg
 ```
+
+Canonical entrypoint for humans (menu-driven, not scriptable): `python3 build_tui.py`.
 
 ### BeeWare Framework Setup
 ```bash
 # Download and configure BeeWare Python 3.11 framework
-./setup_beeware_framework.sh
+bash build-scripts/setup_beeware_framework.sh
 
 # Installs:
-# - MarcutApp/Frameworks/Python.framework (101MB Universal2 framework)
-# - MarcutApp/python_site/ (81MB Python dependencies)
+# - src/swift/MarcutApp/Sources/MarcutApp/Frameworks/Python.framework (Universal2 framework)
+# - src/swift/MarcutApp/Sources/MarcutApp/python_site/ (Python dependencies)
 # - Proper code signing for all native extensions
 ```
 
@@ -318,11 +118,11 @@ cd ..
 
 ### Project Structure
 - **pyproject.toml** - Python project configuration with dependencies
-- **setup.py** - py2app configuration for macOS app bundle
-- **packaging/** - Build scripts and app bundle configurations
-- **docs/** - Comprehensive documentation including USER_GUIDE.md and DEVELOPER_GUIDE.md
+- **setup.py** - legacy py2app configuration; not the shipped packaging path (PythonKit + BeeWare is primary, see Packaging Specifics below)
+- **build-scripts/** - Build scripts, entitlements, and app bundle configuration (`config.json`, gitignored; copy from `config.example.json`)
+- **docs/** - Documentation, including USER_GUIDE.md, DEVELOPER_GUIDE.md, TECHNICAL_ARCHITECTURE.md, and design spikes under `docs/design/`
 - **sample-files/** - Test DOCX files for validation
-- **excluded-words.txt** - Legal/business terms to exclude from redaction
+- **assets/excluded-words.txt** and **assets/help.md** - canonical sources mirrored into both the Python package and the Swift app bundle (see `assets/models.json` for the same pattern with the model catalog)
 
 ### Key Dependencies
 
@@ -331,15 +131,16 @@ cd ..
 - **BeeWare Python.framework** - Universal2 Python 3.11 runtime for macOS
 - **Deep Code Signing** - All .so/.dylib files signed for App Store distribution
 
-**Python Dependencies** (installed to python_site):
-- python-docx>=1.1.0 - DOCX document manipulation
-- rapidfuzz>=3.6.1 - Fast string matching
-- pydantic>=2.6.4 - Data validation
-- requests>=2.31.0 - HTTP client for Ollama API
-- dateparser>=1.2.0 - Date parsing
-- tqdm>=4.66.0 - Progress bars
-- lxml>=5.0.0 - XML processing (Python 3.11 compatible wheels)
-- numpy>=1.24.0 - Numerical operations
+**Python Dependencies** (see `pyproject.toml` for constraints, `requirements-pinned.txt` for the exact shipped versions):
+- python-docx - DOCX document manipulation
+- rapidfuzz - Fast string matching
+- pydantic - Data validation
+- requests - HTTP client for Ollama API
+- dateparser - Date parsing
+- tqdm - Progress bars
+- lxml - XML processing
+- numpy - Numerical operations
+- regex - Extended regex support
 
 ## Testing and Validation
 
@@ -347,7 +148,7 @@ cd ..
 **MANDATORY: When adding ANY new feature, you MUST update corresponding tests.**
 
 **Required test updates for every feature addition:**
-1. **Swift Features** → Update `MarcutApp/Tests/MarcutAppTests/MarcutAppTests.swift`
+1. **Swift Features** → Update `src/swift/MarcutApp/Tests/MarcutAppTests/MarcutAppTests.swift`
 2. **Python Features** → Update appropriate test files in `tests/` directory
 3. **New Rules/Entities** → Update `tests/test_url_redaction.py` or create new test files
 4. **Pipeline Changes** → Add integration tests and update existing test coverage
@@ -362,29 +163,23 @@ cd ..
 
 **Test Execution:**
 ```bash
-# Run complete test suite before committing any feature
-python3 run_tests.py
+# Python test suite (463+ tests)
+PYTHONPATH=src/python python3 -m pytest -q
 
-# Run Swift tests only
-python3 run_tests.py --swift-only
+# Swift test suite
+swift test --package-path src/swift/MarcutApp
 
-# Run Python tests only
-python3 run_tests.py --python-only
+# Full release-readiness gate (both suites plus SBOM, dependency audit,
+# markdown links, version-sync, secrets check)
+bash scripts/release_preflight.sh
 ```
 
 ### Current Test Coverage
-- **Swift UI Tests**: 12 test methods covering all UI improvements and state management
-- **Python Logic Tests**: URL redaction, entity detection, sequential ID assignment
-- **Integration Tests**: End-to-end pipeline validation with sample documents
-
-### Running Tests
-Check for existing test files and run with standard Python testing tools. The project includes sample files in `sample-files/` for validation.
+- **Swift Tests**: `src/swift/MarcutApp/Tests/MarcutAppTests/MarcutAppTests.swift`
+- **Python Tests**: `tests/` -- rules, model/cancellation behavior, pipeline (including transactional writes and large-DOCX performance), metadata scrubbing, CLI, unified redactor, and more
 
 ### Integration Testing
-```bash
-# Build with integration tests
-./build_master.sh --test
-```
+`bash scripts/verify_bundle.sh <path-to-dmg>` runs artifact checks, embedded-spawn verification, and a mock redaction against a built DMG.
 
 ### Model Testing
 Use `marcut/model_mock_llm.py` for testing without requiring live Ollama service.
@@ -406,8 +201,10 @@ Use `marcut/model_mock_llm.py` for testing without requiring live Ollama service
 - **Professional DMG creation** with code signing and notarization support
 
 ### File Locations
-- **User data** stored in `~/.marcut/`
-- **Models cached** in `~/.marcut/models/`
-- **App Support logs** in `~/Library/Application Support/MarcutApp/` (GUI app logs)
-- **Legacy logs** in `~/.marcut/logs/` (CLI/development logs)
-- **Configuration** in `~/.marcut/config.json`
+
+The macOS app (sandboxed) and the source CLI use different locations:
+
+- **macOS app**: `~/Library/Application Support/MarcutApp/` -- `models/`, `Overrides/` (excluded-words.txt, system-prompt.txt), `logs/`, `Work/Staging/`
+- **Source CLI** (`marcut` installed via `pip install -e .`): `~/.marcut/` -- `config.json`, `models/`, `logs/`
+
+Notarization credentials for release builds live at `~/.config/marcut/notarize.env` (owner-only permissions, gitignored, never committed).

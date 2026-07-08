@@ -36,11 +36,28 @@ MarcutApp must always be:
 #### 1. Swift Integration Layer
 ```swift
 // PythonKitRunner - Core Python execution interface
-final class PythonKitRunner {
+public final class PythonKitRunner {
     // Direct Python execution via PythonKit
-    func runEnhancedOllama(inputPath: String, outputPath: String, reportPath: String, model: String, debug: Bool) -> Bool
+    func runEnhancedOllama(
+        inputPath: String,
+        outputPath: String,
+        reportPath: String,
+        model: String,
+        debug: Bool,
+        mode: String,
+        llmSkipConfidence: Double = 0.95,
+        llmConcurrency: Int = 2,
+        chunkTokens: Int = 500,
+        overlap: Int = 120,
+        temperature: Double = 0.1,
+        seed: Int = 42,
+        processingStepTimeout: TimeInterval? = nil,
+        cancellationChecker: @escaping () -> Bool,
+        heartbeat: ((PythonRunnerProgressUpdate) -> Void)? = nil
+    ) -> PythonRunOutcome
 }
 ```
+(See `src/swift/MarcutApp/Sources/MarcutApp/PythonKitBridge.swift`. The function returns a `PythonRunOutcome`, not a `Bool` - it now also carries a `cancellationChecker` for cooperative cancellation and an optional `heartbeat` callback for progress updates, and `mode` selects between rules-only and the various rules+AI pipelines described in `docs/USER_GUIDE.md`.)
 
 #### 2. Python Runtime Layer
 ```python
@@ -164,6 +181,62 @@ python3 -m pytest tests/test_report_common.py -v
 - The macOS app now ships with an override manager (`UserOverridesManager`). Editors in the Settings sheet let users modify `excluded-words.txt` and the LLM system prompt.
 - Overrides are stored under Application Support (`~/Library/Application Support/MarcutApp/Overrides/`) and mirrored via `MARCUT_EXCLUDED_WORDS_PATH` / `MARCUT_SYSTEM_PROMPT_PATH`. If App Group entitlements are enabled (custom builds), the overrides can live in the group container instead. Both the in-process PythonKit runner and CLI inherit these env vars so the same list/prompt applies everywhere.
 - Python code watches the override files: if the timestamp changes, the regex cache and prompt string reload automatically without restarting the app.
+
+### Cancellation & Processing Deadlines
+`src/python/marcut/cancellation.py` provides a small cooperative-cancellation helper used to bound long-running Ollama HTTP calls and interrupt hanging extraction work:
+
+```python
+class ProcessingDeadlineExceeded(TimeoutError):
+    """Raised when a configured processing deadline has elapsed."""
+
+def processing_deadline() -> Optional[float]:
+    """Reads MARCUT_PROCESSING_DEADLINE_MONOTONIC (a time.monotonic() timestamp)."""
+
+def remaining_seconds(default: float, *, minimum: float = 0.25) -> float:
+    """Returns min(default, time left until the deadline), raising
+    ProcessingDeadlineExceeded if the deadline has already passed."""
+
+def check_processing_deadline() -> None:
+    """Raises ProcessingDeadlineExceeded if the deadline has elapsed; no-op otherwise."""
+```
+
+- The deadline is communicated via the `MARCUT_PROCESSING_DEADLINE_MONOTONIC` environment variable, expressed in `time.monotonic()` units (not wall-clock time), so it survives across the Swift/Python boundary without clock-skew issues.
+- `remaining_seconds()` is used to size individual Ollama HTTP request timeouts so a single slow request cannot outlive the overall processing budget; `check_processing_deadline()` is called at safe checkpoints in the extraction loop so a stuck or slow model doesn't hang the app indefinitely.
+- When no deadline is set (the env var is empty/unset), `processing_deadline()` returns `None` and the helpers behave as if there is no budget - existing callers without a caller-supplied deadline are unaffected.
+
+### Model Catalog (`models.json`)
+The list of supported/recommended Ollama models and their default parameters (temperature, validation skip-confidence, display metadata, etc.) lives in a single `models.json` file that is shipped in **three mirrored locations** which must stay byte-identical:
+- `assets/models.json` - canonical source checked into the repo
+- `src/python/marcut/models.json` - bundled resource for the Python package
+- `src/swift/MarcutApp/Sources/MarcutApp/Resources/models.json` - bundled resource for the Swift app
+
+Each side loads its own copy independently:
+- **Python**: `src/python/marcut/model_config.py` loads and validates the catalog (`ModelConfig` dataclass, `list_models()`, `get_model()`, `default_model_id()`, `default_temperature()`, `default_skip_confidence()`). It raises `ModelCatalogError` if the file is missing, malformed, or the `defaultModel` doesn't match a listed model id.
+- **Swift**: `ModelCatalog.swift` (`ModelCatalogEntry`, `ModelCatalogFile`, `ModelCatalog`) loads the same schema and exposes `entry(for:)` plus accent-color resolution for the UI. `BundleResourceLocator.swift` (`resolveDefaultResourceURL`) is what finds the bundled resource file at runtime, handling both the production app bundle and Swift Package/dev layouts.
+- If you change the `models.json` schema, update the loader on **both** sides (`model_config.py` and `ModelCatalog.swift`) and keep all three copies in sync the same way `excluded-words.txt` is kept in sync - there is no automated sync step, so a diff of the three files should always be empty.
+
+### Release Preflight
+`scripts/release_preflight.sh` is the single script that gates release-readiness. It wraps the automatable subset of `docs/RELEASE_CHECKLIST.md`'s "Pre-Release Checks" into one command that fails fast on the first broken step:
+1. Python test suite (`pytest`)
+2. Swift test suite (`swift test`)
+3. SBOM generate + check (`scripts/generate_python_sbom.py`)
+4. Dependency vulnerability audit (`scripts/check_dependency_vulnerabilities.py`)
+5. Markdown link check (`scripts/check_markdown_links.py`)
+6. Version-sync check (`build-scripts/config.json` vs. the last tagged release)
+7. Secrets check (`build-scripts/config.json` must not be tracked by git)
+
+Run it with `bash scripts/release_preflight.sh`. By default the SBOM step is derived from the staged repo checkout; set `RELEASE_PREFLIGHT_BUNDLE_ROOT=/path/to/MarcutApp.app` to instead derive the SBOM from an actual built `.app` (passed through as `--bundle-root`), matching the release checklist's guidance to validate against the real bundle before shipping.
+
+#### SBOM from a built bundle
+`scripts/generate_python_sbom.py` accepts an optional `--bundle-root /path/to/MarcutApp.app`. When provided, the script reads the Python framework's `Info.plist`, the embedded `ollama` binary, and `Contents/Resources/python_site` from inside the built app bundle instead of the staged checkout paths, so the SBOM reflects exactly what got shipped (including any bundle-time transformations). Without `--bundle-root`, it falls back to the repo's staged `python_site` directory - useful for fast iteration, but not a substitute for a bundle-derived SBOM before a release.
+
+### New Swift Support Files
+A few small, focused Swift files back the newer app-level features described in `docs/USER_GUIDE.md`:
+- **`DefaultsKey.swift`** - Centralizes `UserDefaults` key names (including the notification-preference flag) so call sites don't hand-roll string keys.
+- **`BatchETACalculator.swift`** - `BatchETASample` + `BatchETACalculator.estimate(samples:remainingSizes:)` computes the batch "estimated time remaining" shown in the UI once enough documents have completed to produce a reliable estimate.
+- **`PendingBatchJobStore.swift`** - `PendingBatchJobRecord` (Codable) plus `save`/`load`/`clear` persist the in-flight batch (document paths + settings) to `UserDefaults` so a mid-batch app quit can offer to resume on next launch.
+- **`ExcludedWordMatcher.swift`** - A Swift port of `marcut.rules._is_excluded`'s matching logic (`CompiledEntry`, `MatchResult`, `compileEntries`/`compileAllEntries`, `match`) used to power the live excluded-word match preview in the Settings editor without round-tripping into Python.
+- **`RedactionProfile`** (defined in `DocumentModels.swift`) - Codable bundle of `MetadataCleaningSettings` + redaction settings, with `RedactionProfile.decoded(from:)` for the Settings "Export Profile.../Import Profile..." JSON save/load feature.
 
 ### Error Handling & Logging
 ```swift

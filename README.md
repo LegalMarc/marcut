@@ -4,11 +4,13 @@
 
 Marcut is a native macOS application for legal and professional document redaction. It combines a deterministic rules engine with optional local AI (Ollama) to identify and redact sensitive information (PII) from Microsoft Word (.docx) documents, producing "Track Changes" redlines plus JSON audit and scrub reports.
 
-![License](https://img.shields.io/github/license/marclaw/marcut)
+![License](https://img.shields.io/github/license/LegalMarc/marcut)
 ![Python](https://img.shields.io/badge/python-3.11%2B-blue.svg)
 ![Build](https://img.shields.io/badge/build-passing-brightgreen.svg)
 
-![Architecture Overview](docs/Architecture%20Diagram.jpg)
+> **Platform:** Marcut is a **macOS-only** application (Apple Silicon and Intel, Universal2). The `marcut` Python CLI can run on other platforms with a local Ollama install, but is developed and tested on macOS.
+
+See [Technical Architecture](docs/TECHNICAL_ARCHITECTURE.md) for a system design overview.
 
 ## 🚀 Key Features
 
@@ -59,13 +61,17 @@ To build Marcut from source (macOS required):
 
 For detailed build instructions, see the [Developer Guide](docs/DEVELOPER_GUIDE.md).
 
+## 📦 Distribution
+
+Marcut ships as a Developer ID signed and notarized DMG via [GitHub Releases](https://github.com/LegalMarc/marcut/releases). Homebrew cask and PyPI distribution are not yet available.
+
 ## 🤝 Contributing
 
-We welcome contributions! Please see [CONTRIBUTING.md](docs/CONTRIBUTING.md) for guidelines on code style, testing, and the pull request process.
+We welcome contributions! Please see [CONTRIBUTING.md](docs/CONTRIBUTING.md) for guidelines on code style, testing, and the pull request process, and our [Code of Conduct](CODE_OF_CONDUCT.md).
 
 ## 📄 License
 
-This project is licensed under the MIT License - see the LICENSE.txt file for details.
+This project is licensed under the MIT License - see the LICENSE file for details. Bundled third-party components remain under their own licenses - see [THIRD_PARTY_LICENSES.md](THIRD_PARTY_LICENSES.md).
 
 ---
 *Built with SwiftUI, PythonKit, BeeWare, and local Ollama.*

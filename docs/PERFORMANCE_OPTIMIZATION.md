@@ -185,6 +185,22 @@ if 'llm_timing' in timings:
 
 ---
 
+## Large-Document Consistency-Pass Budgets (T10 Remediation)
+
+The `POST_PROCESS` phase includes a "consistency pass" (`_apply_consistency_pass` in `src/python/marcut/pipeline.py`) that rescans the full document text for additional exact/fuzzy matches of entities already found by rules/LLM (e.g. a name found once gets consistently redacted everywhere it recurs). On documents with thousands of unique ORG/PERSON candidates, the naive version of this pass can degrade badly: building huge alternation regexes and running per-candidate fuzzy matching against every ORG candidate is O(candidates) or worse against document length.
+
+Three environment variables bound this work so a single pathological document can't turn `POST_PROCESS` into the new bottleneck:
+
+| Env Var | Default | Effect |
+|---------|---------|--------|
+| `MARCUT_CONSISTENCY_MAX_CANDIDATES` | 1,500 | Caps the total number of candidate spans (across all safe labels: ORG, PERSON, NAME, EMAIL, SSN, PHONE, ACCOUNT, CARD, BRAND) collected for the consistency rescan. Once reached, remaining spans are skipped for consistency purposes (they keep whatever redaction they already have from rules/LLM - this only limits *additional* consistency-pass matches). |
+| `MARCUT_CONSISTENCY_MAX_FUZZY_ORG_CANDIDATES` | 250 | Caps how many ORG candidates go through the expensive per-candidate fuzzy/token-based scan (step 3 of the pass, needed to catch reworded/partial company names). Exact and case-insensitive regex matching (steps 1-2) still runs for all collected candidates; only the fuzzy fallback is capped. |
+| `MARCUT_CONSISTENCY_MAX_PATTERN_CHARS` | 120,000 chars | Caps the total escaped-pattern length used when building the case-insensitive alternation regex, so an enormous number of distinct candidate strings can't produce a regex so large it stalls the regex engine. Once the budget is hit, remaining candidates are excluded from that regex pass. |
+
+All three are read via the same bounded-int helper as the metadata size budgets in `docs/METADATA_HARDENING.md` (a limit of `0` disables that particular cap), and each one logs a one-line notice when `--debug` is enabled and the limit is actually hit (e.g. `Consistency Pass: Candidate limit reached (1500); skipping remaining candidates.`), so a slow run can be diagnosed from `--debug` output rather than silent truncation.
+
+These budgets only affect the consistency-pass *rescan* - they never remove or weaken a redaction that rules or the LLM already produced directly; they only bound how much extra rescanning work is done to catch additional occurrences of already-found entities.
+
 ## Related Files
 
 - [`src/python/marcut/llm_timing.py`](../src/python/marcut/llm_timing.py) - LLM timing instrumentation
@@ -194,4 +210,4 @@ if 'llm_timing' in timings:
 
 ---
 
-*Last updated: December 2024*
+*Last updated: July 2026*
