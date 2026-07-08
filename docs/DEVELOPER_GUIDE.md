@@ -207,6 +207,32 @@ If App Group entitlements are enabled (custom builds), these paths can be mirror
 - The metadata matrix script (`scripts/run_metadata_matrix.py`) auto-generates a minimal DOCX if `sample-files/Sample 123 Consent.docx` is missing; keep real sample files locally for higher-fidelity validation.
 - The build TUI “Run Tests” menu delegates to `run_tests.py`, so the same behaviors apply there.
 
+### PII Detection Accuracy (Precision/Recall) Eval
+Detection-quality regressions are caught by an automated per-entity-type precision/recall
+harness, in addition to the existing manual LLM benchmark tooling:
+
+- **`tests/test_pii_eval_harness.py`** — builds a small synthetic, labeled DOCX corpus at
+  test time (`tests/pii_eval/corpus.py` + `tests/pii_eval/labels.json`; nothing binary is
+  committed) covering EMAIL, PHONE, SSN, CARD, MONEY, DATE, ORG, LOC, and NAME across the
+  document body, a table cell, the header, and the footer. It runs the corpus through the
+  **rules-only** pipeline (`mode="rules"`, no Ollama needed) and asserts per-type
+  precision/recall against regression floors, printing a per-type table. This is the test
+  that runs in CI (see the "smoke" job in `.github/workflows/ci.yml` and the full-suite
+  `pytest -q` job in `.github/workflows/macos-build-verify.yml`).
+- **`tests/pii_eval/run_eval.py`** — standalone runner for the *same* corpus, usable
+  locally to eval the full two-pass LLM pipeline against a real Ollama model (not run in
+  CI: it needs Ollama installed locally and isn't deterministic run-to-run):
+  ```bash
+  ollama serve &
+  ollama pull qwen2.5:14b
+  PYTHONPATH=src/python python3 -m tests.pii_eval.run_eval --mode llm --model qwen2.5:14b
+  ```
+  Run `--mode rules` (the default) to reproduce the CI gate locally without Ollama.
+- **`tests/benchmark/model_benchmark.py`** — pre-existing, broader model speed-vs-accuracy
+  comparison tool (Ollama or GGUF, aggregate precision/recall/F1 against a hand-labeled
+  real document); still the right tool for comparing models/prompts against a realistic
+  document rather than the synthetic per-type corpus above.
+
 ### CLI Testing
 ```bash
 # Test CLI functionality (uses PythonKit directly)

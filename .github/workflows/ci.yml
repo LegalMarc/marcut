@@ -28,7 +28,7 @@ jobs:
 
       - name: Python smoke tests (rules-only)
         run: |
-          pytest -q tests/test_rules.py tests/test_rule_filter.py
+          pytest -q tests/test_rules.py tests/test_rule_filter.py tests/test_pii_eval_harness.py
 
       - name: Swift build (compile-only)
         run: |
