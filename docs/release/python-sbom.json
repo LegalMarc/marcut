@@ -301,9 +301,9 @@
         "value": "SwiftPM Git revisions, BeeWare Python framework, and embedded Ollama require manual release review unless external scanner support is added."
       }
     ],
-    "timestamp": "2026-07-03T21:55:21.753861Z"
+    "timestamp": "2026-07-05T01:06:41.917317Z"
   },
-  "serialNumber": "urn:uuid:30c516d2-9aec-4408-bcbe-c3b501dccdd0",
+  "serialNumber": "urn:uuid:21b59764-d326-4a7f-9c09-73ad400f4a4a",
   "specVersion": "1.5",
   "version": 1
 }

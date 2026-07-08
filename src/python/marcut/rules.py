@@ -237,6 +237,11 @@ _JURISDICTION_TAIL_RE = re.compile(
     rf"[^\S\n]*$"
 )
 
+# Matches a bare jurisdiction name (single- or multi-word, e.g. "Delaware" or
+# "New York") and nothing else -- used to recognize a COMPANY_SUFFIX candidate
+# whose entire name portion is just a state name (see _is_generic_org_span).
+_US_JURISDICTION_FULL_RE = re.compile(rf"(?i)(?:{_US_JURISDICTIONS})")
+
 # Entity suffixes containing periods that should NOT trigger sentence boundary detection
 _ENTITY_SUFFIX_PERIODS = re.compile(
     r"(?:L\.L\.C\.|L\.L\.P\.|L\.P\.|G\.P\.|P\.C\.|P\.A\.|N\.A\.|S\.A\.S\.|S\.A\.|B\.V\.|N\.V\.|p\.l\.c\.)"
@@ -837,6 +842,18 @@ def _is_generic_org_span(text: str) -> bool:
     # Check all words except the last (which is the suffix)
     # If ALL of them are either connectors or excluded words, it's generic
     name_portion = parts[:-1]  # Everything except the suffix
+
+    # A name portion that is ENTIRELY a jurisdiction name (e.g. "Delaware", or
+    # multi-word ones like "New York"/"North Carolina") is jurisdiction-clause
+    # noise, not a distinctive org name component -- COMPANY_SUFFIX's ordered
+    # suffix alternation can match a bare legal-form word (e.g. "Limited")
+    # immediately after a state name before ever trying the longer "Limited
+    # Liability Company" phrase, producing a standalone "Delaware limited" /
+    # "New York limited" style candidate. The per-word checks below only ever
+    # look at one token at a time, so a multi-word state would have its first
+    # token (e.g. "New") misread as distinctive; check the whole phrase first.
+    if _US_JURISDICTION_FULL_RE.fullmatch(" ".join(name_portion)):
+        return True
 
     if _has_org_suffix(cleaned_text):
         distinctive = False

@@ -541,6 +541,45 @@ class TestCompanySuffixPattern:
         text = "EXOS, LLC, a Delaware\nlimited liability company"
         assert _trim_org_jurisdiction_suffix(text) == text
 
+    def test_state_name_before_bare_legal_form_word_is_not_bogus_org(self):
+        """COMPANY_SUFFIX's suffix alternation is ORDERED (first-alternative-wins,
+        not longest-match), and bare "Limited" precedes the "Limited Liability
+        Company" phrase in that alternation. So a jurisdiction clause like "a
+        Delaware limited liability company" also produces a raw, standalone
+        2-token candidate "Delaware limited" (state name + bare suffix word,
+        stopping short of "liability company"). _is_generic_org_span must
+        recognize this as jurisdiction-clause noise for both single- and
+        multi-word state names -- not just single-word ones like "Delaware",
+        which happened to already work because "Delaware" alone is a literal
+        entry in excluded-words.txt while "New York" (split into "New" + "York")
+        is not matched by the per-word exclusion check.
+        """
+        text = (
+            "This Agreement is between EXOS, LLC, a Delaware limited liability "
+            "company, and TIME USA, LLC, a New York limited liability company."
+        )
+        orgs = [s["text"] for s in run_rules(text) if s["label"] == "ORG"]
+
+        assert orgs == ["EXOS, LLC", "TIME USA, LLC"]
+
+        # Direct unit coverage: no state name (single- or multi-word) immediately
+        # followed by a bare legal-form word should ever be treated as a
+        # distinctive org name, regardless of which legal-form word follows.
+        for state in ("Delaware", "Nevada", "New York", "North Carolina", "West Virginia"):
+            for suffix in ("limited", "corporation", "company"):
+                assert _is_generic_org_span(f"{state} {suffix}") is True, (
+                    f"{state!r} + {suffix!r} should be generic jurisdiction noise"
+                )
+
+    def test_state_name_as_part_of_longer_distinctive_org_name_still_detected(self):
+        """The jurisdiction-name generic check must only fire when the ENTIRE
+        name portion is a bare state name -- a real company name that merely
+        contains a state name (e.g. "New York Life Insurance Company") must
+        still be detected in full, not suppressed."""
+        text = "Contract with New York Life Insurance Company regarding the policy."
+        orgs = [s["text"] for s in run_rules(text) if s["label"] == "ORG"]
+        assert "New York Life Insurance Company" in orgs
+
 
 class TestRunRulesIntegration:
     """Integration tests for run_rules function."""
