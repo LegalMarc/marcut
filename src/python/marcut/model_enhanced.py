@@ -1377,7 +1377,7 @@ class LlamaCppRedactionPipeline:
                         confidence=item.get("confidence", 0.85),
                         needs_redaction=item.get("needs_redaction", True),
                         rationale=item.get("rationale"),
-                        source=self.model_id
+                        source=self.model_path
                     )
                     entities.append(entity)
                     start_search = start + 1

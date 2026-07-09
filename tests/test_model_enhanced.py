@@ -9,7 +9,7 @@ import pytest
 
 import marcut.model_enhanced as model_enhanced
 from marcut.cancellation import ProcessingDeadlineExceeded
-from marcut.model_enhanced import ollama_validate, Entity, DocumentContext
+from marcut.model_enhanced import ollama_validate, Entity, DocumentContext, LlamaCppRedactionPipeline
 
 
 class DummyResponse:
@@ -205,6 +205,34 @@ def test_intelligent_pipeline_sends_seed_to_chunk_extraction(monkeypatch):
 
     assert spans
     assert captured == {"model_id": "test-model", "temperature": 0.3, "seed": 456}
+
+
+def test_llama_cpp_pipeline_extract_entities_returns_entities(monkeypatch):
+    """Regression test: extract_entities() used to build Entity(source=self.model_id),
+    but __init__ never sets self.model_id (only self.model_path), so every call raised
+    AttributeError. That was silently swallowed by the method's broad except handler,
+    so the llama_cpp backend always returned zero entities. Stub _generate_response so
+    this doesn't require the optional llama-cpp-python dependency to be installed.
+    """
+    pipeline = LlamaCppRedactionPipeline(model_path="/fake/path/model.gguf", temperature=0.1, seed=42)
+
+    fake_response = json.dumps({
+        "entities": [
+            {"text": "John Smith", "label": "NAME", "confidence": 0.9, "needs_redaction": True}
+        ]
+    })
+    monkeypatch.setattr(pipeline, "_generate_response", lambda prompt, max_tokens=1024: fake_response)
+
+    doc_context = DocumentContext()
+    doc_context.analyze_document("John Smith signed the agreement.")
+
+    entities = pipeline.extract_entities("John Smith signed the agreement.", doc_context)
+
+    assert len(entities) == 1
+    entity = entities[0]
+    assert entity.text == "John Smith"
+    assert entity.label == "NAME"
+    assert entity.source == "/fake/path/model.gguf"
 
 
 def test_document_context_collects_specific_org_alias_after_formation_clause():
