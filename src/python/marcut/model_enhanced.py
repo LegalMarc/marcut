@@ -898,6 +898,30 @@ def _dedupe_chunk_overlap_entities(entities: List["Entity"]) -> List["Entity"]:
     return deduped
 
 
+class LLMChunkExtractionFailed(RuntimeError):
+    """Raised when the LLM extractor could not analyze one or more chunks.
+
+    Marcut is a privacy tool: if part of the document text was never scanned
+    by the LLM, the run must fail closed rather than silently ship a
+    redacted DOCX that looks complete while some text ranges were never
+    analyzed. ``failures`` lists one entry per chunk that never produced a
+    successful extraction, each with the document-coordinate character range
+    (``start``/``end``) that was left unanalyzed.
+    """
+
+    def __init__(self, failures: List[Dict[str, Any]], total_chunks: int):
+        self.failures = list(failures)
+        self.total_chunks = total_chunks
+        ranges = "; ".join(
+            f"chunk {f['chunk_index'] + 1}/{total_chunks} chars {f['start']}-{f['end']}: {f['error']}"
+            for f in self.failures
+        )
+        super().__init__(
+            f"AI extraction failed for {len(self.failures)} of {total_chunks} chunk(s) "
+            f"after retries; document was not fully analyzed ({ranges})"
+        )
+
+
 class IntelligentRedactionPipeline:
     """Main pipeline for intelligent entity extraction and validation."""
 
@@ -953,6 +977,11 @@ class IntelligentRedactionPipeline:
                 pass
 
         all_entities = []
+        # One entry per chunk whose LLM extraction never succeeded after
+        # retries -- if this is non-empty once every chunk has been
+        # attempted, the run fails closed (see LLMChunkExtractionFailed)
+        # instead of silently completing with unanalyzed text ranges.
+        chunk_failures: List[Dict[str, Any]] = []
 
         tracker = None
         accepts_progress_update = False
@@ -1151,10 +1180,23 @@ class IntelligentRedactionPipeline:
                     tracker.update_phase(ProcessingPhase.LLM_EXTRACTION, chunk_progress, f"Processed chunk {current_chunk}/{total_chunks}")
 
                 if extract_error is not None:
+                    chunk_end = chunk.get("end", chunk_start + len(chunk_text))
                     warnings.append({
                         "code": "LLM_CHUNK_FAILED",
                         "message": f"AI extraction failed for chunk {chunk_idx + 1} after retries.",
-                        "details": str(extract_error)
+                        "details": str(extract_error),
+                        "start": chunk_start,
+                        "end": chunk_end,
+                    })
+                    # Recorded separately from `warnings` (which mixes in
+                    # unrelated warning codes) so the unanalyzed-range check
+                    # below is unambiguous regardless of what else has been
+                    # appended to the shared warnings list.
+                    chunk_failures.append({
+                        "chunk_index": chunk_idx,
+                        "start": chunk_start,
+                        "end": chunk_end,
+                        "error": str(extract_error),
                     })
                     emit_mass_event({
                         "type": "chunk_end",
@@ -1278,6 +1320,18 @@ class IntelligentRedactionPipeline:
 
         if tracker:
             tracker.update_phase(ProcessingPhase.LLM_EXTRACTION, 1.0, "AI extraction complete")
+
+        # Privacy-first fail-closed default: if the LLM extractor never
+        # produced a successful result for one or more chunks (after
+        # retries), do not silently return whatever partial entities were
+        # found elsewhere -- that would ship a redacted document that looks
+        # complete while some text ranges were never analyzed. Raise so the
+        # caller (pipeline.run_redaction) fails the whole run with a report
+        # that discloses exactly which character ranges were skipped. A
+        # deadline/cancellation abort is unaffected: it already raises
+        # ProcessingDeadlineExceeded above and never reaches this point.
+        if chunk_failures:
+            raise LLMChunkExtractionFailed(chunk_failures, total_chunks)
 
         # Chunks overlap by design (see chunker.make_chunks), so a mention
         # near a chunk boundary can be extracted more than once. Enforce the
