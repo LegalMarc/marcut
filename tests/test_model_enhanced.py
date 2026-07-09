@@ -426,3 +426,94 @@ def test_dedupe_chunk_overlap_entities_prefers_redaction_then_length_then_confid
     second = Entity(text="Smith", label="NAME", start=100, end=105, confidence=0.7, needs_redaction=True)
     result = model_enhanced._dedupe_chunk_overlap_entities([first, second])
     assert result == [first, second]
+
+
+# --- A4: fail-open behavior on partial chunk failure -------------------------
+#
+# If the LLM extractor cannot analyze a chunk even after retries, the document
+# text in that chunk's range was never scanned for PII. Marcut is a privacy
+# tool, so this must fail the whole run closed (a clear, disclosed error)
+# rather than silently return whatever the other chunks found while treating
+# the unanalyzed range as if it were clean. A genuine deadline/cancellation
+# abort is a separate, pre-existing code path and must keep surfacing as
+# ProcessingDeadlineExceeded rather than being folded into this new failure.
+
+def test_process_document_fails_closed_when_chunk_extraction_never_succeeds(monkeypatch):
+    """Chunk 2 of 5 fails extraction on every retry attempt: the run must
+    raise LLMChunkExtractionFailed identifying that chunk's exact
+    document-coordinate character range, rather than returning spans from
+    the other four chunks as if the document were fully analyzed."""
+    chunks = [
+        {"start": i * 100, "end": i * 100 + 20, "text": f"chunk {i} content"}
+        for i in range(5)
+    ]
+    calls = {}
+
+    def fake_extract(model_id, chunk_text, temperature=0.0, seed=42, context=None):
+        calls[chunk_text] = calls.get(chunk_text, 0) + 1
+        if chunk_text == "chunk 2 content":
+            raise RuntimeError("simulated Ollama timeout on chunk 2")
+        return []
+
+    monkeypatch.setattr("marcut.model.ollama_extract", fake_extract)
+    monkeypatch.setattr(model_enhanced.time, "sleep", lambda s: None)
+
+    # Sequential (llm_concurrency=1) so every chunk is deterministically
+    # attempted regardless of thread scheduling.
+    pipeline = model_enhanced.IntelligentRedactionPipeline("test-model", llm_concurrency=1)
+    warnings = []
+
+    with pytest.raises(model_enhanced.LLMChunkExtractionFailed) as exc_info:
+        pipeline.process_document(
+            "irrelevant full-document text",
+            chunks,
+            warnings=warnings,
+            suppressed=[],
+        )
+
+    err = exc_info.value
+    assert err.total_chunks == 5
+    assert len(err.failures) == 1
+    failure = err.failures[0]
+    assert failure["chunk_index"] == 2
+    assert failure["start"] == 200
+    assert failure["end"] == 220
+
+    # (a) Processing must continue to every other chunk despite chunk 2's
+    # persistent failure -- the run doesn't stop early; it fails closed only
+    # once the full picture of what wasn't analyzed is known.
+    assert set(calls.keys()) == {c["text"] for c in chunks}
+
+    # (b) The failure is also recorded in `warnings` with its character
+    # range, so a future opt-in "disclose and continue" path would have the
+    # data it needs without re-deriving it.
+    chunk_warnings = [w for w in warnings if w["code"] == "LLM_CHUNK_FAILED"]
+    assert len(chunk_warnings) == 1
+    assert chunk_warnings[0]["start"] == 200
+    assert chunk_warnings[0]["end"] == 220
+
+
+def test_process_document_deadline_exceeded_not_reclassified_as_chunk_failure(monkeypatch):
+    """A deadline that elapses between a chunk's retry attempts must
+    surface as ProcessingDeadlineExceeded -- never reclassified as an
+    ordinary LLMChunkExtractionFailed (and certainly never swallowed as a
+    successful, but partially unanalyzed, result)."""
+
+    def failing_then_deadline_extract(model_id, chunk_text, temperature=0.0, seed=42, context=None):
+        # Deterministically simulate the deadline elapsing while this
+        # (failed) extraction attempt was in flight, rather than relying on
+        # real sleep/timing.
+        monkeypatch.setenv("MARCUT_PROCESSING_DEADLINE_MONOTONIC", str(time.monotonic() - 0.01))
+        raise RuntimeError("transient extraction failure")
+
+    monkeypatch.setattr("marcut.model.ollama_extract", failing_then_deadline_extract)
+
+    pipeline = model_enhanced.IntelligentRedactionPipeline("test-model")
+
+    with pytest.raises(ProcessingDeadlineExceeded):
+        pipeline.process_document(
+            "John Smith",
+            [{"text": "John Smith", "start": 0, "end": 10}],
+            warnings=[],
+            suppressed=[],
+        )
