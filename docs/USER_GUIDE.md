@@ -139,6 +139,23 @@ to keep a required legend or page-numbering header, the table above applies:
 any PII in the retained header/footer is redacted with track changes like
 any other part.
 
+### AI extraction failures fail the run closed
+
+In `enhanced` (and other LLM-using) modes, long documents are split into
+overlapping chunks and each chunk is analyzed by the local model
+independently. If the model extraction for a chunk never succeeds -- after
+its automatic retries -- Marcut does **not** fall back to redacting only
+what the other chunks found. The entire run fails closed: no output DOCX is
+written, and the JSON report is a failure report (`"status": "error"`) with
+`"error_code": "AI_CHUNK_EXTRACTION_INCOMPLETE"` whose `technical_details`
+names the exact document character range(s) that were never analyzed. This
+is deliberate: for a privacy tool, silently shipping a "redacted" document
+that skipped an unanalyzed range would be worse than failing the run --
+retry with a smaller chunk size, a different model, or check that Ollama is
+reachable, then re-run. This is separate from a processing-deadline abort
+(`AI_PROCESSING_TIMEOUT`), which continues to fail the run the same way it
+always has.
+
 ## Troubleshooting
 - "Ollama not installed": The CLI checks for the `ollama` binary in PATH. If your server is running but the binary is missing, install Ollama or fix PATH.
 - Empty/low ORG or NAME detection: Ensure the model is running and selected (e.g., `--model qwen2.5:14b`).

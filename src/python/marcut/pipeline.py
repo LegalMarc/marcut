@@ -95,6 +95,7 @@ from .model_enhanced import (
     apply_llm_overrides_to_rule_spans,
     DocumentContext,
     build_prompt_context,
+    LLMChunkExtractionFailed,
 )
 from .cluster import ClusterTable
 from .confidence import combine, low_conf
@@ -1887,6 +1888,26 @@ def run_redaction(
                         phase_timings["llm_timing"] = llm_timing_detail
                 if debug:
                     print(f"Enhanced AI processing found {len(model_spans)} spans")
+            except LLMChunkExtractionFailed as e:
+                # Privacy-first fail-closed: one or more chunks were never
+                # successfully analyzed by the LLM after retries. Do not
+                # fall through to the generic classification below -- name
+                # this failure mode explicitly and disclose exactly which
+                # document character ranges were never scanned, rather than
+                # a generic "AI processing failed" message.
+                ranges = "; ".join(
+                    f"chars {f['start']}-{f['end']} (chunk {f['chunk_index'] + 1}/{e.total_chunks}): {f['error']}"
+                    for f in e.failures
+                )
+                raise RedactionError(
+                    message="AI could not analyze the entire document; the document was not fully scanned for redaction",
+                    error_code="AI_CHUNK_EXTRACTION_INCOMPLETE",
+                    technical_details=(
+                        f"Model: {model_id}, {len(e.failures)} of {e.total_chunks} chunk(s) failed extraction "
+                        f"after retries. Unanalyzed ranges: {ranges}"
+                    ),
+                    original_error=e
+                )
             except Exception as e:
                 # Check for specific error patterns
                 error_str = str(e).lower()

@@ -757,6 +757,54 @@ class TestLLMDetailTiming:
         assert not output_path.exists()
         assert "AI_PROCESSING_TIMEOUT" in report_path.read_text(encoding="utf-8")
 
+    def test_chunk_extraction_failure_fails_closed_without_writing_output(self, monkeypatch, tmp_path):
+        """A4: when the LLM extractor never succeeds for one or more chunks
+        (after retries), the run must fail closed with a dedicated,
+        disclosed error code identifying the unanalyzed character range --
+        not silently write a redacted document that looks complete."""
+        self._patch_minimal_enhanced_pipeline(monkeypatch)
+        output_path = tmp_path / "output.docx"
+        report_path = tmp_path / "report.json"
+        finalize_called = {"value": False}
+
+        failure = pipeline.LLMChunkExtractionFailed(
+            failures=[{"chunk_index": 1, "start": 250, "end": 500, "error": "Read timed out"}],
+            total_chunks=3,
+        )
+        monkeypatch.setattr(
+            pipeline,
+            "_collect_enhanced_spans",
+            lambda *args, **kwargs: (_ for _ in ()).throw(failure),
+        )
+
+        def fake_finalize(*args, **kwargs):
+            finalize_called["value"] = True
+            output_path.write_bytes(b"partial")
+            return 0
+
+        monkeypatch.setattr(pipeline, "_finalize_and_write", fake_finalize)
+
+        code, _timings = pipeline.run_redaction(
+            str(tmp_path / "input.docx"),
+            str(output_path),
+            str(report_path),
+            mode="rules_override",
+            model_id="llama3.1:8b",
+            chunk_tokens=250,
+            overlap=50,
+            temperature=0.1,
+            seed=42,
+            debug=False,
+            timing=True,
+        )
+
+        assert code == 2
+        assert not finalize_called["value"]
+        assert not output_path.exists()
+        report_payload = report_path.read_text(encoding="utf-8")
+        assert "AI_CHUNK_EXTRACTION_INCOMPLETE" in report_payload
+        assert "250-500" in report_payload
+
 
 class TestTransactionalArtifacts:
     """Test final artifacts are not exposed before the full set is ready."""

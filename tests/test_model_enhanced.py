@@ -3,6 +3,7 @@ Unit tests for model_enhanced.py retry behavior.
 """
 
 import json
+import re
 import time
 import requests
 import pytest
@@ -246,3 +247,301 @@ def test_document_context_collects_specific_org_alias_after_formation_clause():
     aliases = ctx.entity_aliases.get("time usa, llc", [])
     assert "TIME" in aliases
     assert "Publisher" not in aliases
+
+
+# --- A3: chunk-boundary entity handling in enhanced extraction ---------------
+#
+# `chunker.make_chunks` deliberately overlaps adjacent chunks so no mention is
+# silently dropped at a chunk boundary. That overlap means the *same* mention
+# can be extracted more than once (identically, from the shared overlap
+# window, or as a full match alongside a truncated fragment when it straddles
+# the boundary). These tests pin down that every such mention is reported
+# exactly once, at correct document offsets, and that the invariant
+# text[start:end] == entity_text is enforced rather than silently violated.
+
+def _patch_no_validation(monkeypatch):
+    """Skip LLM validation so raw extraction output flows straight to spans."""
+    monkeypatch.setattr(model_enhanced, "needs_validation", lambda entity, doc_context: False)
+
+
+def test_chunk_overlap_window_entity_deduplicated_to_one(monkeypatch):
+    """A NAME sitting entirely inside the overlap window shared by two
+    adjacent chunks is visible, in full, to both chunks -- it must still be
+    reported exactly once, at the correct document offsets."""
+    filler = "lorem " * 45  # 270 chars of filler before the name
+    name = "John Smith"
+    middle = " is a witness to this agreement, executed on this day. "
+    suffix = "lorem " * 70
+    text = filler + name + middle + suffix
+    name_start = len(filler)
+    name_end = name_start + len(name)
+
+    chunk1 = {"start": 0, "end": 300, "text": text[0:300]}
+    chunk2 = {"start": 260, "end": len(text), "text": text[260:]}
+    # Sanity-check the fixture: the name must fall entirely inside the
+    # overlap window, i.e. both chunks see it whole.
+    assert chunk2["start"] <= name_start and name_end <= chunk1["end"]
+
+    def fake_extract(model_id, chunk_text, temperature=0.0, seed=42, context=None):
+        return [
+            {"start": m.start(), "end": m.end(), "label": "NAME"}
+            for m in re.finditer(r"\bJohn Smith\b", chunk_text)
+        ]
+
+    monkeypatch.setattr("marcut.model.ollama_extract", fake_extract)
+    _patch_no_validation(monkeypatch)
+
+    pipeline = model_enhanced.IntelligentRedactionPipeline("test-model")
+    warnings = []
+    spans = pipeline.process_document(text, [chunk1, chunk2], warnings=warnings, suppressed=[])
+
+    name_spans = [s for s in spans if s["label"] == "NAME"]
+    assert len(name_spans) == 1
+    sp = name_spans[0]
+    assert (sp["start"], sp["end"]) == (name_start, name_end)
+    assert text[sp["start"]:sp["end"]] == sp["text"] == name
+    assert warnings == []
+
+
+def test_chunk_boundary_straddling_entity_keeps_full_span(monkeypatch):
+    """A NAME that straddles the actual chunk boundary can leave a full
+    mention in one chunk and a truncated fragment in the next, because the
+    fragment's leading tokens fall outside the neighbor's window. The
+    complete mention must win, reported exactly once."""
+    filler = "lorem " * 45
+    name = "John Smith"
+    middle = " is a witness to this agreement, executed on this day. "
+    suffix = "lorem " * 70
+    text = filler + name + middle + suffix
+    name_start = len(filler)
+    name_end = name_start + len(name)
+
+    chunk1 = {"start": 0, "end": 300, "text": text[0:300]}
+    # chunk2 begins mid-name (right after "John "), so it only ever sees
+    # the bare surname "Smith".
+    chunk2_start = name_start + len("John ")
+    chunk2 = {"start": chunk2_start, "end": len(text), "text": text[chunk2_start:]}
+    assert text[chunk2_start:chunk2_start + 5] == "Smith"
+
+    def fake_extract(model_id, chunk_text, temperature=0.0, seed=42, context=None):
+        spans = [
+            {"start": m.start(), "end": m.end(), "label": "NAME"}
+            for m in re.finditer(r"\bJohn Smith\b", chunk_text)
+        ]
+        for m in re.finditer(r"\bSmith\b", chunk_text):
+            if not any(s["start"] <= m.start() and m.end() <= s["end"] for s in spans):
+                spans.append({"start": m.start(), "end": m.end(), "label": "NAME"})
+        return spans
+
+    monkeypatch.setattr("marcut.model.ollama_extract", fake_extract)
+    _patch_no_validation(monkeypatch)
+
+    pipeline = model_enhanced.IntelligentRedactionPipeline("test-model")
+    warnings = []
+    spans = pipeline.process_document(text, [chunk1, chunk2], warnings=warnings, suppressed=[])
+
+    name_spans = [s for s in spans if s["label"] == "NAME"]
+    assert len(name_spans) == 1
+    sp = name_spans[0]
+    assert (sp["start"], sp["end"]) == (name_start, name_end)
+    assert sp["text"] == name
+    assert warnings == []
+
+
+def test_entities_at_document_start_and_end_of_chunks_survive(monkeypatch):
+    """Entities exactly at the leading edge of the first chunk and the
+    trailing edge of the last chunk must round-trip with correct offsets --
+    the edge case where there is no overlap partner on the outer side."""
+    head_name = "Jane Doe"
+    middle = "lorem " * 60
+    tail_name = "Robert Lee"
+    text = head_name + " " + middle + tail_name
+    tail_start = len(text) - len(tail_name)
+
+    chunk1 = {"start": 0, "end": 150, "text": text[0:150]}
+    chunk2 = {"start": 100, "end": 250, "text": text[100:250]}
+    chunk3 = {"start": 200, "end": len(text), "text": text[200:]}
+
+    def fake_extract(model_id, chunk_text, temperature=0.0, seed=42, context=None):
+        spans = []
+        for pattern in (r"\bJane Doe\b", r"\bRobert Lee\b"):
+            for m in re.finditer(pattern, chunk_text):
+                spans.append({"start": m.start(), "end": m.end(), "label": "NAME"})
+        return spans
+
+    monkeypatch.setattr("marcut.model.ollama_extract", fake_extract)
+    _patch_no_validation(monkeypatch)
+
+    pipeline = model_enhanced.IntelligentRedactionPipeline("test-model")
+    spans = pipeline.process_document(text, [chunk1, chunk2, chunk3], warnings=[], suppressed=[])
+
+    name_spans = sorted((s["start"], s["end"], s["text"]) for s in spans if s["label"] == "NAME")
+    assert name_spans == [
+        (0, len(head_name), head_name),
+        (tail_start, len(text), tail_name),
+    ]
+    for start, end, txt in name_spans:
+        assert text[start:end] == txt
+
+
+def test_drop_invalid_entity_offsets_removes_and_logs_mismatches():
+    """The hard invariant text[start:end] == entity.text must hold for every
+    surviving entity; violations are dropped and logged rather than emitted."""
+    text = "Contact John Smith regarding the matter."
+    good = Entity(text="John Smith", label="NAME", start=8, end=18, confidence=0.7, needs_redaction=True)
+    drifted = Entity(text="John Smith", label="NAME", start=9, end=19, confidence=0.7, needs_redaction=True)
+    out_of_bounds = Entity(text="ignored", label="NAME", start=30, end=999, confidence=0.7, needs_redaction=True)
+
+    warnings = []
+    survivors = model_enhanced._drop_invalid_entity_offsets(text, [good, drifted, out_of_bounds], warnings)
+
+    assert survivors == [good]
+    assert len(warnings) == 2
+    assert all(w["code"] == "LLM_ENTITY_OFFSET_MISMATCH" for w in warnings)
+
+
+def test_process_document_drops_out_of_bounds_span_instead_of_corrupting_output(monkeypatch):
+    """An extraction span that lands out of bounds must be dropped and
+    logged, never surfaced as a corrupted entity."""
+    text = "Contact John Smith today please."
+
+    def fake_extract(model_id, chunk_text, temperature=0.0, seed=42, context=None):
+        # An "end" far beyond the chunk (and the document) simulates a
+        # drifted/corrupted span rather than a legitimate extraction.
+        return [{"start": 8, "end": 999999, "label": "NAME"}]
+
+    monkeypatch.setattr("marcut.model.ollama_extract", fake_extract)
+    _patch_no_validation(monkeypatch)
+
+    pipeline = model_enhanced.IntelligentRedactionPipeline("test-model")
+    warnings = []
+    spans = pipeline.process_document(
+        text,
+        [{"start": 0, "end": len(text), "text": text}],
+        warnings=warnings,
+        suppressed=[],
+    )
+
+    assert spans == []
+    assert any(w["code"] == "LLM_ENTITY_OFFSET_MISMATCH" for w in warnings)
+
+
+def test_dedupe_chunk_overlap_entities_prefers_redaction_then_length_then_confidence():
+    """Tie-break contract for overlapping same-label entities: a positive
+    redaction decision wins first (fail closed), then the longer span, then
+    higher confidence."""
+    # needs_redaction=True beats needs_redaction=False even though the
+    # False entity is longer.
+    keep_redacts = Entity(text="Smith", label="NAME", start=10, end=15, confidence=0.7, needs_redaction=True)
+    skip_longer = Entity(text="Mr. Smith", label="NAME", start=6, end=15, confidence=0.7, needs_redaction=False)
+    result = model_enhanced._dedupe_chunk_overlap_entities([skip_longer, keep_redacts])
+    assert result == [keep_redacts]
+
+    # Same redaction decision: longer span wins.
+    short = Entity(text="Smith", label="NAME", start=10, end=15, confidence=0.9, needs_redaction=True)
+    longer = Entity(text="John Smith", label="NAME", start=5, end=15, confidence=0.7, needs_redaction=True)
+    result = model_enhanced._dedupe_chunk_overlap_entities([short, longer])
+    assert result == [longer]
+
+    # Same decision and length: higher confidence wins.
+    low_conf = Entity(text="Smith", label="NAME", start=10, end=15, confidence=0.6, needs_redaction=True)
+    high_conf = Entity(text="Smith", label="NAME", start=10, end=15, confidence=0.9, needs_redaction=True)
+    result = model_enhanced._dedupe_chunk_overlap_entities([low_conf, high_conf])
+    assert result == [high_conf]
+
+    # Non-overlapping repeats of the same label/text elsewhere are untouched.
+    first = Entity(text="Smith", label="NAME", start=0, end=5, confidence=0.7, needs_redaction=True)
+    second = Entity(text="Smith", label="NAME", start=100, end=105, confidence=0.7, needs_redaction=True)
+    result = model_enhanced._dedupe_chunk_overlap_entities([first, second])
+    assert result == [first, second]
+
+
+# --- A4: fail-open behavior on partial chunk failure -------------------------
+#
+# If the LLM extractor cannot analyze a chunk even after retries, the document
+# text in that chunk's range was never scanned for PII. Marcut is a privacy
+# tool, so this must fail the whole run closed (a clear, disclosed error)
+# rather than silently return whatever the other chunks found while treating
+# the unanalyzed range as if it were clean. A genuine deadline/cancellation
+# abort is a separate, pre-existing code path and must keep surfacing as
+# ProcessingDeadlineExceeded rather than being folded into this new failure.
+
+def test_process_document_fails_closed_when_chunk_extraction_never_succeeds(monkeypatch):
+    """Chunk 2 of 5 fails extraction on every retry attempt: the run must
+    raise LLMChunkExtractionFailed identifying that chunk's exact
+    document-coordinate character range, rather than returning spans from
+    the other four chunks as if the document were fully analyzed."""
+    chunks = [
+        {"start": i * 100, "end": i * 100 + 20, "text": f"chunk {i} content"}
+        for i in range(5)
+    ]
+    calls = {}
+
+    def fake_extract(model_id, chunk_text, temperature=0.0, seed=42, context=None):
+        calls[chunk_text] = calls.get(chunk_text, 0) + 1
+        if chunk_text == "chunk 2 content":
+            raise RuntimeError("simulated Ollama timeout on chunk 2")
+        return []
+
+    monkeypatch.setattr("marcut.model.ollama_extract", fake_extract)
+    monkeypatch.setattr(model_enhanced.time, "sleep", lambda s: None)
+
+    # Sequential (llm_concurrency=1) so every chunk is deterministically
+    # attempted regardless of thread scheduling.
+    pipeline = model_enhanced.IntelligentRedactionPipeline("test-model", llm_concurrency=1)
+    warnings = []
+
+    with pytest.raises(model_enhanced.LLMChunkExtractionFailed) as exc_info:
+        pipeline.process_document(
+            "irrelevant full-document text",
+            chunks,
+            warnings=warnings,
+            suppressed=[],
+        )
+
+    err = exc_info.value
+    assert err.total_chunks == 5
+    assert len(err.failures) == 1
+    failure = err.failures[0]
+    assert failure["chunk_index"] == 2
+    assert failure["start"] == 200
+    assert failure["end"] == 220
+
+    # (a) Processing must continue to every other chunk despite chunk 2's
+    # persistent failure -- the run doesn't stop early; it fails closed only
+    # once the full picture of what wasn't analyzed is known.
+    assert set(calls.keys()) == {c["text"] for c in chunks}
+
+    # (b) The failure is also recorded in `warnings` with its character
+    # range, so a future opt-in "disclose and continue" path would have the
+    # data it needs without re-deriving it.
+    chunk_warnings = [w for w in warnings if w["code"] == "LLM_CHUNK_FAILED"]
+    assert len(chunk_warnings) == 1
+    assert chunk_warnings[0]["start"] == 200
+    assert chunk_warnings[0]["end"] == 220
+
+
+def test_process_document_deadline_exceeded_not_reclassified_as_chunk_failure(monkeypatch):
+    """A deadline that elapses between a chunk's retry attempts must
+    surface as ProcessingDeadlineExceeded -- never reclassified as an
+    ordinary LLMChunkExtractionFailed (and certainly never swallowed as a
+    successful, but partially unanalyzed, result)."""
+
+    def failing_then_deadline_extract(model_id, chunk_text, temperature=0.0, seed=42, context=None):
+        # Deterministically simulate the deadline elapsing while this
+        # (failed) extraction attempt was in flight, rather than relying on
+        # real sleep/timing.
+        monkeypatch.setenv("MARCUT_PROCESSING_DEADLINE_MONOTONIC", str(time.monotonic() - 0.01))
+        raise RuntimeError("transient extraction failure")
+
+    monkeypatch.setattr("marcut.model.ollama_extract", failing_then_deadline_extract)
+
+    pipeline = model_enhanced.IntelligentRedactionPipeline("test-model")
+
+    with pytest.raises(ProcessingDeadlineExceeded):
+        pipeline.process_document(
+            "John Smith",
+            [{"text": "John Smith", "start": 0, "end": 10}],
+            warnings=[],
+            suppressed=[],
+        )
