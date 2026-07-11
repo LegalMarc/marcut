@@ -11,6 +11,7 @@ Tests cover:
 - RedactionError: Error class construction
 """
 
+import json
 import pytest
 import stat
 from marcut import pipeline
@@ -27,6 +28,9 @@ from marcut.pipeline import (
     _filter_excluded_combo_spans,
     _trim_org_trailing_excluded_segments,
     _attach_defined_term_aliases,
+    _drop_invalid_spans,
+    _fold_curly_quotes,
+    _finalize_and_write,
     RedactionError,
     _write_failure_report,
     safe_print,
@@ -484,6 +488,228 @@ class TestApplyConsistencyPass:
 
         gamma_mentions = [sp for sp in result if sp.get("text") == "Gamma Holdings"]
         assert len(gamma_mentions) == 1
+
+
+class TestDropInvalidSpans:
+    """A5: validate LLM-derived (and rule-derived) spans' bounds and text
+    before they can reach dm.apply_replacements(). Invalid spans must be
+    dropped and logged -- never silently corrupt output or mis-redact."""
+
+    TEXT = "Contact John Smith regarding Jane Doe's account today."
+
+    def _valid_span(self):
+        start = self.TEXT.index("John Smith")
+        end = start + len("John Smith")
+        return {
+            "start": start, "end": end, "label": "NAME",
+            "text": "John Smith", "confidence": 0.9, "source": "llm",
+        }
+
+    def test_valid_span_passes_through_unchanged(self):
+        span = self._valid_span()
+        warnings, suppressed = [], []
+        survivors = _drop_invalid_spans(self.TEXT, [span], warnings, suppressed)
+        assert survivors == [span]
+        assert warnings == []
+        assert suppressed == []
+
+    def test_drops_negative_start(self):
+        span = {"start": -1, "end": 5, "label": "NAME", "text": "xxxxx"}
+        warnings, suppressed = [], []
+        survivors = _drop_invalid_spans(self.TEXT, [span], warnings, suppressed)
+        assert survivors == []
+        assert len(warnings) == 1
+        assert warnings[0]["code"] == "INVALID_SPAN_DROPPED"
+        assert suppressed[0]["reason"] == "invalid_span_bounds_out_of_range"
+
+    def test_drops_end_beyond_text_length(self):
+        span = {"start": 5, "end": len(self.TEXT) + 50, "label": "NAME", "text": "overflow"}
+        warnings, suppressed = [], []
+        survivors = _drop_invalid_spans(self.TEXT, [span], warnings, suppressed)
+        assert survivors == []
+        assert suppressed[0]["reason"] == "invalid_span_bounds_out_of_range"
+
+    def test_drops_start_greater_or_equal_end(self):
+        spans = [
+            {"start": 10, "end": 10, "label": "NAME", "text": ""},  # start == end
+            {"start": 15, "end": 10, "label": "NAME", "text": "12345"},  # start > end
+        ]
+        warnings, suppressed = [], []
+        survivors = _drop_invalid_spans(self.TEXT, spans, warnings, suppressed)
+        assert survivors == []
+        assert len(warnings) == 2
+        assert all(s["reason"] == "invalid_span_bounds_out_of_range" for s in suppressed)
+
+    def test_drops_drifted_offset_text_mismatch(self):
+        """A plausible-but-shifted offset: in-bounds, but text[start:end]
+        no longer matches the entity text recorded for it."""
+        start = self.TEXT.index("John Smith")
+        end = start + len("John Smith")
+        drifted = {"start": start + 3, "end": end + 3, "label": "NAME", "text": "John Smith"}
+        # Sanity: confirm this really is a mismatch, not an accidental match.
+        assert self.TEXT[drifted["start"]:drifted["end"]] != "John Smith"
+
+        warnings, suppressed = [], []
+        survivors = _drop_invalid_spans(self.TEXT, [drifted], warnings, suppressed)
+        assert survivors == []
+        assert suppressed[0]["reason"] == "invalid_span_text_mismatch"
+
+    def test_drops_missing_or_non_string_text_field(self):
+        span_missing = {"start": 0, "end": 5, "label": "NAME"}
+        span_none = {"start": 0, "end": 5, "label": "NAME", "text": None}
+        warnings, suppressed = [], []
+        survivors = _drop_invalid_spans(self.TEXT, [span_missing, span_none], warnings, suppressed)
+        assert survivors == []
+        assert all(s["reason"] == "invalid_span_missing_text" for s in suppressed)
+
+    def test_drops_non_dict_entry_without_raising(self):
+        warnings, suppressed = [], []
+        survivors = _drop_invalid_spans(self.TEXT, ["not-a-span", None, 42], warnings, suppressed)
+        assert survivors == []
+        assert len(warnings) == 3
+        assert all(s["reason"] == "invalid_span_not_a_dict" for s in suppressed)
+
+    def test_tolerates_curly_quote_fold_for_defined_term_alias_text(self):
+        """_attach_defined_term_aliases folds curly apostrophes to straight
+        ones when it stores an alias's "text" (see that function and
+        _fold_curly_quotes), while start/end still point at the untouched
+        document text. A legitimate alias spanning a curly apostrophe must
+        not be misclassified as corrupted just because of that fold."""
+        text = "Jane Doe’s Bakery is renowned."
+        end = len("Jane Doe’s Bakery")
+        span = {
+            "start": 0, "end": end, "label": "ORG",
+            "text": "Jane Doe's Bakery",  # straight apostrophe, as the alias helper stores it
+            "source": "defined_term",
+        }
+        warnings, suppressed = [], []
+        survivors = _drop_invalid_spans(text, [span], warnings, suppressed)
+        assert survivors == [span]
+        assert warnings == []
+        assert suppressed == []
+
+    def test_logs_one_warning_and_suppressed_entry_per_dropped_span(self):
+        """The count of dropped spans must be recoverable from the report
+        data (warnings + suppressed), not silently lost."""
+        good = self._valid_span()
+        bad_spans = [
+            {"start": -1, "end": 5, "label": "NAME", "text": "a"},
+            {"start": 5, "end": len(self.TEXT) + 100, "label": "NAME", "text": "b"},
+            {"start": 10, "end": 10, "label": "NAME", "text": ""},
+        ]
+        warnings, suppressed = [], []
+        survivors = _drop_invalid_spans(self.TEXT, [good] + bad_spans, warnings, suppressed)
+
+        assert survivors == [good]
+        assert len(warnings) == len(bad_spans)
+        assert len(suppressed) == len(bad_spans)
+        assert all(w["code"] == "INVALID_SPAN_DROPPED" for w in warnings)
+
+
+class TestFoldCurlyQuotes:
+    """Helper backing _drop_invalid_spans's text-match tolerance."""
+
+    def test_folds_curly_single_quotes_to_straight(self):
+        assert _fold_curly_quotes("Jane’s ‘quoted’ name") == "Jane's 'quoted' name"
+
+    def test_leaves_straight_quotes_and_other_text_unchanged(self):
+        assert _fold_curly_quotes("Jane's plain text") == "Jane's plain text"
+
+
+class TestFinalizeAndWriteDropsInvalidSpans:
+    """A5 integration: _finalize_and_write must never let an invalid span
+    reach dm.apply_replacements(), and the audit report must disclose how
+    many spans were dropped rather than silently omitting them."""
+
+    class _FakeDocxMap:
+        def __init__(self):
+            self.warnings = []
+            self.replacements = None
+
+        def apply_replacements(self, replacements, track_changes=True):
+            self.replacements = replacements
+
+        def scrub_metadata(self, settings):
+            return None
+
+        def harden_document(self, *args, **kwargs):
+            return None
+
+        def save(self, path):
+            with open(path, "wb") as handle:
+                handle.write(b"stub docx")
+
+    def test_invalid_spans_are_dropped_before_apply_replacements(self, monkeypatch, tmp_path):
+        text = "Contact John Smith regarding Jane Doe's account today."
+        good_start = text.index("John Smith")
+        good_end = good_start + len("John Smith")
+
+        spans = [
+            {
+                "start": good_start, "end": good_end, "label": "NAME",
+                "text": "John Smith", "confidence": 0.9, "source": "llm",
+                "needs_redaction": True,
+            },
+            # start = -1
+            {"start": -1, "end": 5, "label": "NAME", "text": "xxxxx",
+             "confidence": 0.9, "source": "llm", "needs_redaction": True},
+            # end > len(text)
+            {"start": 5, "end": len(text) + 50, "label": "NAME", "text": "overflow",
+             "confidence": 0.9, "source": "llm", "needs_redaction": True},
+            # start >= end
+            {"start": 10, "end": 10, "label": "NAME", "text": "",
+             "confidence": 0.9, "source": "llm", "needs_redaction": True},
+            # plausible-but-shifted offset (off by a few chars)
+            {
+                "start": good_start + 3, "end": good_end + 3, "label": "NAME",
+                "text": "John Smith", "confidence": 0.9, "source": "llm",
+                "needs_redaction": True,
+            },
+        ]
+
+        # Skip metadata scrub-report/hardening entirely so this FakeDocxMap
+        # doesn't need to model real document metadata (same recipe as
+        # TestTransactionalArtifacts below).
+        monkeypatch.setenv("MARCUT_METADATA_ARGS", "--preset-none")
+
+        dm = self._FakeDocxMap()
+        output_path = tmp_path / "output.docx"
+        report_path = tmp_path / "report.json"
+        input_path = tmp_path / "input.docx"
+        input_path.write_bytes(b"input")
+
+        code = _finalize_and_write(
+            dm,
+            text,
+            spans,
+            str(output_path),
+            str(report_path),
+            str(input_path),
+            "mock-model",
+        )
+
+        assert code == 0
+        assert dm.replacements is not None
+        assert len(dm.replacements) == 1
+        assert dm.replacements[0]["start"] == good_start
+        assert dm.replacements[0]["end"] == good_end
+
+        report_payload = json.loads(report_path.read_text(encoding="utf-8"))
+        invalid_warnings = [
+            w for w in report_payload.get("warnings", [])
+            if w["code"] == "INVALID_SPAN_DROPPED"
+        ]
+        invalid_suppressed = [
+            s for s in report_payload.get("suppressed", [])
+            if s["reason"].startswith("invalid_span_")
+        ]
+        assert len(invalid_warnings) == 4
+        assert len(invalid_suppressed) == 4
+
+        # The dropped spans' garbage offsets must not leak into the audit
+        # report's own "spans" list either.
+        audited_starts = {sp["start"] for sp in report_payload["spans"]}
+        assert audited_starts == {good_start}
 
 
 class TestRedactionError:

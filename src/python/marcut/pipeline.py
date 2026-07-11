@@ -1278,6 +1278,119 @@ def _cleanup_temp_artifacts(paths: List[Optional[str]]) -> None:
             pass
 
 
+def _fold_curly_quotes(value: str) -> str:
+    """Fold curly single quotes to straight quotes.
+
+    Mirrors the exact normalization _attach_defined_term_aliases already
+    applies before storing a defined-term alias's "text" field (the alias's
+    start/end still point at the untouched document text, which may retain
+    the original curly apostrophe). Without this fold, a legitimate alias
+    spanning a curly apostrophe would look like a text-mismatch to
+    _drop_invalid_spans below and be dropped as if it were corrupted.
+    """
+    return value.replace("’", "'").replace("‘", "'")
+
+
+def _drop_invalid_spans(
+    text: str,
+    spans: List[Dict[str, Any]],
+    warnings: List[Dict[str, Any]],
+    suppressed: List[Dict[str, Any]],
+    debug: bool = False,
+) -> List[Dict[str, Any]]:
+    """Drop any span whose offsets are out of bounds or whose recorded text
+    does not match the document at those offsets.
+
+    This is the last checkpoint before _finalize_and_write uses `spans` to
+    build the audit report and the dm.apply_replacements() call that
+    actually splices text into the document. It covers every span that
+    reaches this point regardless of origin -- rule-based, LLM-derived, or
+    reshaped by any of the intermediate snap/merge/consistency passes.
+    LLM output in particular is not trustworthy: a drifted, inverted, or
+    out-of-range span applied directly to the document could corrupt
+    output or silently redact the wrong text.
+
+    This is defense in depth alongside
+    model_enhanced._drop_invalid_entity_offsets, which enforces the same
+    invariant earlier, immediately after LLM extraction (A3). A bug
+    anywhere in the merge/post-processing chain between there and here --
+    or a rule-based span that never passed through that earlier check at
+    all -- could still produce a bad span, so every span is re-validated
+    here regardless of how it got here.
+
+    A span survives only if 0 <= start < end <= len(text) and
+    text[start:end] exactly matches the span's recorded "text" (tolerating
+    only the curly-quote fold _attach_defined_term_aliases already applies
+    when storing alias text -- see _fold_curly_quotes). Anything else is
+    dropped: logged to `warnings` and recorded in `suppressed` so the drop
+    -- and its count -- is visible in the audit report instead of silently
+    missing from the output.
+    """
+    valid: List[Dict[str, Any]] = []
+    doc_len = len(text)
+    for sp in spans:
+        if not isinstance(sp, dict):
+            warnings.append({
+                "code": "INVALID_SPAN_DROPPED",
+                "message": "Dropped a detected span with invalid offsets or mismatched text before applying redactions.",
+                "details": f"reason=not_a_dict value={sp!r}",
+            })
+            suppressed.append({
+                "reason": "invalid_span_not_a_dict",
+                "label": "UNKNOWN",
+                "text": "",
+                "start": None,
+                "end": None,
+                "confidence": None,
+                "source": "unknown",
+            })
+            continue
+
+        start = sp.get("start")
+        end = sp.get("end")
+        expected_text = sp.get("text")
+
+        reason: Optional[str] = None
+        if not isinstance(start, int) or not isinstance(end, int):
+            reason = "non_integer_offsets"
+        elif not (0 <= start < end <= doc_len):
+            reason = "bounds_out_of_range"
+        elif not isinstance(expected_text, str):
+            reason = "missing_text"
+        elif _fold_curly_quotes(text[start:end]) != _fold_curly_quotes(expected_text):
+            reason = "text_mismatch"
+
+        if reason is None:
+            valid.append(sp)
+            continue
+
+        label = sp.get("label", "UNKNOWN")
+        preview = expected_text[:120] if isinstance(expected_text, str) else repr(expected_text)[:120]
+
+        if debug:
+            print(
+                f"DEBUG: Dropping invalid span ({reason}): label={label} "
+                f"start={start!r} end={end!r} text={preview!r}"
+            )
+
+        warnings.append({
+            "code": "INVALID_SPAN_DROPPED",
+            "message": "Dropped a detected span with invalid offsets or mismatched text before applying redactions.",
+            "details": f"label={label} start={start!r} end={end!r} reason={reason} text={preview!r}",
+        })
+        suppressed.append({
+            "reason": f"invalid_span_{reason}",
+            "label": label,
+            "text": preview,
+            "start": start if isinstance(start, int) else None,
+            "end": end if isinstance(end, int) else None,
+            "confidence": sp.get("confidence"),
+            "source": sp.get("source", "unknown"),
+        })
+
+    return valid
+
+
 def _finalize_and_write(
     dm: DocxMap,
     text: str,
@@ -1296,6 +1409,13 @@ def _finalize_and_write(
         warnings = []
     if suppressed is None:
         suppressed = []
+
+    # Defense-in-depth guard (A5): never let a span with corrupted offsets
+    # or drifted text reach dm.apply_replacements() below. See
+    # _drop_invalid_spans for the bounds/text-match invariant this enforces
+    # and why it re-checks every span here regardless of origin.
+    spans = _drop_invalid_spans(text, spans, warnings, suppressed, debug=debug)
+
     ct = ClusterTable()
     url_counter = {}
 
