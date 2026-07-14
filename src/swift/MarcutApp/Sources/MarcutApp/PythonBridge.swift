@@ -1669,6 +1669,30 @@ final class PythonBridgeService: ObservableObject {
             bridgeLog("⏳ Waiting for Ollama HTTP endpoint to respond", component: "Ollama")
             let httpReady = await waitForOllamaHTTP()
             if httpReady {
+                // B3: the HTTP endpoint responded, but that alone doesn't prove it's
+                // *our* spawned process -- a foreign server could have raced onto this
+                // exact port between our pre-launch occupancy checks (above) and our
+                // own subprocess's bind, or the user could start their own Ollama on
+                // it moments later. Correlate PID/port before trusting the endpoint
+                // with document text.
+                let listeningPIDs = await pidsListening(on: candidatePort)
+                if let foreignPID = PythonBridgeService.foreignOllamaListener(
+                    listeningPIDs: listeningPIDs,
+                    ownPID: launchedOllamaPID
+                ) {
+                    let message = PythonBridgeService.ollamaPortConflictMessage(port: candidatePort, foreignPID: foreignPID)
+                    bridgeLog("❌ OLLAMA_PORT_IDENTITY_MISMATCH on port \(candidatePort): \(message)", component: "Ollama")
+                    ollamaLaunchError = message
+                    dumpOllamaLogs()
+                    if let process = ollamaBackgroundProcess {
+                        process.terminate()
+                        ollamaBackgroundProcess = nil
+                    }
+                    launchedOllamaPID = nil
+                    launchedOllamaPort = nil
+                    continue
+                }
+
                 bridgeLog("✅ Ollama started successfully and is ready on port \(candidatePort)", component: "Ollama")
                 isOllamaRunning = true
                 lastOllamaCheckTime = currentTime
@@ -1868,7 +1892,12 @@ final class PythonBridgeService: ObservableObject {
         await pids(using: ollamaPort)
     }
 
-    private func pids(using port: Int32) async -> [Int32] {
+    /// - Parameter listenOnly: when true, restricts to sockets actively in the LISTEN
+    ///   state (`lsof -sTCP:LISTEN`), excluding client-side/ephemeral connections --
+    ///   including our own HTTP health-check probes to that same port, which would
+    ///   otherwise show up as a false "occupant". Used for post-launch identity
+    ///   verification (B3); pre-launch occupancy checks keep the broader default.
+    private func pids(using port: Int32, listenOnly: Bool = false) async -> [Int32] {
         let lsofCandidates = ["/usr/sbin/lsof", "/usr/bin/lsof"]
         guard let lsofPath = lsofCandidates.first(where: { FileManager.default.isExecutableFile(atPath: $0) }) else {
             return []
@@ -1877,16 +1906,21 @@ final class PythonBridgeService: ObservableObject {
         return await withCheckedContinuation { continuation in
             let process = Process()
             process.executableURL = URL(fileURLWithPath: lsofPath)
-            process.arguments = ["-i", ":\(port)", "-t"]
-            
+            var arguments = ["-i", ":\(port)"]
+            if listenOnly {
+                arguments.append("-sTCP:LISTEN")
+            }
+            arguments.append("-t")
+            process.arguments = arguments
+
             let pipe = Pipe()
             process.standardOutput = pipe
             process.standardError = Pipe() // Silence errors
-            
+
             do {
                 try process.run()
                 process.waitUntilExit()
-                
+
                 let data = pipe.fileHandleForReading.readDataToEndOfFile()
                 if let output = String(data: data, encoding: .utf8) {
                     let pids = output.components(separatedBy: .newlines)
@@ -1901,8 +1935,36 @@ final class PythonBridgeService: ObservableObject {
         }
     }
 
+    /// PIDs actually *listening* on `port` (see `pids(using:listenOnly:)`). Used to
+    /// verify a spawned Ollama process's identity before trusting its HTTP
+    /// responses (B3: detect a foreign process that raced onto our chosen port).
+    private func pidsListening(on port: Int32) async -> [Int32] {
+        await pids(using: port, listenOnly: true)
+    }
+
     private func isPortInUse(_ port: Int32) async -> Bool {
         !(await pids(using: port)).isEmpty
+    }
+
+    /// Decides whether the PIDs holding a *listening* socket on our chosen port
+    /// indicate a foreign process rather than the Ollama instance we ourselves
+    /// spawned there (`ownPID`). Returns the conflicting PID, or `nil` when the
+    /// listener is consistent with our own spawn -- including when `ownPID` is
+    /// unknown (we can't assert a mismatch without something to compare against)
+    /// or when the probe found no listener at all (nothing to disagree with; e.g.
+    /// under sandboxing where `lsof` can't see other processes -- we can only
+    /// detect what we can see, same limitation as the pre-launch occupancy check).
+    static func foreignOllamaListener(listeningPIDs: [Int32], ownPID: Int32?) -> Int32? {
+        guard let ownPID else { return nil }
+        return listeningPIDs.first { $0 != ownPID }
+    }
+
+    /// Builds the specific, user-facing error surfaced when `foreignOllamaListener`
+    /// detects a port-identity mismatch, so a conflict reads as a clear, actionable
+    /// state rather than the generic "Ollama did not respond" timeout message (B3).
+    static func ollamaPortConflictMessage(port: Int32, foreignPID: Int32) -> String {
+        "Another Ollama (or other) instance is running on port \(port) (PID \(foreignPID))." +
+        " Marcut could not verify its own embedded service on this port and will try another."
     }
 
     private func selectBundledOllamaPort(base: Int32 = 11434, attempts: Int = 20) async -> Int32? {

@@ -346,6 +346,47 @@ final class MarcutAppTests: XCTestCase {
         )
     }
 
+    // MARK: - Ollama Port Conflict Detection Tests (ticket #45 / B3)
+    //
+    // `performOllamaStartup()` needs a real bundled `ollama` binary to exercise
+    // end-to-end (not present under `swift test`, see `resolveOllamaPath()`), so these
+    // tests target the pure decision/message helpers directly -- the same pattern used
+    // for `modelDownloadSpaceShortfall` above. A "foreign server on the chosen port" is
+    // simulated as a PID in `listeningPIDs` that doesn't match our own spawned PID.
+
+    func testForeignOllamaListenerDetectsMismatchedPID() {
+        // Simulates a foreign process (e.g. the user's own `ollama serve`, or a race
+        // winner) holding the listening socket on our chosen port instead of us.
+        XCTAssertEqual(
+            PythonBridgeService.foreignOllamaListener(listeningPIDs: [4242], ownPID: 1000),
+            4242
+        )
+    }
+
+    func testForeignOllamaListenerAcceptsOwnPID() {
+        // Normal spawn path: the only listener is the process we launched ourselves.
+        XCTAssertNil(PythonBridgeService.foreignOllamaListener(listeningPIDs: [1000], ownPID: 1000))
+    }
+
+    func testForeignOllamaListenerToleratesEmptyProbe() {
+        // Sandbox/lsof visibility gap: no listener seen at all is not evidence of a
+        // conflict -- we can only detect what we can see, same as the pre-launch check.
+        XCTAssertNil(PythonBridgeService.foreignOllamaListener(listeningPIDs: [], ownPID: 1000))
+    }
+
+    func testForeignOllamaListenerRequiresKnownOwnPID() {
+        // If we don't know our own PID (shouldn't happen in practice, but defensively),
+        // we can't assert a mismatch against nothing -- fail permissive, not blocking
+        // the normal spawn path on an internal invariant we can't verify.
+        XCTAssertNil(PythonBridgeService.foreignOllamaListener(listeningPIDs: [4242], ownPID: nil))
+    }
+
+    func testOllamaPortConflictMessageNamesPortAndPID() {
+        let message = PythonBridgeService.ollamaPortConflictMessage(port: 11434, foreignPID: 4242)
+        XCTAssertTrue(message.contains("11434"), "Message must name the conflicting port, not just fail vaguely")
+        XCTAssertTrue(message.contains("4242"), "Message must name the conflicting PID")
+    }
+
     // MARK: - Model Name Normalization Parity Tests (ticket #21)
     //
     // `PythonBridgeService.normalizedModelIdentifier` is the Swift half of the
