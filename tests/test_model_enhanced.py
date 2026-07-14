@@ -4,11 +4,13 @@ Unit tests for model_enhanced.py retry behavior.
 
 import json
 import re
+import threading
 import time
 import requests
 import pytest
 
 import marcut.model_enhanced as model_enhanced
+import marcut.model as model_module
 from marcut.cancellation import ProcessingDeadlineExceeded
 from marcut.model_enhanced import ollama_validate, Entity, DocumentContext, LlamaCppRedactionPipeline
 
@@ -184,10 +186,118 @@ def test_intelligent_pipeline_deadline_interrupts_hanging_extraction(monkeypatch
     assert time.monotonic() - started < 0.75
 
 
+# --- Streaming intra-chunk progress (docs/design/streaming_progress.md) -----
+#
+# process_single_chunk() now calls ollama_extract(..., stream=True, ...), so
+# these mirror test_intelligent_pipeline_deadline_interrupts_hanging_extraction
+# above but patch `requests.post` (not `ollama_extract` itself) with a fake
+# NDJSON stream, so the *real* streaming loop in model.py's `_request()` runs
+# end-to-end through the pipeline.
+
+class _FakeStreamResponse:
+    """Minimal stand-in for `requests.Response` when `stream=True`."""
+
+    def __init__(self, lines):
+        self._lines = lines
+        self.status_code = 200
+
+    def raise_for_status(self):
+        return None
+
+    def iter_lines(self, decode_unicode=True):
+        for line in self._lines:
+            yield line
+
+    def close(self):
+        pass
+
+
+def test_intelligent_pipeline_deadline_interrupts_hanging_stream(monkeypatch):
+    """A stream that emits a couple of NDJSON lines and then goes silent
+    (connection stalls mid-generation) must not be able to hold up the whole
+    pipeline past the processing deadline -- the per-line
+    check_processing_deadline() inside model.py's streaming loop must fire
+    instead of waiting for `done: true` that never arrives."""
+    calls = {"count": 0}
+
+    def hanging_stream(*args, **kwargs):
+        calls["count"] += 1
+
+        def lines():
+            yield json.dumps({"response": "par", "done": False})
+            yield json.dumps({"response": "tial", "done": False})
+            # Simulate a stalled connection: much longer than the deadline
+            # below, so only a per-line deadline check (not the request's
+            # own timeout, which applies per socket read) can catch this.
+            time.sleep(1.5)
+            yield json.dumps({"response": "", "done": True, "eval_count": 3})
+
+        return _FakeStreamResponse(lines())
+
+    monkeypatch.setattr(model_module.requests, "post", hanging_stream)
+    monkeypatch.setenv("MARCUT_PROCESSING_DEADLINE_MONOTONIC", str(time.monotonic() + 0.05))
+    pipeline = model_enhanced.IntelligentRedactionPipeline("test-model", temperature=0.3, seed=456)
+
+    started = time.monotonic()
+    with pytest.raises(ProcessingDeadlineExceeded):
+        pipeline.process_document(
+            "John Smith",
+            [{"text": "John Smith", "start": 0, "end": 10}],
+            warnings=[],
+            suppressed=[],
+        )
+
+    assert calls["count"] == 1
+    # Same headroom rationale as the hanging-extraction test above.
+    assert time.monotonic() - started < 0.75
+
+
+def test_intelligent_pipeline_stream_cancel_event_stops_without_further_progress(monkeypatch):
+    """Once cancel_event fires mid-stream, the streaming loop must stop
+    reading immediately and must not invoke on_token_progress again (T6:
+    'cancellation must not emit progress after cancel')."""
+    progress_calls = []
+
+    def make_stream(*args, **kwargs):
+        def lines():
+            yield json.dumps({"response": "first", "done": False})
+            # By the time this second line is read, the test's on_token_progress
+            # wrapper (below) will have set the cancel_event.
+            yield json.dumps({"response": "second", "done": False})
+            yield json.dumps({"response": "third", "done": False})
+            yield json.dumps({"response": "", "done": True, "eval_count": 3})
+
+        return _FakeStreamResponse(lines())
+
+    monkeypatch.setattr(model_module.requests, "post", make_stream)
+
+    cancel_event = threading.Event()
+
+    def on_token_progress(chars_so_far, eval_count_so_far):
+        progress_calls.append(chars_so_far)
+        if chars_so_far >= len("first"):
+            cancel_event.set()
+
+    with pytest.raises(ProcessingDeadlineExceeded):
+        model_module.ollama_extract(
+            "test-model",
+            "John Smith",
+            stream=True,
+            cancel_event=cancel_event,
+            on_token_progress=on_token_progress,
+        )
+
+    # Progress was reported for the first line, but the loop must have
+    # stopped at or immediately after cancellation -- it must never reach
+    # the third/fourth lines' worth of accumulated chars.
+    assert progress_calls
+    assert all(chars <= len("firstsecond") for chars in progress_calls)
+
+
 def test_intelligent_pipeline_sends_seed_to_chunk_extraction(monkeypatch):
     captured = {}
 
-    def fake_extract(model_id, text, temperature=0.0, seed=42, context=None):
+    def fake_extract(model_id, text, temperature=0.0, seed=42, context=None, **_kwargs):
         captured["model_id"] = model_id
         captured["temperature"] = temperature
         captured["seed"] = seed
@@ -282,7 +392,7 @@ def test_chunk_overlap_window_entity_deduplicated_to_one(monkeypatch):
     # overlap window, i.e. both chunks see it whole.
     assert chunk2["start"] <= name_start and name_end <= chunk1["end"]
 
-    def fake_extract(model_id, chunk_text, temperature=0.0, seed=42, context=None):
+    def fake_extract(model_id, chunk_text, temperature=0.0, seed=42, context=None, **_kwargs):
         return [
             {"start": m.start(), "end": m.end(), "label": "NAME"}
             for m in re.finditer(r"\bJohn Smith\b", chunk_text)
@@ -323,7 +433,7 @@ def test_chunk_boundary_straddling_entity_keeps_full_span(monkeypatch):
     chunk2 = {"start": chunk2_start, "end": len(text), "text": text[chunk2_start:]}
     assert text[chunk2_start:chunk2_start + 5] == "Smith"
 
-    def fake_extract(model_id, chunk_text, temperature=0.0, seed=42, context=None):
+    def fake_extract(model_id, chunk_text, temperature=0.0, seed=42, context=None, **_kwargs):
         spans = [
             {"start": m.start(), "end": m.end(), "label": "NAME"}
             for m in re.finditer(r"\bJohn Smith\b", chunk_text)
@@ -362,7 +472,7 @@ def test_entities_at_document_start_and_end_of_chunks_survive(monkeypatch):
     chunk2 = {"start": 100, "end": 250, "text": text[100:250]}
     chunk3 = {"start": 200, "end": len(text), "text": text[200:]}
 
-    def fake_extract(model_id, chunk_text, temperature=0.0, seed=42, context=None):
+    def fake_extract(model_id, chunk_text, temperature=0.0, seed=42, context=None, **_kwargs):
         spans = []
         for pattern in (r"\bJane Doe\b", r"\bRobert Lee\b"):
             for m in re.finditer(pattern, chunk_text):
@@ -405,7 +515,7 @@ def test_process_document_drops_out_of_bounds_span_instead_of_corrupting_output(
     logged, never surfaced as a corrupted entity."""
     text = "Contact John Smith today please."
 
-    def fake_extract(model_id, chunk_text, temperature=0.0, seed=42, context=None):
+    def fake_extract(model_id, chunk_text, temperature=0.0, seed=42, context=None, **_kwargs):
         # An "end" far beyond the chunk (and the document) simulates a
         # drifted/corrupted span rather than a legitimate extraction.
         return [{"start": 8, "end": 999999, "label": "NAME"}]
@@ -477,7 +587,7 @@ def test_process_document_fails_closed_when_chunk_extraction_never_succeeds(monk
     ]
     calls = {}
 
-    def fake_extract(model_id, chunk_text, temperature=0.0, seed=42, context=None):
+    def fake_extract(model_id, chunk_text, temperature=0.0, seed=42, context=None, **_kwargs):
         calls[chunk_text] = calls.get(chunk_text, 0) + 1
         if chunk_text == "chunk 2 content":
             raise RuntimeError("simulated Ollama timeout on chunk 2")
@@ -527,7 +637,7 @@ def test_process_document_deadline_exceeded_not_reclassified_as_chunk_failure(mo
     ordinary LLMChunkExtractionFailed (and certainly never swallowed as a
     successful, but partially unanalyzed, result)."""
 
-    def failing_then_deadline_extract(model_id, chunk_text, temperature=0.0, seed=42, context=None):
+    def failing_then_deadline_extract(model_id, chunk_text, temperature=0.0, seed=42, context=None, **_kwargs):
         # Deterministically simulate the deadline elapsing while this
         # (failed) extraction attempt was in flight, rather than relying on
         # real sleep/timing.

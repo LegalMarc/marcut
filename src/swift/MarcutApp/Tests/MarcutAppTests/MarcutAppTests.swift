@@ -689,6 +689,35 @@ final class MarcutAppTests: XCTestCase {
         XCTAssertNil(BatchETACalculator.estimate(samples: samples, remainingSizes: [1000]))
     }
 
+    func testBatchETAWeightsHeterogeneousBatchBySizeNotDocumentCount() throws {
+        // Issue #54: a batch that starts with small documents must not
+        // extrapolate a naive "average seconds per document" rate onto a
+        // remainder made of much larger documents. Two small documents
+        // complete first (fast, low size); eight large documents (50x the
+        // size) are still queued/in-flight.
+        let smallSamples = [
+            BatchETASample(duration: 2, size: 1_000),
+            BatchETASample(duration: 2, size: 1_000),
+        ]
+        let remainingLargeSizes: [Int64] = Array(repeating: 50_000, count: 8)
+
+        let eta = try XCTUnwrap(
+            BatchETACalculator.estimate(samples: smallSamples, remainingSizes: remainingLargeSizes)
+        )
+
+        // A naive linear (document-count) projection would average the two
+        // small samples' 2s/doc and multiply by the 8 remaining documents:
+        // ~16s. The size-weighted estimate must be far larger, since each
+        // remaining document is 50x the size of the observed samples.
+        let naiveLinearEstimate = 2.0 * 8.0
+        XCTAssertGreaterThan(eta, naiveLinearEstimate * 10)
+
+        // Sanity-check the actual size-weighted math: rate = 2000 size-units
+        // / 4s = 500 units/sec; remaining = 8 * 50,000 = 400,000 units;
+        // eta = 400,000 / 500 = 800s.
+        XCTAssertEqual(eta, 800.0, accuracy: 0.01)
+    }
+
     // MARK: - Integration Tests
 
     func testDocumentItemStatusTransitions() throws {

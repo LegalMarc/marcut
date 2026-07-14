@@ -64,14 +64,34 @@ class TestOllamaStreamingFix:
     """Tests for the stream:false fix in Ollama requests."""
     
     @pytest.mark.skipif(not MARCUT_AVAILABLE, reason="marcut not installed")
-    def test_ollama_request_includes_stream_false(self):
-        """Verify that Ollama requests include stream:false to prevent JSON parsing errors."""
-        import inspect
-        from marcut.model import ollama_extract
-        
-        source = inspect.getsource(ollama_extract)
-        assert '"stream": False' in source or "'stream': False" in source, \
-            "ollama_extract should include 'stream': False to prevent streaming JSON responses"
+    def test_ollama_request_defaults_to_stream_false(self, monkeypatch):
+        """Verify that Ollama requests default to stream:false, to prevent
+        streaming/multi-JSON-response parsing errors on the non-streaming
+        code path. Streaming is available (docs/design/streaming_progress.md,
+        Option B) but must always be an explicit stream=True opt-in for a
+        single call site (the per-chunk extraction in model_enhanced.py) --
+        never the default, since most callers (validation/classification,
+        the CLI, direct ollama_extract() callers) still expect a single JSON
+        response."""
+        import marcut.model as model_module
+
+        captured = {}
+
+        class MockResponse:
+            def raise_for_status(self):
+                return None
+
+            def json(self):
+                return {"response": '{"entities": []}'}
+
+        def fake_post(*args, **kwargs):
+            captured.update(kwargs)
+            return MockResponse()
+
+        monkeypatch.setattr(model_module.requests, "post", fake_post)
+
+        assert ollama_extract("mock-model", "Document text", temperature=0.0) == []
+        assert captured["json"]["stream"] is False
     
     @pytest.mark.skipif(not MARCUT_AVAILABLE, reason="marcut not installed")
     def test_parse_llm_response_handles_valid_json(self):

@@ -340,6 +340,17 @@ final class DocumentRedactionViewModel: ObservableObject {
             return
         }
 
+        // Word count is a much better proxy for batch-ETA weighting than raw
+        // file byte size (see documentSizeSignal); best-effort only -- a nil
+        // result just means recordBatchETASample falls back to file size.
+        if let words = await extractWordCount(at: item.url) {
+            item.wordCount = words
+            DebugLogger.shared.log(
+                "Document \(item.url.lastPathComponent): \(words) words extracted for size-weighted batch ETA",
+                component: "DocumentRedactionViewModel"
+            )
+        }
+
         item.status = .validDocument
         updateState()
     }
@@ -2178,7 +2189,7 @@ final class DocumentRedactionViewModel: ObservableObject {
         let duration = Date().timeIntervalSince(startedAt)
         guard duration > 0 else { return }
 
-        let size = documentSizeSignal(for: item.url)
+        let size = documentSizeSignal(for: item)
         guard size > 0 else { return }
 
         batchETASamples.append(BatchETASample(duration: duration, size: size))
@@ -2195,17 +2206,25 @@ final class DocumentRedactionViewModel: ObservableObject {
 
         let remainingSizes = items
             .filter { $0.status.isProcessing || $0.status == .validDocument }
-            .map { documentSizeSignal(for: $0.url) }
+            .map { documentSizeSignal(for: $0) }
 
         batchETA = BatchETACalculator.estimate(samples: batchETASamples, remainingSizes: remainingSizes)
     }
 
-    /// File size in bytes for a document, used as the relative "work" signal for batch ETA
-    /// estimation — the same signal already captured via `documentComplexity` at validation
-    /// time (see `checkDocument`), re-read here to avoid depending on that cached enum's
-    /// coarser bucketing.
-    private func documentSizeSignal(for url: URL) -> Int64 {
-        guard let attributes = try? FileManager.default.attributesOfItem(atPath: url.path),
+    /// Relative "work" signal for a document, used for batch ETA estimation
+    /// (`BatchETACalculator`). Prefers the word count extracted from
+    /// `word/document.xml` during validation (`extractWordCount`, wired in
+    /// `checkDocument`) over raw file byte size -- a DOCX's compressed byte
+    /// size can vary independently of its actual text content (embedded
+    /// images/styles inflate size without adding rules/LLM processing work),
+    /// so word count is a much better predictor of how long a document will
+    /// take. Falls back to file byte size when word count isn't available
+    /// yet (e.g. validation hasn't completed for this item).
+    private func documentSizeSignal(for item: DocumentItem) -> Int64 {
+        if let words = item.wordCount, words > 0 {
+            return Int64(words)
+        }
+        guard let attributes = try? FileManager.default.attributesOfItem(atPath: item.url.path),
               let size = attributes[.size] as? Int64 else {
             return 0
         }
@@ -3185,6 +3204,81 @@ extension DocumentRedactionViewModel {
                 DebugLogger.shared.log("DOCX validation: Process error: \(error.localizedDescription)", component: "DocValidation")
                 return false
             }
+        }.value
+    }
+
+    /// Extracts a word-count signal for a DOCX by parsing `word/document.xml`'s
+    /// text runs -- used as the "size" signal for batch ETA weighting
+    /// (`documentSizeSignal`) instead of raw file byte size. A DOCX's
+    /// compressed byte size can vary independently of its actual text content
+    /// (embedded images/styles inflate file size without adding processing
+    /// work; a text-heavy, lightly-formatted document can be small on disk
+    /// yet expensive to run through rules/LLM extraction), so word count is a
+    /// much better proxy for the work a document actually represents.
+    ///
+    /// This intentionally re-extracts `word/document.xml` independently of
+    /// `validateDocxStructure` (a small amount of duplicated unzip work)
+    /// rather than threading a result out of that function, to keep the
+    /// security-sensitive validation path's contract and tests completely
+    /// unchanged. Returns nil if the document can't be parsed here; callers
+    /// fall back to file byte size in that case.
+    func extractWordCount(at url: URL) async -> Int? {
+        await Task.detached(priority: .utility) { () -> Int? in
+            let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+            guard (try? FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)) != nil else {
+                return nil
+            }
+            defer { try? FileManager.default.removeItem(at: tempDir) }
+
+            let tempCopy = tempDir.appendingPathComponent("word-count-signal.docx")
+            guard (try? FileManager.default.copyItem(at: url, to: tempCopy)) != nil else {
+                return nil
+            }
+
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: "/usr/bin/unzip")
+            process.arguments = ["-o", "-q", tempCopy.path, "word/document.xml", "-d", tempDir.path]
+            process.standardOutput = FileHandle.nullDevice
+            process.standardError = FileHandle.nullDevice
+            do {
+                try process.run()
+            } catch {
+                return nil
+            }
+            let deadline = Date().addingTimeInterval(10)
+            while process.isRunning && Date() < deadline {
+                try? await Task.sleep(nanoseconds: 50_000_000)
+            }
+            if process.isRunning {
+                process.terminate()
+                process.waitUntilExit()
+                return nil
+            }
+            guard process.terminationStatus == 0 else { return nil }
+
+            let documentXmlPath = tempDir.appendingPathComponent("word/document.xml")
+            guard let xmlData = try? Data(contentsOf: documentXmlPath),
+                  let xmlDoc = try? XMLDocument(data: xmlData),
+                  let root = xmlDoc.rootElement() else {
+                return nil
+            }
+
+            var text = ""
+            func collectText(_ element: XMLElement) {
+                if element.localName == "t" {
+                    text += (element.stringValue ?? "")
+                    text += " "
+                }
+                for child in element.children ?? [] {
+                    if let childElement = child as? XMLElement {
+                        collectText(childElement)
+                    }
+                }
+            }
+            collectText(root)
+
+            let words = text.split { $0 == " " || $0 == "\n" || $0 == "\t" || $0 == "\r" }
+            return words.isEmpty ? nil : words.count
         }.value
     }
 }

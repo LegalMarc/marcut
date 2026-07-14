@@ -2,10 +2,13 @@ import Foundation
 
 /// A single completed-document sample used to estimate batch processing throughput.
 ///
-/// `size` is a relative work signal (e.g. file size in bytes) — the same signal already
-/// available on `DocumentItem` via `documentComplexity`/file attributes — not an absolute
-/// unit that needs to match any particular scale, since only the ratio of size to duration
-/// (rate) and the ratio of remaining size to that rate (ETA) are ever computed.
+/// `size` is a relative work signal — `DocumentRedactionViewModel.documentSizeSignal(for:)`
+/// prefers a document's extracted word count (a much better proxy for rules/LLM processing
+/// cost than raw file bytes, since a DOCX's compressed byte size can vary independently of
+/// its actual text content) and falls back to file byte size when word count isn't available.
+/// Either way it's not an absolute unit that needs to match any particular scale, since only
+/// the ratio of size to duration (rate) and the ratio of remaining size to that rate (ETA)
+/// are ever computed.
 struct BatchETASample {
     let duration: TimeInterval
     let size: Int64

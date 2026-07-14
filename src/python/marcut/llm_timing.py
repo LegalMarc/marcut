@@ -5,9 +5,10 @@ import time
 import json
 import sys
 import os
+import threading
 import requests
-from typing import List, Dict, Any, Tuple, Optional
-from .cancellation import check_processing_deadline, remaining_seconds
+from typing import List, Dict, Any, Tuple, Optional, Callable
+from .cancellation import check_processing_deadline, remaining_seconds, ProcessingDeadlineExceeded
 
 from .model import (
     get_ollama_base_url,
@@ -15,6 +16,7 @@ from .model import (
     parse_llm_response,
     _map_label,
     _find_entity_spans,
+    OllamaStreamIncompleteError,
 )
 
 
@@ -26,8 +28,18 @@ def ollama_extract_with_timing(
     context: Optional[str] = None,
     think_mode: bool = False,
     format_schema: Optional[Dict] = None,
+    *,
+    stream: bool = False,
+    cancel_event: Optional[threading.Event] = None,
+    on_token_progress: Optional[Callable[[int, Optional[int]], None]] = None,
 ) -> Tuple[List[Dict[str, Any]], Dict[str, float]]:
-    """Extract entities with detailed timing. Returns (spans, timing_dict)."""
+    """Extract entities with detailed timing. Returns (spans, timing_dict).
+
+    ``stream``/``cancel_event``/``on_token_progress`` mirror ``model.py``'s
+    ``ollama_extract()`` (docs/design/streaming_progress.md, Option B) for
+    parity between the two Ollama call sites; default ``stream=False``
+    preserves the exact single-response behavior existing callers rely on.
+    """
     base_url = get_ollama_base_url()
     try:
         request_timeout = max(1.0, float(os.getenv("MARCUT_OLLAMA_REQUEST_TIMEOUT", "300")))
@@ -52,24 +64,72 @@ def ollama_extract_with_timing(
     t1 = time.perf_counter()
     try:
         check_processing_deadline()
+        if cancel_event is not None and cancel_event.is_set():
+            raise ProcessingDeadlineExceeded("Processing cancelled")
         body = {
-            "model": model, "prompt": base_prompt, "stream": False, "think": think_mode,
+            "model": model, "prompt": base_prompt, "stream": stream, "think": think_mode,
             "options": {"temperature": max(temperature, 0.1), "seed": seed, "num_ctx": 12288, "num_predict": num_predict, "top_p": 0.9}
         }
         if format_schema is not None:
              body["format"] = format_schema
 
-        resp = requests.post(
-            f"{base_url}/api/generate",
-            json=body,
-            timeout=remaining_seconds(request_timeout)
-        )
-        resp.raise_for_status()
+        if not stream:
+            resp = requests.post(
+                f"{base_url}/api/generate",
+                json=body,
+                timeout=remaining_seconds(request_timeout)
+            )
+            resp.raise_for_status()
+            payload = resp.json()
+        else:
+            resp = requests.post(
+                f"{base_url}/api/generate",
+                json=body,
+                timeout=remaining_seconds(request_timeout),
+                stream=True,
+            )
+            resp.raise_for_status()
+            accumulated_parts: List[str] = []
+            chars_so_far = 0
+            saw_done = False
+            final_event: Dict[str, Any] = {}
+            try:
+                for line in resp.iter_lines(decode_unicode=True):
+                    if cancel_event is not None and cancel_event.is_set():
+                        raise ProcessingDeadlineExceeded("Processing cancelled")
+                    check_processing_deadline()
+                    if not line:
+                        continue
+                    try:
+                        event = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    piece = event.get("response") or event.get("thinking") or ""
+                    if piece:
+                        accumulated_parts.append(piece)
+                        chars_so_far += len(piece)
+                    if on_token_progress is not None and (piece or event.get("eval_count") is not None):
+                        try:
+                            on_token_progress(chars_so_far, event.get("eval_count"))
+                        except Exception:
+                            pass
+                    if event.get("done"):
+                        saw_done = True
+                        final_event = event
+                        break
+            finally:
+                resp.close()
+            if not saw_done:
+                raise OllamaStreamIncompleteError()
+            # The final NDJSON line carries the same timing/token-count
+            # fields the non-streaming payload has, plus the accumulated
+            # response text (not present on the `done: true` line itself).
+            payload = dict(final_event)
+            payload["response"] = "".join(accumulated_parts)
     except requests.exceptions.RequestException as e:
         raise RuntimeError(f"Ollama not reachable at {base_url}") from e
 
     http_elapsed = time.perf_counter() - t1
-    payload = resp.json()
 
     # Extract Ollama internal timing (nanoseconds -> seconds)
     ollama_total = payload.get("total_duration", 0) / 1e9

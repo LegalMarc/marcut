@@ -1140,6 +1140,46 @@ class IntelligentRedactionPipeline:
             chunk_text = chunk.get("text", "")
             chunk_start = chunk.get("start", 0)
 
+            # Intra-chunk streaming progress (docs/design/streaming_progress.md,
+            # Option B): as Ollama streams NDJSON response lines for this
+            # chunk's extraction call, surface a finer-grained update than
+            # "chunk started" / "chunk finished" via the existing
+            # emit_mass_event() channel -- no new progress protocol. Rate-limited
+            # so a fast model doesn't flood the PythonKit bridge with an update
+            # per streamed line; every real invocation also refreshes the
+            # Swift-side heartbeat timestamp (see DocumentRedactionViewModel's
+            # progress consumer), which is what closes the #49 false-failure
+            # gap for a single long-running chunk.
+            last_token_emit_time = 0.0
+            last_token_emit_chars = 0
+
+            def on_chunk_token_progress(chars_so_far, eval_count_so_far):
+                nonlocal last_token_emit_time, last_token_emit_chars
+                if cancel_event.is_set():
+                    # T6 invariant: never emit progress after cancellation.
+                    return
+                now = time.monotonic()
+                if (now - last_token_emit_time) < 0.25 and (chars_so_far - last_token_emit_chars) < 40:
+                    return
+                last_token_emit_time = now
+                last_token_emit_chars = chars_so_far
+                with chunk_lock:
+                    completed = current_chunk
+                chunk_progress = (completed / total_chunks) if total_chunks else 0.0
+                emit_mass_event(
+                    {
+                        "type": "token_progress",
+                        "chunk_index": chunk_idx,
+                        "chars": chars_so_far,
+                        "eval_count": eval_count_so_far,
+                    },
+                    chunk_progress,
+                    status_message=(
+                        f"Streaming chunk {chunk_idx + 1}/{total_chunks} "
+                        f"({chars_so_far} chars generated)"
+                    ),
+                )
+
             # 1. Extraction (per chunk) with retry
             simple_spans = []
             extract_error = None
@@ -1153,7 +1193,10 @@ class IntelligentRedactionPipeline:
                         chunk_text,
                         self.temperature,
                         seed=self.seed,
-                        context=prompt_context
+                        context=prompt_context,
+                        stream=True,
+                        cancel_event=cancel_event,
+                        on_token_progress=on_chunk_token_progress,
                     )
                     if cancel_event.is_set():
                         raise ProcessingDeadlineExceeded("Processing deadline exceeded")

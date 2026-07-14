@@ -6,15 +6,35 @@ These tests focus on pure functions that don't require an actual LLM.
 
 import pytest
 import json
+import threading
 import time
 import marcut.llm_timing as llm_timing_module
 import marcut.model as model_module
+from marcut.cancellation import ProcessingDeadlineExceeded
 from marcut.model import (
     parse_llm_response, _map_label, _valid_candidate, _find_entity_spans,
     get_ollama_base_url, _is_generic_term, get_exclusion_patterns,
     get_system_prompt, DEFAULT_EXTRACT_SYSTEM, _normalize_for_exclusion,
-    _matches_exclusion_literal, ollama_extract
+    _matches_exclusion_literal, ollama_extract, OllamaStreamIncompleteError
 )
+
+
+class _FakeStreamResponse:
+    """Minimal stand-in for `requests.Response` when `stream=True`."""
+
+    def __init__(self, lines):
+        self._lines = lines
+        self.status_code = 200
+
+    def raise_for_status(self):
+        return None
+
+    def iter_lines(self, decode_unicode=True):
+        for line in self._lines:
+            yield line
+
+    def close(self):
+        pass
 
 
 class TestParseLLMResponse:
@@ -410,6 +430,115 @@ class TestOllamaDiagnostics:
 
         assert ollama_extract("mock-model", "Document text", temperature=0.0) == []
         assert 0.25 <= captured["timeout"] <= 1.5
+
+    # --- Streaming (docs/design/streaming_progress.md, Option B) --------
+
+    def test_stream_incomplete_error_is_a_json_decode_error(self):
+        """OllamaStreamIncompleteError must subclass json.JSONDecodeError so a
+        dropped stream flows through the *existing* malformed-JSON
+        self-correction retry rather than becoming a new failure path."""
+        err = OllamaStreamIncompleteError()
+        assert isinstance(err, json.JSONDecodeError)
+
+    def test_stream_deadline_checked_per_line_not_just_at_request_start(self, monkeypatch):
+        """A long generation that keeps emitting NDJSON lines well past the
+        deadline must be interrupted by the per-line check_processing_deadline()
+        inside the streaming loop -- not only once before the request opens,
+        and not left to run for however long `done: true` takes to arrive."""
+        lines_consumed = {"count": 0}
+
+        def fake_post(*args, stream=False, **kwargs):
+            assert stream is True
+
+            def lines():
+                # Many quick token deltas -- if nothing checks the deadline
+                # per-line, this would run for ~2s total before `done: true`.
+                for _ in range(200):
+                    lines_consumed["count"] += 1
+                    time.sleep(0.01)
+                    yield json.dumps({"response": "x", "done": False})
+                yield json.dumps({"response": "", "done": True, "eval_count": 200})
+
+            return _FakeStreamResponse(lines())
+
+        monkeypatch.delenv("MARCUT_OLLAMA_REQUEST_TIMEOUT", raising=False)
+        monkeypatch.setenv("MARCUT_PROCESSING_DEADLINE_MONOTONIC", str(time.monotonic() + 0.15))
+        monkeypatch.setattr(model_module.requests, "post", fake_post)
+
+        started = time.monotonic()
+        with pytest.raises(ProcessingDeadlineExceeded):
+            ollama_extract("mock-model", "Document text", temperature=0.0, stream=True)
+
+        # Interrupted well before all 200 lines (~2s) would have been consumed.
+        assert time.monotonic() - started < 1.0
+        assert lines_consumed["count"] < 200
+
+    def test_stream_cancel_event_stops_reading_without_further_progress(self, monkeypatch):
+        """T6 invariant: once cancel_event fires mid-stream, the loop must
+        stop reading immediately and must not call on_token_progress again."""
+        progress_calls = []
+
+        def fake_post(*args, **kwargs):
+            def lines():
+                yield json.dumps({"response": "first", "done": False})
+                yield json.dumps({"response": "second", "done": False})
+                yield json.dumps({"response": "third", "done": False})
+                yield json.dumps({"response": "", "done": True, "eval_count": 3})
+
+            return _FakeStreamResponse(lines())
+
+        monkeypatch.setattr(model_module.requests, "post", fake_post)
+
+        cancel_event = threading.Event()
+
+        def on_token_progress(chars_so_far, eval_count_so_far):
+            progress_calls.append(chars_so_far)
+            if chars_so_far >= len("first"):
+                cancel_event.set()
+
+        with pytest.raises(ProcessingDeadlineExceeded):
+            ollama_extract(
+                "mock-model",
+                "Document text",
+                stream=True,
+                cancel_event=cancel_event,
+                on_token_progress=on_token_progress,
+            )
+
+        assert progress_calls == [len("first")]
+
+    def test_stream_incomplete_falls_through_to_self_correction_retry(self, monkeypatch):
+        """A stream that ends without `done: true` (dropped/reset connection)
+        must discard the partial text and route through the *existing*
+        malformed-JSON self-correction retry rather than a new failure path,
+        rather than crashing or silently accepting a truncated answer."""
+        calls = {"count": 0}
+
+        def fake_post(*args, **kwargs):
+            calls["count"] += 1
+            if calls["count"] == 1:
+                def dropped_lines():
+                    yield json.dumps({"response": '{"entities": [', "done": False})
+                    # Connection drops here -- no `done: true` line ever arrives.
+
+                return _FakeStreamResponse(dropped_lines())
+
+            # Self-correction retry succeeds.
+            def corrected_lines():
+                yield json.dumps({
+                    "response": '{"entities": [{"text": "Jane Doe", "type": "NAME"}]}',
+                    "done": True,
+                    "eval_count": 10,
+                })
+
+            return _FakeStreamResponse(corrected_lines())
+
+        monkeypatch.setattr(model_module.requests, "post", fake_post)
+
+        spans = ollama_extract("mock-model", "Contact Jane Doe for details.", stream=True)
+
+        assert calls["count"] == 2
+        assert any(s["label"] == "NAME" for s in spans)
 
     def test_parse_failure_omits_raw_response_from_log_and_exception(self, tmp_path, monkeypatch):
         secret = "patient@example.com"

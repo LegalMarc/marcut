@@ -1,12 +1,13 @@
 
-from typing import List, Dict, Any, Optional, Set
+from typing import List, Dict, Any, Optional, Set, Callable
 import json, requests
 import os
 import sys
 import re
 import time
+import threading
 from .network_utils import normalize_ollama_base_url
-from .cancellation import check_processing_deadline, remaining_seconds
+from .cancellation import check_processing_deadline, remaining_seconds, ProcessingDeadlineExceeded
 
 DEFAULT_EXTRACT_SYSTEM = """Extract entities for legal document redaction. Output JSON only.
 
@@ -667,15 +668,49 @@ def _find_entity_spans(text: str, entity_text: str, label: str) -> List[Dict[str
 
     return spans
 
+
+class OllamaStreamIncompleteError(json.JSONDecodeError):
+    """Raised when Ollama's streamed NDJSON response ends before a `done: true`
+    line arrives (e.g. a dropped/reset connection mid-generation).
+
+    Subclasses ``json.JSONDecodeError`` on purpose: per
+    docs/design/streaming_progress.md's cancellation/deadline analysis, a
+    dropped stream must fall through to the *existing* malformed-JSON
+    self-correction retry in ``ollama_extract()`` rather than becoming a new,
+    parallel failure path. The partial text accumulated before the drop is
+    discarded (never treated as a valid, if truncated, answer) -- callers see
+    this exactly like any other unparseable response.
+    """
+
+    def __init__(self, message: str = "Ollama stream ended before completion (no done:true line)"):
+        super().__init__(message, "", 0)
+
+
 def ollama_extract(
     model: str,
     text: str,
     temperature: float = 0.0,
     seed: int = 42,
-    context: Optional[str] = None
+    context: Optional[str] = None,
+    *,
+    stream: bool = False,
+    cancel_event: Optional[threading.Event] = None,
+    on_token_progress: Optional[Callable[[int, Optional[int]], None]] = None,
 ) -> List[Dict[str,Any]]:
     """
     Extract entities using Ollama with a single self-correction retry on malformed JSON.
+
+    ``stream``/``cancel_event``/``on_token_progress`` implement Option B of
+    docs/design/streaming_progress.md: when ``stream=True``, Ollama's
+    `/api/generate` NDJSON stream is iterated instead of waiting for a single
+    blocking response, so progress can be reported from *inside* a single
+    chunk's generation instead of only at chunk boundaries. ``cancel_event``
+    (checked every NDJSON line, in addition to the existing
+    ``check_processing_deadline()``) lets a caller's cooperative-cancellation
+    event unwind a long streaming call without waiting for it to finish.
+    ``on_token_progress(chars_so_far, eval_count_so_far)`` is invoked as text
+    accumulates so the caller can surface finer-grained progress; it is never
+    called after cancellation.
     """
     base_url = get_ollama_base_url()
     try:
@@ -689,28 +724,89 @@ def ollama_extract(
 
     def _request(prompt: str, format_value) -> str:
         check_processing_deadline()
+        if cancel_event is not None and cancel_event.is_set():
+            raise ProcessingDeadlineExceeded("Processing cancelled")
+        body = {
+            "model": model,
+            "prompt": prompt,
+            "format": format_value,
+            "stream": stream,
+            "think": False,   # Disable thinking mode for Qwen 3.5 and similar models
+            "options": {
+                "temperature": max(temperature, 0.1),
+                "seed": seed,
+                "num_ctx": 12288,
+                "num_predict": num_predict,
+                "top_p": 0.9
+            },
+        }
+
+        if not stream:
+            resp = requests.post(
+                f"{base_url}/api/generate",
+                json=body,
+                timeout=remaining_seconds(request_timeout)
+            )
+            resp.raise_for_status()
+            payload = resp.json()
+            # Support both standard and thinking-model response fields
+            return payload.get("response") or payload.get("thinking", "")
+
+        # Streaming branch: iterate Ollama's NDJSON stream, accumulating the
+        # `response` delta from each line. The deadline/cancel_event checks
+        # happen on *every* line, not just once before the request opens --
+        # per the T6 cancellation invariants (docs/design/streaming_progress.md),
+        # a long generation must not be able to run silently past the
+        # deadline between the first line and `done: true`, since `stream=True`
+        # makes `requests`' timeout apply per socket read rather than to the
+        # whole call.
         resp = requests.post(
             f"{base_url}/api/generate",
-            json={
-                "model": model,
-                "prompt": prompt,
-                "format": format_value,
-                "stream": False,  # CRITICAL: Disable streaming to get single JSON response
-                "think": False,   # Disable thinking mode for Qwen 3.5 and similar models
-                "options": {
-                    "temperature": max(temperature, 0.1),
-                    "seed": seed,
-                    "num_ctx": 12288,
-                    "num_predict": num_predict,
-                    "top_p": 0.9
-                },
-                },
-            timeout=remaining_seconds(request_timeout)
+            json=body,
+            timeout=remaining_seconds(request_timeout),
+            stream=True,
         )
         resp.raise_for_status()
-        payload = resp.json()
-        # Support both standard and thinking-model response fields
-        return payload.get("response") or payload.get("thinking", "")
+
+        accumulated_parts: List[str] = []
+        chars_so_far = 0
+        saw_done = False
+        try:
+            for line in resp.iter_lines(decode_unicode=True):
+                if cancel_event is not None and cancel_event.is_set():
+                    # T6 invariant: never emit progress after cancellation --
+                    # stop reading immediately, do not call on_token_progress.
+                    raise ProcessingDeadlineExceeded("Processing cancelled")
+                check_processing_deadline()
+                if not line:
+                    continue
+                try:
+                    event = json.loads(line)
+                except json.JSONDecodeError:
+                    # A blank/keepalive transport line; keep reading.
+                    continue
+                piece = event.get("response") or event.get("thinking") or ""
+                if piece:
+                    accumulated_parts.append(piece)
+                    chars_so_far += len(piece)
+                if on_token_progress is not None and (piece or event.get("eval_count") is not None):
+                    try:
+                        on_token_progress(chars_so_far, event.get("eval_count"))
+                    except Exception:
+                        pass
+                if event.get("done"):
+                    saw_done = True
+                    break
+        finally:
+            resp.close()
+
+        if not saw_done:
+            # Dropped/truncated stream: discard the partial text and route
+            # through the existing malformed-JSON self-correction retry
+            # rather than treating it as a valid (if truncated) answer.
+            raise OllamaStreamIncompleteError()
+
+        return "".join(accumulated_parts)
 
     def _schema_fallback_allowed(err: requests.exceptions.HTTPError) -> bool:
         resp = err.response
@@ -762,6 +858,15 @@ def ollama_extract(
         raise RuntimeError(
             f"Ollama is not reachable at {base_url} or rejected the request. Ensure the Ollama service is running and the model is pulled."
         ) from e
+    except OllamaStreamIncompleteError as e:
+        # Streamed NDJSON response ended before `done: true` (dropped/reset
+        # connection mid-generation). Discard the partial text and fall
+        # through to the same malformed-JSON self-correction retry below --
+        # not a new, parallel failure path.
+        _log_app_event(
+            f"Ollama stream ended before completion: {e}. Treating as malformed response for self-correction retry."
+        )
+        response_text = ""
 
     try:
         parsed = parse_llm_response(response_text)
