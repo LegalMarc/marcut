@@ -2789,7 +2789,11 @@ CLI Error: Input file '\(displayInput)' is outside the sandboxed Application Sup
         return result
     }
 
-    private func normalizeModelDownloadErrorMessage(_ message: String) -> String {
+    // Pure error-classification helpers for the model-download retry/fallback state
+    // machine -- static (same pattern as modelDownloadCLIIdleTimeout/modelDownloadSpaceShortfall
+    // above) so `swift test` can exercise the decision logic directly without a live
+    // Ollama download in flight (issue #50 / B8).
+    static func normalizeModelDownloadErrorMessage(_ message: String) -> String {
         let cleaned = removeANSIEscapeCodes(message)
         let lines = cleaned
             .split(whereSeparator: \.isNewline)
@@ -2814,7 +2818,7 @@ CLI Error: Input file '\(displayInput)' is outside the sandboxed Application Sup
         return candidate
     }
 
-    private func formatModelDownloadError(_ error: Error) -> String {
+    static func formatModelDownloadError(_ error: Error) -> String {
         let rawMessage: String
         if let urlError = error as? URLError {
             rawMessage = urlError.localizedDescription
@@ -2829,7 +2833,7 @@ CLI Error: Input file '\(displayInput)' is outside the sandboxed Application Sup
         return normalizeModelDownloadErrorMessage(rawMessage)
     }
 
-    private func shouldRetryModelDownload(message: String) -> Bool {
+    static func shouldRetryModelDownload(message: String) -> Bool {
         let lowered = message.lowercased()
         let nonRetryable = [
             "no space",
@@ -2858,7 +2862,7 @@ CLI Error: Input file '\(displayInput)' is outside the sandboxed Application Sup
         return retryable.contains(where: { lowered.contains($0) })
     }
 
-    private func shouldFallbackToCLIDownload(message: String) -> Bool {
+    static func shouldFallbackToCLIDownload(message: String) -> Bool {
         let lowered = message.lowercased()
         let disallow = [
             "no space",
@@ -3015,14 +3019,14 @@ CLI Error: Input file '\(displayInput)' is outside the sandboxed Application Sup
                 bridgeLog("❌ \(message)", component: "MODEL_DOWNLOAD")
                 break
             } catch {
-                let message = formatModelDownloadError(error)
+                let message = Self.formatModelDownloadError(error)
                 lastErrorMessage = message
                 if modelDownloadCancelled {
                     lastErrorMessage = "Model download cancelled."
                     break
                 }
                 bridgeLog("MODEL_DOWNLOAD attempt \(attempt) failed: \(message)", component: "MODEL_DOWNLOAD")
-                if attempt < maxAttempts && shouldRetryModelDownload(message: message) {
+                if attempt < maxAttempts && Self.shouldRetryModelDownload(message: message) {
                     bridgeLog("MODEL_DOWNLOAD: Retrying after error...", component: "MODEL_DOWNLOAD")
                     // Do not force probe (which restarts Ollama) during retry; just ensure it's still running
                     _ = await ensureOllamaRunning(forceProbe: false)
@@ -3034,7 +3038,7 @@ CLI Error: Input file '\(displayInput)' is outside the sandboxed Application Sup
             }
         }
 
-        if let message = lastErrorMessage, shouldFallbackToCLIDownload(message: message) {
+        if let message = lastErrorMessage, Self.shouldFallbackToCLIDownload(message: message) {
             if modelDownloadCancelled {
                 lastModelDownloadError = "Model download cancelled."
                 return false
@@ -3061,7 +3065,7 @@ CLI Error: Input file '\(displayInput)' is outside the sandboxed Application Sup
                     lastErrorMessage = "Model download failed via CLI. Please try again."
                 }
             } catch {
-                let message = formatModelDownloadError(error)
+                let message = Self.formatModelDownloadError(error)
                 lastErrorMessage = message
                 if modelDownloadCancelled {
                     lastErrorMessage = "Model download cancelled."

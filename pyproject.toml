@@ -27,6 +27,10 @@ dependencies = [
 
 [project.optional-dependencies]
 llama = ["llama-cpp-python>=0.2.0"]
+# Test-only tooling (never shipped in the app bundle -- see requirements-pinned.txt,
+# which tracks runtime deps only). hypothesis backs the property-based invariant tests
+# in tests/test_property_based.py (issue #50 / B8).
+dev = ["pytest>=7.0", "hypothesis>=6.100"]
 
 [project.scripts]
 marcut = "marcut.cli:main"

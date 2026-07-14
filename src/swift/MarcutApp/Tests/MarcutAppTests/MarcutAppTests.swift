@@ -476,6 +476,105 @@ final class MarcutAppTests: XCTestCase {
         XCTAssertNotNil(bridge.lastModelDownloadError)
     }
 
+    // MARK: - Model Download Cancel Handling Tests (issue #50 / B8)
+
+    func testCancelModelDownloadIsSafeWithNoActiveDownload() {
+        // A user can hit Cancel before a download ever starts (e.g. the button remained
+        // enabled during a race) or after it already finished. `cancelModelDownload()` must
+        // not crash and must still record a user-facing cancellation error in either case.
+        let bridge = PythonBridgeService(autoStartOllama: false, allowOllamaService: false)
+        XCTAssertNil(bridge.lastModelDownloadError, "No error recorded before any download attempt")
+
+        bridge.cancelModelDownload()
+
+        XCTAssertEqual(bridge.lastModelDownloadError, "Model download cancelled.")
+
+        // Idempotent: pressing Cancel twice in a row must not crash or change the outcome.
+        bridge.cancelModelDownload()
+        XCTAssertEqual(bridge.lastModelDownloadError, "Model download cancelled.")
+    }
+
+    func testCancelledStateDoesNotLeakIntoNextDownloadAttempt() async {
+        // Cancelling one download must not poison a later, independent download attempt --
+        // `downloadModel()` resets its cancellation flag and `lastModelDownloadError` at the
+        // top of every call (PythonBridge.swift `downloadModel`), so a fresh attempt should
+        // fail for its own (Ollama-disallowed) reason, not report a stale "cancelled" error.
+        let bridge = PythonBridgeService(autoStartOllama: false, allowOllamaService: false)
+        // See testDownloadModelReleasesPowerAssertionEvenOnEarlyFailurePath's note below:
+        // downloadModel() fires this before its allowOllamaService guard, so it must be
+        // stubbed here too, or the real closure's PermissionManager.shared/
+        // UNUserNotificationCenter access aborts the `swift test` CLI process (asynchronously,
+        // on an unrelated later test).
+        bridge.modelDownloadAuthorizationRequester = {}
+        bridge.modelDownloadCompletionNotifier = { _ in }
+        bridge.cancelModelDownload()
+        XCTAssertEqual(bridge.lastModelDownloadError, "Model download cancelled.")
+
+        let ok = await bridge.downloadModel("llama3.1:8b", progress: { _ in })
+
+        XCTAssertFalse(ok, "Download should still fail when the Ollama service is disallowed")
+        XCTAssertNotEqual(
+            bridge.lastModelDownloadError,
+            "Model download cancelled.",
+            "A new download attempt must not surface a leftover cancellation message from a previous attempt"
+        )
+    }
+
+    // MARK: - Model Download Failure Classification Tests (issue #50 / B8)
+    //
+    // `shouldRetryModelDownload` / `shouldFallbackToCLIDownload` / `formatModelDownloadError` /
+    // `normalizeModelDownloadErrorMessage` drive the retry-then-fallback-to-CLI state machine
+    // inside `downloadModel()`. They were made `static` (previously private instance methods,
+    // same pattern as `modelDownloadSpaceShortfall` above) specifically so this decision logic
+    // is unit-testable without a live download in flight.
+
+    func testShouldRetryModelDownloadClassifiesTransientNetworkErrorsAsRetryable() {
+        XCTAssertTrue(PythonBridgeService.shouldRetryModelDownload(message: "Connection reset by peer"))
+        XCTAssertTrue(PythonBridgeService.shouldRetryModelDownload(message: "unexpected EOF"))
+        XCTAssertTrue(PythonBridgeService.shouldRetryModelDownload(message: "Download stream ended early"))
+    }
+
+    func testShouldRetryModelDownloadTreatsResourceExhaustionAsTerminal() {
+        // These are never retryable, even if they also happen to contain a retryable-looking
+        // substring -- resource/permission failures won't self-resolve by trying again.
+        XCTAssertFalse(PythonBridgeService.shouldRetryModelDownload(message: "No space left on device"))
+        XCTAssertFalse(PythonBridgeService.shouldRetryModelDownload(message: "Permission denied"))
+        XCTAssertFalse(PythonBridgeService.shouldRetryModelDownload(message: "Model download cancelled."))
+    }
+
+    func testShouldFallbackToCLIDownloadMirrorsRetryClassificationForNetworkErrors() {
+        XCTAssertTrue(PythonBridgeService.shouldFallbackToCLIDownload(message: "stream ended unexpectedly"))
+        XCTAssertTrue(PythonBridgeService.shouldFallbackToCLIDownload(message: "network unreachable"))
+        XCTAssertFalse(PythonBridgeService.shouldFallbackToCLIDownload(message: "not enough space available"))
+        XCTAssertFalse(PythonBridgeService.shouldFallbackToCLIDownload(message: "Forbidden"))
+    }
+
+    func testNormalizeModelDownloadErrorMessageProducesUserFacingText() {
+        XCTAssertEqual(
+            PythonBridgeService.normalizeModelDownloadErrorMessage("Error: EOF"),
+            "Download interrupted (EOF). Please try again."
+        )
+        XCTAssertEqual(
+            PythonBridgeService.normalizeModelDownloadErrorMessage("context canceled"),
+            "Download cancelled."
+        )
+        XCTAssertEqual(
+            PythonBridgeService.normalizeModelDownloadErrorMessage("   "),
+            "Model download failed. Please try again.",
+            "Blank/whitespace-only raw messages must fall back to a generic, user-facing string"
+        )
+        XCTAssertEqual(
+            PythonBridgeService.normalizeModelDownloadErrorMessage("Warning: retrying\nError: stream ended by peer"),
+            "Download stream ended early. Please try again.",
+            "Multi-line CLI output should surface the last non-empty line's classification"
+        )
+    }
+
+    func testFormatModelDownloadErrorUsesLocalizedDescriptionFromNSError() {
+        let error = NSError(domain: "Ollama", code: -2, userInfo: [NSLocalizedDescriptionKey: "context canceled"])
+        XCTAssertEqual(PythonBridgeService.formatModelDownloadError(error), "Download cancelled.")
+    }
+
     func testModelSelectionRowAccessibilityIdentifier() throws {
         let row = ModelSelectionRow(
             modelId: "qwen2.5:14b",
@@ -895,6 +994,65 @@ final class MarcutAppTests: XCTestCase {
         viewModel.items.append(createTestDocumentItem(status: .failed))
         viewModel.add(urls: [])
         XCTAssertTrue(viewModel.hasFailedDocuments, "A failed document should flip the flag on")
+    }
+
+    // MARK: - Batch State Transition Tests (issue #50 / B8)
+    //
+    // `processAllDocuments()` walks a batch sequentially and does not stop the batch when one
+    // document fails (DocumentRedactionViewModel.swift): the `while` loop only cares whether an
+    // item still `needsRedaction`, not whether an earlier sibling failed. These tests exercise
+    // the derived `@Published` flags `updateState()` computes from `items`, which is what the UI
+    // and `hasFinishedProcessing`-gated actions actually observe, using `add(urls: [])` as an
+    // inert trigger to re-run `updateState()` -- the same indirect-call pattern used by
+    // `testHasFailedDocumentsReflectsItemStatuses` above (`updateState()` itself is private).
+
+    func testBatchStateFlagsReflectPerDocumentFailureAmidInFlightBatch() throws {
+        let viewModel = createTestViewModel()
+        let queuedItem = createTestDocumentItem(status: .validDocument)
+        let processingItem = createTestDocumentItem(status: .processing)
+        let failedItem = createTestDocumentItem(status: .failed)
+        let completedItem = createTestDocumentItem(status: .completed)
+
+        viewModel.items = [queuedItem, processingItem, failedItem, completedItem]
+        viewModel.add(urls: [])
+
+        XCTAssertTrue(viewModel.hasValidDocuments, "A still-queued document should be reflected")
+        XCTAssertTrue(viewModel.hasProcessingDocuments, "An in-flight document should be reflected")
+        XCTAssertTrue(viewModel.hasCompletedDocuments, "A completed document should be reflected")
+        XCTAssertTrue(viewModel.hasFailedDocuments, "One document failing mid-batch must not be masked by its siblings' states")
+        XCTAssertFalse(viewModel.hasFinishedProcessing, "Batch isn't finished while a document is still queued/processing")
+
+        // The in-flight document finishes and the queued one starts. The earlier failure must
+        // keep reporting failed regardless of later, unrelated transitions in the same batch --
+        // a per-document failure is not allowed to be silently dropped as the batch continues.
+        processingItem.status = .completed
+        queuedItem.status = .processing
+        viewModel.add(urls: [])
+
+        XCTAssertTrue(viewModel.hasFailedDocuments, "Earlier per-document failure persists across later transitions in the batch")
+        XCTAssertTrue(viewModel.hasProcessingDocuments)
+        XCTAssertFalse(viewModel.hasFinishedProcessing)
+
+        // Everything else in the batch finishes; only the failed document remains unresolved.
+        queuedItem.status = .completed
+        viewModel.add(urls: [])
+
+        XCTAssertFalse(viewModel.hasValidDocuments)
+        XCTAssertFalse(viewModel.hasProcessingDocuments)
+        XCTAssertTrue(viewModel.hasCompletedDocuments)
+        XCTAssertTrue(viewModel.hasFailedDocuments)
+        XCTAssertFalse(
+            viewModel.hasFinishedProcessing,
+            "A failed (retry-eligible) document must keep the batch from being reported as finished until it is retried or removed"
+        )
+
+        // Removing the unresolved failure (e.g. the user dismisses it from the list, or a
+        // successful retry replaces its status) is what finally lets the batch settle.
+        viewModel.items.removeAll { $0 === failedItem }
+        viewModel.add(urls: [])
+
+        XCTAssertFalse(viewModel.hasFailedDocuments)
+        XCTAssertTrue(viewModel.hasFinishedProcessing, "Once the failure is resolved, a fully-completed batch reports finished")
     }
 
     // MARK: - Watchdog Tests (issue #43 / B1: embedded Python worker hang/crash)
