@@ -2824,9 +2824,43 @@ CLI Error: Input file '\(displayInput)' is outside the sandboxed Application Sup
         return max(0.1, value)
     }
 
+    /// Preflight check: does `directory`'s volume (probably) have enough free space for a model
+    /// declared at `sizeLabel` in `models.json`? Returns an actionable error message if not, or
+    /// `nil` if the check passes -- including when the size label or the free-space figure
+    /// can't be determined, since we'd rather not block a download over an estimate we're not
+    /// confident in. `freeSpaceProvider` is injectable so tests can simulate a full disk without
+    /// needing one.
+    static func modelDownloadSpaceShortfall(
+        modelName: String,
+        sizeLabel: String?,
+        directory: URL,
+        freeSpaceProvider: (URL) -> Int64? = DiskSpaceCheck.availableBytes
+    ) -> String? {
+        guard let sizeLabel, let neededBytes = DiskSpaceCheck.parseByteSize(sizeLabel) else {
+            return nil
+        }
+        return DiskSpaceCheck.insufficientSpaceMessage(
+            estimatedBytesNeeded: neededBytes,
+            directory: directory,
+            subject: "download \(modelName)",
+            freeSpaceProvider: freeSpaceProvider
+        )
+    }
+
     func downloadModel(_ modelName: String, progress: @escaping (Double) -> Void) async -> Bool {
         lastModelDownloadError = nil
         modelDownloadCancelled = false
+
+        if let shortfall = Self.modelDownloadSpaceShortfall(
+            modelName: modelName,
+            sizeLabel: ModelCatalog.shared.entry(for: modelName)?.sizeLabel,
+            directory: modelsDirectoryURL
+        ) {
+            lastModelDownloadError = shortfall
+            bridgeLog("❌ Preflight disk-space check failed: \(shortfall)", component: "MODEL_DOWNLOAD")
+            return false
+        }
+
         // Request notification authorization now that a download is actually starting,
         // not at app launch, so we don't prompt users who never download a model.
         modelDownloadAuthorizationRequester()

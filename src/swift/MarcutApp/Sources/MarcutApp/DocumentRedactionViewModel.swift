@@ -717,20 +717,21 @@ final class DocumentRedactionViewModel: ObservableObject {
         isMetadataOperation: Bool
     ) async -> URL? {
         let preference = outputSaveLocationPreference
+        let estimatedBytesNeeded = estimatedOutputBytes(for: item, isMetadataOperation: isMetadataOperation)
         switch preference {
         case .alwaysAsk:
             guard let baseDestination else {
                 setOutputAccessError(outputLocationErrorMessage(), isMetadataOperation: isMetadataOperation, needsPermissionRetry: false, item: item)
                 return nil
             }
-            if let error = validateDestination(baseDestination) {
+            if let error = validateDestination(baseDestination, estimatedBytesNeeded: estimatedBytesNeeded) {
                 setOutputAccessError(error, isMetadataOperation: isMetadataOperation, needsPermissionRetry: false, item: item)
                 return nil
             }
             return baseDestination
         case .sameAsOriginal:
             let destination = item.url.deletingLastPathComponent()
-            if let error = validateDestination(destination) {
+            if let error = validateDestination(destination, estimatedBytesNeeded: estimatedBytesNeeded) {
                 setOutputAccessError(error, isMetadataOperation: isMetadataOperation, needsPermissionRetry: false, item: item)
                 return nil
             }
@@ -741,7 +742,7 @@ final class DocumentRedactionViewModel: ObservableObject {
                 setOutputAccessError(outputLocationErrorMessage(), isMetadataOperation: isMetadataOperation, needsPermissionRetry: true, item: item)
                 return nil
             }
-            if let error = validateDestination(downloadsURL) {
+            if let error = validateDestination(downloadsURL, estimatedBytesNeeded: estimatedBytesNeeded) {
                 setOutputAccessError(error, isMetadataOperation: isMetadataOperation, needsPermissionRetry: false, item: item)
                 return nil
             }
@@ -1919,7 +1920,8 @@ final class DocumentRedactionViewModel: ObservableObject {
     }
 
     private func saveMetadataReportToDirectory(_ destinationDir: URL, htmlURL: URL?, jsonURL: URL, item: DocumentItem) async {
-        if let error = validateDestination(destinationDir) {
+        let estimatedBytesNeeded = estimatedOutputBytes(for: item, isMetadataOperation: true)
+        if let error = validateDestination(destinationDir, estimatedBytesNeeded: estimatedBytesNeeded) {
             await MainActor.run {
                 setMetadataReportError(error, needsPermissionRetry: false, item: item)
             }
@@ -2468,8 +2470,41 @@ final class DocumentRedactionViewModel: ObservableObject {
     }
     
     // MARK: - Pre-flight Validation
-    
-    func validateDestination(_ url: URL) -> String? {
+
+    /// Rough multiplier applied to an input document's size to estimate the disk space a full
+    /// redaction run needs (redacted DOCX output + JSON/HTML audit reports). Generous on
+    /// purpose -- track-changes XML and report JSON can each individually run larger than the
+    /// source text -- so this errs toward failing a cheap preflight check rather than a
+    /// multi-minute run's final write.
+    private static let outputSizeSafetyFactor: Double = 3.0
+
+    /// Smaller multiplier for metadata-report-only exports (no redacted DOCX output written),
+    /// where the report is typically much smaller than the source file.
+    private static let reportOnlySizeSafetyFactor: Double = 1.0
+
+    /// Estimates the disk space, in bytes, that processing `item` will need at its destination,
+    /// as a multiple of the source file's own size. Returns 0 (i.e. "don't check") if the
+    /// source file's size can't be determined.
+    private func estimatedOutputBytes(for item: DocumentItem, isMetadataOperation: Bool) -> Int64 {
+        guard let attributes = try? FileManager.default.attributesOfItem(atPath: item.url.path),
+              let sizeNumber = attributes[.size] as? NSNumber else {
+            return 0
+        }
+        let inputBytes = sizeNumber.int64Value
+        guard inputBytes > 0 else { return 0 }
+        let factor = isMetadataOperation ? Self.reportOnlySizeSafetyFactor : Self.outputSizeSafetyFactor
+        return Int64(Double(inputBytes) * factor)
+    }
+
+    /// Preflight-validates a candidate output destination: confirms it's actually writable (a
+    /// small create+delete test file, not just an existence check) and, when
+    /// `estimatedBytesNeeded` is provided, that there's likely enough free space for the run.
+    /// `freeSpaceProvider` is injectable so tests can simulate a full disk without filling one.
+    func validateDestination(
+        _ url: URL,
+        estimatedBytesNeeded: Int64 = 0,
+        freeSpaceProvider: (URL) -> Int64? = DiskSpaceCheck.availableBytes
+    ) -> String? {
         // Check write permissions
         let testFileURL = url.appendingPathComponent(".marcut-writetest")
         do {
@@ -2478,7 +2513,16 @@ final class DocumentRedactionViewModel: ObservableObject {
         } catch {
             return "Cannot write to selected destination - please choose a different folder"
         }
-        
+
+        if let error = DiskSpaceCheck.insufficientSpaceMessage(
+            estimatedBytesNeeded: estimatedBytesNeeded,
+            directory: url,
+            subject: "process this document",
+            freeSpaceProvider: freeSpaceProvider
+        ) {
+            return error
+        }
+
         return nil
     }
 

@@ -938,6 +938,143 @@ final class MarcutAppTests: XCTestCase {
         viewModel.stopProcessing()
     }
 
+    // MARK: - Disk Space Preflight Tests (issue #44 / B2: destination writability + free space)
+
+    /// `validateDestination` must actually attempt a write, not just check existence -- an
+    /// existence-only check would pass for a read-only network share right up until the final
+    /// artifact write fails after a long run.
+    func testValidateDestinationFailsForUnwritableDestination() throws {
+        let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        defer {
+            // Restore write permission before cleanup, otherwise removal itself can fail.
+            try? FileManager.default.setAttributes([.posixPermissions: NSNumber(value: Int16(0o755))], ofItemAtPath: tempDir.path)
+            try? FileManager.default.removeItem(at: tempDir)
+        }
+        try FileManager.default.setAttributes([.posixPermissions: NSNumber(value: Int16(0o555))], ofItemAtPath: tempDir.path)
+
+        let viewModel = createTestViewModel()
+        let error = viewModel.validateDestination(tempDir)
+
+        XCTAssertEqual(error, "Cannot write to selected destination - please choose a different folder")
+    }
+
+    func testValidateDestinationPassesForWritableDestinationWithNoSpaceEstimate() throws {
+        let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let viewModel = createTestViewModel()
+        XCTAssertNil(viewModel.validateDestination(tempDir), "A writable destination with no space estimate requested must pass")
+    }
+
+    /// Free-space logic is exercised through the injectable `freeSpaceProvider` parameter
+    /// (per the ticket's acceptance criteria) rather than actually filling a disk.
+    func testValidateDestinationFailsWhenEstimatedSpaceExceedsAvailable() throws {
+        let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let viewModel = createTestViewModel()
+        let oneGB: Int64 = 1_073_741_824
+        let error = viewModel.validateDestination(
+            tempDir,
+            estimatedBytesNeeded: oneGB,
+            freeSpaceProvider: { _ in 1024 } // simulate an almost-full disk
+        )
+
+        XCTAssertNotNil(error, "Insufficient free space at the destination must fail preflight, not wait for a mid-run write failure")
+        XCTAssertTrue(error?.contains("free disk space") ?? false)
+        XCTAssertTrue(error?.contains("1.00 GB") ?? false, "Error should state the estimated need")
+    }
+
+    func testValidateDestinationPassesWhenEstimatedSpaceFitsAvailable() throws {
+        let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let viewModel = createTestViewModel()
+        let oneKB: Int64 = 1024
+        let tenGB: Int64 = 10_737_418_240
+        let error = viewModel.validateDestination(
+            tempDir,
+            estimatedBytesNeeded: oneKB,
+            freeSpaceProvider: { _ in tenGB }
+        )
+
+        XCTAssertNil(error, "Plenty of free space must not be blocked")
+    }
+
+    /// If free space can't be determined at all, the preflight check must fail open rather than
+    /// block every run whenever the query is unsupported (e.g. an unusual filesystem).
+    func testValidateDestinationSkipsSpaceCheckWhenFreeSpaceUnknown() throws {
+        let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let viewModel = createTestViewModel()
+        let error = viewModel.validateDestination(
+            tempDir,
+            estimatedBytesNeeded: 1_073_741_824,
+            freeSpaceProvider: { _ in nil }
+        )
+
+        XCTAssertNil(error, "An undeterminable free-space figure must not block the run")
+    }
+
+    func testDiskSpaceCheckParseByteSizeHandlesModelCatalogLabels() throws {
+        XCTAssertEqual(DiskSpaceCheck.parseByteSize("9.0 GB"), 9_663_676_416)
+        XCTAssertEqual(DiskSpaceCheck.parseByteSize("22 GB"), 23_622_320_128)
+        XCTAssertEqual(DiskSpaceCheck.parseByteSize("512 MB"), 536_870_912)
+        XCTAssertNil(DiskSpaceCheck.parseByteSize("not a size"))
+        XCTAssertNil(DiskSpaceCheck.parseByteSize(""))
+    }
+
+    /// Model downloads must be checked against the catalog-declared size (`models.json`
+    /// `sizeLabel`) before `ollama pull` even starts, rather than relying on pattern-matching
+    /// "no space" out of Ollama's own output after the fact.
+    func testModelDownloadSpaceShortfallFailsWhenCatalogSizeExceedsAvailable() throws {
+        let directory = FileManager.default.temporaryDirectory
+        let shortfall = PythonBridgeService.modelDownloadSpaceShortfall(
+            modelName: "qwen2.5:14b",
+            sizeLabel: "9.0 GB",
+            directory: directory,
+            freeSpaceProvider: { _ in 1_073_741_824 } // 1 GB free, model needs ~9 GB
+        )
+
+        XCTAssertNotNil(shortfall)
+        XCTAssertTrue(shortfall?.contains("qwen2.5:14b") ?? false)
+        XCTAssertTrue(shortfall?.contains("free disk space") ?? false)
+    }
+
+    func testModelDownloadSpaceShortfallPassesWhenCatalogSizeFitsAvailable() throws {
+        let directory = FileManager.default.temporaryDirectory
+        let shortfall = PythonBridgeService.modelDownloadSpaceShortfall(
+            modelName: "phi4-mini:3.8b",
+            sizeLabel: "2.5 GB",
+            directory: directory,
+            freeSpaceProvider: { _ in 1_099_511_627_776 } // 1 TB free
+        )
+
+        XCTAssertNil(shortfall)
+    }
+
+    func testModelDownloadSpaceShortfallSkipsCheckWhenSizeLabelMissingOrUnparseable() throws {
+        let directory = FileManager.default.temporaryDirectory
+        XCTAssertNil(PythonBridgeService.modelDownloadSpaceShortfall(
+            modelName: "custom:model",
+            sizeLabel: nil,
+            directory: directory,
+            freeSpaceProvider: { _ in 0 }
+        ), "An unknown declared size must not block the download")
+        XCTAssertNil(PythonBridgeService.modelDownloadSpaceShortfall(
+            modelName: "custom:model",
+            sizeLabel: "unknown",
+            directory: directory,
+            freeSpaceProvider: { _ in 0 }
+        ), "An unparseable declared size must not block the download")
+    }
+
     // MARK: - Log Viewer Tests
 
     func testDiscoverLogFilesReturnsMostRecentlyModifiedFirst() throws {
