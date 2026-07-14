@@ -1425,10 +1425,10 @@ def _finalize_and_write(
 
     for sp in spans:
         label = sp["label"]
-        text = sp["text"].strip() # Normalize text for matching
+        entity_text = sp["text"].strip() # Normalize text for matching
 
         if label in ("NAME", "ORG", "BRAND"):
-            eid, score, is_new = ct.link(label, text)
+            eid, score, is_new = ct.link(label, entity_text)
             sp["entity_id"] = eid
             sp["confidence"] = combine(sp.get("confidence", 0.7), agreements=0 if is_new else 1)
         else:
@@ -1436,10 +1436,10 @@ def _finalize_and_write(
             if label not in entity_counters:
                 entity_counters[label] = {}
 
-            if text not in entity_counters[label]:
-                entity_counters[label][text] = len(entity_counters[label]) + 1
+            if entity_text not in entity_counters[label]:
+                entity_counters[label][entity_text] = len(entity_counters[label]) + 1
 
-            seq_id = entity_counters[label][text]
+            seq_id = entity_counters[label][entity_text]
             sp["entity_id"] = f"{label}_{seq_id}"
 
     # Create replacements
