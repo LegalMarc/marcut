@@ -654,7 +654,10 @@ final class DocumentRedactionViewModel: ObservableObject {
         if isPermissionIssue {
             return (metadataReportPermissionMessage(for: item), true)
         }
-        return ("\(item.url.lastPathComponent): \(error)", false)
+        // `error` here can be raw bridge text (e.g. `"Python error: \(error)"` from
+        // `metadataReportOnlyAsync`); callers already log it, so the alert only gets the
+        // mapped, friendly message -- see `FailureMessagePresenter`.
+        return ("\(item.url.lastPathComponent): \(FailureMessagePresenter.message(forCode: nil))", false)
     }
 
     @MainActor
@@ -958,7 +961,10 @@ final class DocumentRedactionViewModel: ObservableObject {
             } else {
                 await MainActor.run {
                     item.status = .failed
-                    item.errorMessage = result.error ?? "Unknown error"
+                    // The raw bridge error (e.g. `"Python error: \(error)"` from
+                    // `scrubMetadataOnlyAsync`) is logged below, not shown to the user --
+                    // see `FailureMessagePresenter`.
+                    item.errorMessage = FailureMessagePresenter.message(forCode: nil)
                     DebugLogger.shared.log("❌ Metadata scrub failed: \(result.error ?? "Unknown")", component: "DocumentRedactionViewModel")
                     updateState()
                 }
@@ -1321,13 +1327,17 @@ final class DocumentRedactionViewModel: ObservableObject {
                 case .failure:
                     currentItem.status = .failed
                     if let failure = self.loadFailureReport(at: reportPath) {
-                        currentItem.errorMessage = "Processing failed (\(failure.code)): \(failure.message)"
+                        // The raw code/message/details are logged here for the App Log/Log
+                        // Viewer; the alert itself only ever shows the mapped, friendly text
+                        // (see `FailureMessagePresenter`) -- never the bare pipeline error_code
+                        // or message as the headline.
+                        currentItem.errorMessage = FailureMessagePresenter.message(forCode: failure.code)
                         DebugLogger.shared.log("❌ PythonKit processing failed for \(currentItem.url.lastPathComponent) code=\(failure.code) message=\(failure.message) details=\(failure.details)", component: "DocumentRedactionViewModel")
                         // Dump Ollama logs to see why the runner crashed
                         PythonBridgeService.shared.dumpOllamaLogs()
                     } else {
                         if currentItem.errorMessage == nil {
-                            currentItem.errorMessage = "Processing failed - see App Log in Settings for details."
+                            currentItem.errorMessage = FailureMessagePresenter.message(forCode: nil)
                         }
                         DebugLogger.shared.log("❌ PythonKit processing failed for \(currentItem.url.lastPathComponent) (no failure report found)", component: "DocumentRedactionViewModel")
                     }

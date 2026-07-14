@@ -1428,6 +1428,79 @@ final class MarcutAppTests: XCTestCase {
             XCTAssertNil(PendingBatchJobStore.load())
         }
     }
+
+    // MARK: - Failure Message Mapping Tests (issue #46 / B4)
+    //
+    // `FailureMessagePresenter.message(forCode:)` is the single place that turns a pipeline
+    // `error_code` (or the absence of one, for bridge-level failures) into the user-facing
+    // alert text. These tests lock in: every known `RedactionError.error_code` from
+    // `marcut/pipeline.py` maps to a distinct, friendly message; unknown/nil codes fall back
+    // to the generic message; and no mapped message ever contains raw bridge/traceback
+    // markers (the exact regression this ticket guards against).
+
+    func testFailureMessageMapsKnownPipelineErrorCodes() {
+        let knownCodes = [
+            "AI_SERVICE_UNAVAILABLE",
+            "AI_MODEL_UNAVAILABLE",
+            "AI_PROCESSING_TIMEOUT",
+            "AI_PROCESSING_FAILED",
+            "AI_CHUNK_EXTRACTION_INCOMPLETE",
+            "DOC_LOAD_FAILED",
+            "RULES_ENGINE_FAILED",
+            "OUTPUT_SAVE_FAILED",
+            "ARTIFACT_FINALIZE_FAILED",
+            "REPORT_SAVE_FAILED",
+            "INVALID_MODE",
+            "UNEXPECTED_FAILURE",
+        ]
+
+        var seenMessages = Set<String>()
+        for code in knownCodes {
+            let message = FailureMessagePresenter.message(forCode: code)
+            XCTAssertNotEqual(
+                message,
+                FailureMessagePresenter.message(forCode: nil),
+                "Known code '\(code)' must not fall back to the generic message"
+            )
+            XCTAssertTrue(message.contains(FailureMessagePresenter.logHint), "Message for '\(code)' should point to the App Log")
+            seenMessages.insert(message)
+        }
+        XCTAssertEqual(seenMessages.count, knownCodes.count, "Every known error code should map to a distinct friendly message")
+    }
+
+    func testFailureMessageFallsBackToGenericForUnknownCode() {
+        let message = FailureMessagePresenter.message(forCode: "SOME_CODE_THAT_DOES_NOT_EXIST")
+        XCTAssertEqual(message, FailureMessagePresenter.message(forCode: nil), "Unrecognized codes should get the generic message")
+        XCTAssertTrue(message.contains(FailureMessagePresenter.genericMessage))
+    }
+
+    func testFailureMessageFallsBackToGenericForNilCode() {
+        // Bridge-level failures (e.g. metadata scrub/report exceptions) never carry a
+        // structured `error_code`.
+        let message = FailureMessagePresenter.message(forCode: nil)
+        XCTAssertTrue(message.contains(FailureMessagePresenter.genericMessage))
+        XCTAssertTrue(message.contains(FailureMessagePresenter.logHint))
+    }
+
+    func testFailureMessagesNeverContainRawBridgeOrTracebackText() {
+        let suspiciousMarkers = ["PYERROR", "Traceback", "PythonError", "Python error:", "type=", "NameError", "PK_"]
+        let codesIncludingUnknown: [String?] = [
+            nil,
+            "AI_SERVICE_UNAVAILABLE", "AI_MODEL_UNAVAILABLE", "AI_PROCESSING_TIMEOUT",
+            "AI_PROCESSING_FAILED", "AI_CHUNK_EXTRACTION_INCOMPLETE", "DOC_LOAD_FAILED",
+            "RULES_ENGINE_FAILED", "OUTPUT_SAVE_FAILED", "ARTIFACT_FINALIZE_FAILED",
+            "REPORT_SAVE_FAILED", "INVALID_MODE", "UNEXPECTED_FAILURE", "NOT_A_REAL_CODE",
+        ]
+        for code in codesIncludingUnknown {
+            let message = FailureMessagePresenter.message(forCode: code)
+            for marker in suspiciousMarkers {
+                XCTAssertFalse(
+                    message.contains(marker),
+                    "Message for code \(String(describing: code)) must not leak raw bridge/traceback marker '\(marker)': \(message)"
+                )
+            }
+        }
+    }
 }
 
 // MARK: - Test Extensions
