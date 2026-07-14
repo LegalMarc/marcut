@@ -635,6 +635,74 @@ class TestOllamaDiagnostics:
         spans = ollama_extract("mock-model", "Contact Jane Doe for details.", temperature=0.0)
         assert any(s["label"] == "NAME" for s in spans)
 
+    def test_empty_response_retried_with_perturbed_seed_before_self_correction(self, monkeypatch):
+        """Regression for the E2E failure streak (2026-07-10 through 07-14):
+        an empty completion (not just malformed JSON) must be retried with a
+        DIFFERENT seed, not the self-correction prompt at the identical seed --
+        Ollama's sampling is otherwise deterministic for a fixed seed, so a
+        naive retry would just reproduce the same empty output forever. Only
+        two total requests should fire: the perturbed-seed retry succeeds
+        directly, so the self-correction path (a third request) must never
+        be reached."""
+
+        class MockResponse:
+            def __init__(self, response_text):
+                self.response_text = response_text
+
+            def raise_for_status(self):
+                return None
+
+            def json(self):
+                return {"response": self.response_text}
+
+        seeds_seen = []
+        responses = iter([
+            MockResponse(""),
+            MockResponse('{"entities": [{"text": "Jane Doe", "type": "NAME"}]}'),
+        ])
+
+        def fake_post(*args, **kwargs):
+            seeds_seen.append(kwargs["json"]["options"]["seed"])
+            return next(responses)
+
+        monkeypatch.delenv("OLLAMA_HOST", raising=False)
+        monkeypatch.setattr(model_module.requests, "post", fake_post)
+
+        spans = ollama_extract("mock-model", "Contact Jane Doe for details.", temperature=0.0, seed=42)
+        assert any(s["label"] == "NAME" for s in spans)
+        assert seeds_seen == [42, 43]
+
+    def test_empty_response_still_empty_after_retry_falls_through_to_self_correction(self, monkeypatch):
+        """If the perturbed-seed retry is ALSO empty, today's existing
+        self-correction/fail-closed behavior must still apply -- this fix
+        adds one extra chance to recover, it does not weaken the eventual
+        RuntimeError guarantee when the model genuinely cannot produce output."""
+
+        class MockResponse:
+            def __init__(self, response_text):
+                self.response_text = response_text
+
+            def raise_for_status(self):
+                return None
+
+            def json(self):
+                return {"response": self.response_text}
+
+        responses = iter([
+            MockResponse(""),
+            MockResponse(""),
+            MockResponse(""),
+        ])
+
+        def fake_post(*args, **kwargs):
+            return next(responses)
+
+        monkeypatch.delenv("OLLAMA_HOST", raising=False)
+        monkeypatch.setattr(model_module.requests, "post", fake_post)
+
+        with pytest.raises(RuntimeError, match="not valid JSON after self-correction"):
+            ollama_extract("mock-model", "Contact Jane Doe for details.", temperature=0.0, seed=42)
+
 
 class TestIsGenericTerm:
     """Test generic term detection."""
