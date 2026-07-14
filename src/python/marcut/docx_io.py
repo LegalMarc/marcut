@@ -732,6 +732,16 @@ class DocxMap:
                 return etree.tostring(root, encoding="UTF-8", xml_declaration=True), True
             return xml_bytes, False
 
+        # NOTE ON MEMORY: the pre-scan passes below (removed-parts / orphan detection,
+        # style-ID pre-scan) only ever read small package-internal XML parts (*.rels,
+        # [Content_Types].xml, word/styles.xml) — never large binary media — so their
+        # memory footprint is bounded regardless of document size. The subsequent
+        # transform-and-write pass streams the archive entry-by-entry (read one part,
+        # transform if needed, write immediately, discard) instead of buffering every
+        # changed part in memory for the lifetime of the rewrite, so peak memory stays
+        # O(largest single part) rather than O(total archive size).
+        temp_path = path + ".tmp_harden"
+        any_change = False
         with zipfile.ZipFile(path, "r") as zin:
             items = zin.infolist()
             last_index = {item.filename: idx for idx, item in enumerate(items)}
@@ -811,6 +821,9 @@ class DocxMap:
                         orphaned_parts.add(name)
                 removed_parts.update(orphaned_parts)
 
+            if removed_parts:
+                any_change = True
+
             # PRE-SCAN Styles to build ID mapping before general file processing
             if settings.clean_style_names:
                 try:
@@ -829,128 +842,140 @@ class DocxMap:
                 except Exception:
                     pass
 
-            updates: Dict[str, bytes] = {}
+            with zipfile.ZipFile(temp_path, "w", compression=zipfile.ZIP_DEFLATED) as zout:
+                for idx, item in enumerate(items):
+                    name = item.filename
+                    if name in removed_parts:
+                        continue
+                    if idx != last_index.get(name, idx):
+                        # Earlier occurrence of a duplicate entry name; only the
+                        # last occurrence is kept, so skip reading/writing this one.
+                        continue
 
-            for item in items:
-                name = item.filename
-                if name in removed_parts:
-                    continue
+                    data = zin.read(name)
 
-                data = zin.read(name)
-
-                if name.endswith(".rels"):
-                    updated, changed = _scrub_rels(data, name)
-                    if changed:
-                        updates[name] = updated
-                    continue
-
-                if name == "[Content_Types].xml":
-                    updated, changed = _update_content_types(data, removed_parts)
-                    if changed:
-                        updates[name] = updated
-                    continue
-
-                if settings.clean_image_exif and name.startswith("word/media/"):
-                    lower = name.lower()
-                    if lower.endswith((".jpg", ".jpeg")):
-                        updated, changed = _strip_jpeg_metadata(data)
+                    if name.endswith(".rels"):
+                        updated, changed = _scrub_rels(data, name)
                         if changed:
-                            updates[name] = updated
+                            any_change = True
+                        zout.writestr(item, updated if changed else data)
                         continue
-                    if lower.endswith(".png"):
-                        updated, changed = _strip_png_metadata(data)
+
+                    if name == "[Content_Types].xml":
+                        updated, changed = _update_content_types(data, removed_parts)
                         if changed:
-                            updates[name] = updated
+                            any_change = True
+                        zout.writestr(item, updated if changed else data)
                         continue
 
-                if settings.clean_embedded_fonts and name == "word/fontTable.xml":
-                    root = _safe_fromstring(data)
-                    changed = False
-                    for tag in ("embedRegular", "embedBold", "embedItalic", "embedBoldItalic"):
-                        for el in list(root.findall(f".//w:{tag}", namespaces=root.nsmap)):
-                            parent = el.getparent()
-                            if parent is not None:
-                                parent.remove(el)
-                                changed = True
-                    if changed:
-                        updates[name] = etree.tostring(root, encoding="UTF-8", xml_declaration=True)
-                    continue
+                    if settings.clean_image_exif and name.startswith("word/media/"):
+                        lower = name.lower()
+                        if lower.endswith((".jpg", ".jpeg")):
+                            updated, changed = _strip_jpeg_metadata(data)
+                            if changed:
+                                any_change = True
+                            zout.writestr(item, updated if changed else data)
+                            continue
+                        if lower.endswith(".png"):
+                            updated, changed = _strip_png_metadata(data)
+                            if changed:
+                                any_change = True
+                            zout.writestr(item, updated if changed else data)
+                            continue
 
-                if name == "word/styles.xml" and (settings.clean_style_names or settings.clean_language_settings):
-                    root = _safe_fromstring(data)
-                    changed = False
-                    if settings.clean_style_names:
-                        changed = _rename_custom_styles(root) or changed
-                    if settings.clean_language_settings:
-                        changed = _remove_lang_elements(root) or changed
-                    if changed:
-                        updates[name] = etree.tostring(root, encoding="UTF-8", xml_declaration=True)
-                    continue
-
-                if settings.clean_chart_labels and name.startswith("word/charts/") and name.endswith(".xml"):
-                    root = _safe_fromstring(data)
-                    if _clean_chart_labels(root):
-                        updates[name] = etree.tostring(root, encoding="UTF-8", xml_declaration=True)
-                    continue
-
-                if settings.clean_style_names and name.startswith("word/") and name.endswith(".xml") and name != "word/styles.xml":
-                    # Update references in all document parts
-                    try:
+                    if settings.clean_embedded_fonts and name == "word/fontTable.xml":
                         root = _safe_fromstring(data)
-                        if _update_style_references(root, style_id_map):
-                            updates[name] = etree.tostring(root, encoding="UTF-8", xml_declaration=True)
-                            # Update data reference so subsequent lang/form cleaners use the new XML
-                            data = updates[name]
-                    except Exception:
-                        pass
-
-                if settings.clean_language_settings and name.startswith("word/") and name.endswith(".xml"):
-                    try:
-                        root = _safe_fromstring(data)
-                    except Exception:
+                        changed = False
+                        for tag in ("embedRegular", "embedBold", "embedItalic", "embedBoldItalic"):
+                            for el in list(root.findall(f".//w:{tag}", namespaces=root.nsmap)):
+                                parent = el.getparent()
+                                if parent is not None:
+                                    parent.remove(el)
+                                    changed = True
+                        if changed:
+                            data = etree.tostring(root, encoding="UTF-8", xml_declaration=True)
+                            any_change = True
+                        zout.writestr(item, data)
                         continue
-                    if _remove_lang_elements(root):
-                        updates[name] = etree.tostring(root, encoding="UTF-8", xml_declaration=True)
-                    continue
 
-                if settings.clean_form_defaults and name.startswith("word/") and name.endswith(".xml"):
-                    try:
+                    if name == "word/styles.xml" and (settings.clean_style_names or settings.clean_language_settings):
                         root = _safe_fromstring(data)
-                    except Exception:
+                        changed = False
+                        if settings.clean_style_names:
+                            changed = _rename_custom_styles(root) or changed
+                        if settings.clean_language_settings:
+                            changed = _remove_lang_elements(root) or changed
+                        if changed:
+                            data = etree.tostring(root, encoding="UTF-8", xml_declaration=True)
+                            any_change = True
+                        zout.writestr(item, data)
                         continue
-                    if _strip_form_defaults(root):
-                        updates[name] = etree.tostring(root, encoding="UTF-8", xml_declaration=True)
 
-                if (settings.clean_nonstandard_xml or settings.clean_microsoft_extension_xml or settings.clean_alternate_content) and name.endswith(".xml"):
-                    try:
+                    if settings.clean_chart_labels and name.startswith("word/charts/") and name.endswith(".xml"):
                         root = _safe_fromstring(data)
-                    except Exception:
+                        if _clean_chart_labels(root):
+                            data = etree.tostring(root, encoding="UTF-8", xml_declaration=True)
+                            any_change = True
+                        zout.writestr(item, data)
                         continue
-                    changed = False
-                    if settings.clean_alternate_content:
-                        changed = _strip_alternate_content(root) or changed
-                    if settings.clean_nonstandard_xml or settings.clean_microsoft_extension_xml:
-                        changed = _strip_nonstandard_elements(
-                            root,
-                            remove_unknown=settings.clean_nonstandard_xml,
-                            remove_ms=settings.clean_microsoft_extension_xml,
-                        ) or changed
-                    if changed:
-                        updates[name] = etree.tostring(root, encoding="UTF-8", xml_declaration=True)
 
-        if not updates and not removed_parts:
+                    if settings.clean_style_names and name.startswith("word/") and name.endswith(".xml") and name != "word/styles.xml":
+                        # Update references in all document parts
+                        try:
+                            root = _safe_fromstring(data)
+                            if _update_style_references(root, style_id_map):
+                                data = etree.tostring(root, encoding="UTF-8", xml_declaration=True)
+                                any_change = True
+                                # Update data reference so subsequent lang/form cleaners use the new XML
+                        except Exception:
+                            pass
+
+                    if settings.clean_language_settings and name.startswith("word/") and name.endswith(".xml"):
+                        try:
+                            root = _safe_fromstring(data)
+                        except Exception:
+                            zout.writestr(item, data)
+                            continue
+                        if _remove_lang_elements(root):
+                            data = etree.tostring(root, encoding="UTF-8", xml_declaration=True)
+                            any_change = True
+                        zout.writestr(item, data)
+                        continue
+
+                    if settings.clean_form_defaults and name.startswith("word/") and name.endswith(".xml"):
+                        try:
+                            root = _safe_fromstring(data)
+                        except Exception:
+                            zout.writestr(item, data)
+                            continue
+                        if _strip_form_defaults(root):
+                            data = etree.tostring(root, encoding="UTF-8", xml_declaration=True)
+                            any_change = True
+
+                    if (settings.clean_nonstandard_xml or settings.clean_microsoft_extension_xml or settings.clean_alternate_content) and name.endswith(".xml"):
+                        try:
+                            root = _safe_fromstring(data)
+                        except Exception:
+                            zout.writestr(item, data)
+                            continue
+                        changed = False
+                        if settings.clean_alternate_content:
+                            changed = _strip_alternate_content(root) or changed
+                        if settings.clean_nonstandard_xml or settings.clean_microsoft_extension_xml:
+                            changed = _strip_nonstandard_elements(
+                                root,
+                                remove_unknown=settings.clean_nonstandard_xml,
+                                remove_ms=settings.clean_microsoft_extension_xml,
+                            ) or changed
+                        if changed:
+                            data = etree.tostring(root, encoding="UTF-8", xml_declaration=True)
+                            any_change = True
+
+                    zout.writestr(item, data)
+
+        if not any_change:
+            os.remove(temp_path)
             return
-
-        temp_path = path + ".tmp_harden"
-        with zipfile.ZipFile(path, "r") as zin, zipfile.ZipFile(temp_path, "w", compression=zipfile.ZIP_DEFLATED) as zout:
-            for idx, item in enumerate(zin.infolist()):
-                name = item.filename
-                if name in removed_parts:
-                    continue
-                if idx != last_index.get(name, idx):
-                    continue
-                data = updates.get(name, zin.read(name))
-                zout.writestr(item, data)
 
         os.replace(temp_path, path)
 
