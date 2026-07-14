@@ -691,13 +691,22 @@ final class PythonBridgeService: ObservableObject {
     private let autoStartOllama: Bool
     private let allowOllamaService: Bool
     private var ruleFilterValue: String = RedactionRule.serializedList(from: RedactionRule.defaultSelection)
+    /// RAII-style holder for the "keep this Mac awake" assertion held while a model download is
+    /// in flight (B5). Shares the same underlying assertion/counter as
+    /// `DocumentRedactionViewModel`'s document-processing usage -- overlapping callers (a
+    /// download kicked off mid-batch) just add to the reference count. Injectable so tests can
+    /// verify acquire/release counts without touching real IOKit state.
+    private let powerAssertion: PowerAssertionGuard
 
 
-    init(autoStartOllama: Bool = true, allowOllamaService: Bool = true) {
+    init(autoStartOllama: Bool = true, allowOllamaService: Bool = true, powerAssertion: PowerAssertionGuard? = nil) {
         self.isDebugLoggingEnabled = DebugPreferences.isEnabled()
         self.autoStartOllama = autoStartOllama
         self.allowOllamaService = allowOllamaService
-        
+        // See `DocumentRedactionViewModel.init` for why `.shared` is resolved here rather than
+        // as the parameter's default value.
+        self.powerAssertion = powerAssertion ?? .shared
+
         // Dynamic port selection
         self.ollamaPort = PythonBridgeService.findFreePort(start: 11434, maxAttempts: 20)
         bridgeLog("Selected Ollama port: \(self.ollamaPort)", component: "Ollama")
@@ -2910,6 +2919,12 @@ CLI Error: Input file '\(displayInput)' is outside the sandboxed Application Sup
     }
 
     func downloadModel(_ modelName: String, progress: @escaping (Double) -> Void) async -> Bool {
+        // B5: keep the Mac from idle-sleeping mid-download. `defer` covers every return path
+        // below (preflight failures, retries, CLI fallback, and the success path) so the
+        // assertion can never leak past this call.
+        powerAssertion.begin()
+        defer { powerAssertion.end() }
+
         lastModelDownloadError = nil
         modelDownloadCancelled = false
 

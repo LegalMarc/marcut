@@ -94,8 +94,28 @@ final class DocumentRedactionViewModel: ObservableObject {
 
     // MARK: - Initialization & Cleanup
     private var pythonInitObservers: [NSObjectProtocol] = []
+    /// `NSWorkspace` sleep/wake observer tokens (B5). Kept separate from `pythonInitObservers`
+    /// since they're registered on a different notification center.
+    private var systemPowerObservers: [NSObjectProtocol] = []
+    /// RAII-style holder for the "keep this Mac awake" assertion held while any document is
+    /// processing (B5). Injectable so tests can verify acquire/release counts without touching
+    /// real IOKit state.
+    private let powerAssertion: PowerAssertionGuard
 
-    init() {
+    /// Ollama health probe invoked on system wake to decide whether in-flight processing should
+    /// resume or fail (see `handleSystemWake()`). Injectable for tests -- the default talks to a
+    /// real Ollama HTTP endpoint via `PythonBridgeService`, which isn't available/deterministic
+    /// under the `swift test` CLI sandbox.
+    var wakeOllamaHealthCheck: () async -> Bool = {
+        await PythonBridgeService.shared.checkOllamaStatus()
+        return PythonBridgeService.shared.isOllamaRunning
+    }
+
+    init(powerAssertion: PowerAssertionGuard? = nil) {
+        // `.shared` is main-actor isolated, so it can't be a default *parameter* value (that
+        // default expression is evaluated in a nonisolated context per Swift's isolation rules);
+        // resolving it here in the (main-actor) initializer body avoids that warning.
+        self.powerAssertion = powerAssertion ?? .shared
         let center = NotificationCenter.default
         let ready = center.addObserver(forName: .pythonRunnerReady, object: nil, queue: .main) { [weak self] _ in
             guard let self else { return }
@@ -126,6 +146,14 @@ final class DocumentRedactionViewModel: ObservableObject {
             }
         }
         pythonInitObservers = [ready, failed]
+
+        let workspaceCenter = NSWorkspace.shared.notificationCenter
+        let wakeObserver = workspaceCenter.addObserver(forName: NSWorkspace.didWakeNotification, object: nil, queue: .main) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                await self?.handleSystemWake()
+            }
+        }
+        systemPowerObservers = [wakeObserver]
 
         applyAdvancedModeDefaultsIfNeeded()
         if DebugPreferences.hasStoredValue() {
@@ -167,10 +195,13 @@ final class DocumentRedactionViewModel: ObservableObject {
             NotificationCenter.default.removeObserver(token)
         }
 
+        let workspaceCenter = NSWorkspace.shared.notificationCenter
+        for token in systemPowerObservers {
+            workspaceCenter.removeObserver(token)
+        }
+
         DebugLogger.shared.log("DocumentRedactionViewModel deallocated", component: "ViewModel")
     }
-
-    // Removed init() to prevent circular dependencies during @Published property initialization
 
     private let pythonBridge: PythonBridgeService = .shared
     private var processingTasks: [UUID: Task<Void, Never>] = [:]
@@ -1490,7 +1521,23 @@ final class DocumentRedactionViewModel: ObservableObject {
     private func updateState() {
         hasDocuments = !items.isEmpty
         hasValidDocuments = items.contains { $0.status == .validDocument }
+
+        // B5: hold (or release) the "keep this Mac awake" assertion exactly on the
+        // not-processing <-> processing edge, driven off the same live-state recomputation
+        // `persistPendingBatchJobIfNeeded()` below already relies on -- so every status
+        // transition that can start or end processing (normal completion, heartbeat stall,
+        // user-initiated stop, document removal, wake-health-check failure, ...) keeps the
+        // assertion in sync without needing to be threaded through each call site individually.
+        let wasProcessing = hasProcessingDocuments
         hasProcessingDocuments = items.contains { $0.status.isProcessing }
+        if hasProcessingDocuments != wasProcessing {
+            if hasProcessingDocuments {
+                powerAssertion.begin()
+            } else {
+                powerAssertion.end()
+            }
+        }
+
         hasCompletedDocuments = items.contains { $0.status.isComplete }
         hasFailedDocuments = items.contains { $0.status == .failed }
 
@@ -2678,6 +2725,61 @@ extension DocumentRedactionViewModel {
         finalizeProcessing(for: item)
     }
 }
+
+// MARK: - Sleep/Wake Handling (B5)
+//
+// `PowerAssertionGuard` (held/released via `updateState()` above) prevents *idle* sleep while
+// processing, but not a forced lid-close or an explicit Apple-menu "Sleep" -- so processing can
+// still be interrupted by a real sleep/wake cycle. The wall-clock time spent asleep counts toward
+// the heartbeat watchdog's silence window (`heartbeatTimeout`) even though nothing was actually
+// stalled, which would otherwise surface the generic, misleading `processingStalledMessage` a few
+// heartbeat-poll cycles after wake. This gets ahead of that with an immediate, wake-specific
+// health check so the user gets a clearer signal and, when the engine did survive, doesn't lose
+// the run to a false positive.
+extension DocumentRedactionViewModel {
+    /// Shown when a document was mid-processing when the Mac slept, and the health check taken
+    /// immediately on wake found the embedded engine unresponsive.
+    static let wakeHealthCheckFailedMessage = "Processing didn't survive sleep - the embedded engine did not respond after waking. Restart Marcut to resume processing."
+
+    /// Called on `NSWorkspace.didWakeNotification`. No-ops when nothing is in flight. Otherwise
+    /// health-checks Ollama once: if it answers, this is treated as a healthy resume and
+    /// `lastHeartbeat` is refreshed on every in-flight document so the heartbeat watchdog's next
+    /// poll doesn't see a false silence gap from sleep; if it doesn't answer, those documents are
+    /// failed now with a wake-specific message rather than waiting for the watchdog to eventually
+    /// do it with a more confusing one.
+    func handleSystemWake() async {
+        guard hasProcessingDocuments else { return }
+
+        let processingItems = items.filter { $0.status == .processing }
+        guard !processingItems.isEmpty else { return }
+
+        DebugLogger.shared.log(
+            "☀️ System woke with \(processingItems.count) document(s) processing; health-checking the engine",
+            component: "PowerAssertion"
+        )
+
+        let healthy = await wakeOllamaHealthCheck()
+
+        if healthy {
+            let now = Date()
+            for item in processingItems {
+                item.lastHeartbeat = now
+            }
+            DebugLogger.shared.log("✅ Wake health check passed; resuming in-flight processing", component: "PowerAssertion")
+            return
+        }
+
+        DebugLogger.shared.log("❌ Wake health check failed; failing in-flight document(s)", component: "PowerAssertion")
+        for item in processingItems {
+            item.status = .failed
+            item.errorMessage = Self.wakeHealthCheckFailedMessage
+            activeAttemptTokens.removeValue(forKey: item.id)
+            finalizeProcessing(for: item)
+        }
+        AppDelegate.pythonRunner?.cancelCurrentOperation(source: "system_wake_health_check_failed")
+    }
+}
+
 // MARK: - Progress Mapping
 private extension DocumentRedactionViewModel {
     func applyPythonKitProgress(

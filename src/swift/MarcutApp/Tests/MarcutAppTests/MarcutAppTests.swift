@@ -1501,6 +1501,211 @@ final class MarcutAppTests: XCTestCase {
             }
         }
     }
+
+    // MARK: - Power Assertion / Sleep-Wake Tests (B5, issue #47)
+    //
+    // `PowerAssertionGuard` itself is tested in isolation with injected acquire/release fakes
+    // (no real IOKit calls, deterministic). The ViewModel-integration tests below inject a fresh
+    // `PowerAssertionGuard` instance per test (rather than `.shared`) so they don't touch real
+    // system power-management state or leak counter state across tests.
+
+    func testPowerAssertionGuardAcquiresOnceAndReleasesOnMatchingEnd() {
+        var acquireCount = 0
+        var releaseCount = 0
+        let powerGuard = PowerAssertionGuard(
+            acquire: { _ in acquireCount += 1; return 1 },
+            release: { _ in releaseCount += 1 }
+        )
+
+        powerGuard.begin()
+        XCTAssertEqual(acquireCount, 1)
+        XCTAssertTrue(powerGuard.isHoldingAssertion)
+
+        powerGuard.end()
+        XCTAssertEqual(releaseCount, 1)
+        XCTAssertFalse(powerGuard.isHoldingAssertion)
+        XCTAssertEqual(powerGuard.activeCount, 0)
+    }
+
+    /// Overlapping callers (e.g. a model download kicked off mid-batch) must share one
+    /// underlying assertion rather than each acquiring/releasing their own.
+    func testPowerAssertionGuardKeepsAssertionUntilEveryBeginIsMatched() {
+        var acquireCount = 0
+        var releaseCount = 0
+        let powerGuard = PowerAssertionGuard(
+            acquire: { _ in acquireCount += 1; return 1 },
+            release: { _ in releaseCount += 1 }
+        )
+
+        powerGuard.begin() // e.g. batch processing starts
+        powerGuard.begin() // e.g. a model download starts mid-batch
+        XCTAssertEqual(acquireCount, 1, "A second overlapping begin() must not re-acquire the OS assertion")
+        XCTAssertEqual(powerGuard.activeCount, 2)
+
+        powerGuard.end() // model download finishes
+        XCTAssertEqual(releaseCount, 0, "The assertion must stay held while the batch is still processing")
+        XCTAssertTrue(powerGuard.isHoldingAssertion)
+
+        powerGuard.end() // batch finishes
+        XCTAssertEqual(releaseCount, 1)
+        XCTAssertFalse(powerGuard.isHoldingAssertion)
+    }
+
+    /// A stray extra `end()` (bug elsewhere, or a race) must not underflow the count into
+    /// releasing an assertion a still-live caller believes is held, and must not crash.
+    func testPowerAssertionGuardEndWithoutMatchingBeginIsANoOp() {
+        var releaseCount = 0
+        let powerGuard = PowerAssertionGuard(acquire: { _ in 1 }, release: { _ in releaseCount += 1 })
+
+        powerGuard.end() // stray end with no prior begin at all
+        XCTAssertEqual(powerGuard.activeCount, 0)
+        XCTAssertEqual(releaseCount, 0)
+
+        powerGuard.begin()
+        powerGuard.end()
+        powerGuard.end() // stray extra end after an already-matched pair
+        XCTAssertEqual(powerGuard.activeCount, 0, "A stray extra end() must not underflow the count")
+        XCTAssertEqual(releaseCount, 1, "The stray extra end() must not trigger a second release")
+    }
+
+    /// The OS can refuse to grant an assertion; that must fail open (no crash, no throw) and
+    /// must not be remembered forever -- a later `begin()` retries the acquire.
+    func testPowerAssertionGuardRetriesAcquireAfterOSRefusal() {
+        var shouldSucceed = false
+        var acquireCount = 0
+        let powerGuard = PowerAssertionGuard(
+            acquire: { _ in
+                acquireCount += 1
+                return shouldSucceed ? 1 : nil
+            },
+            release: { _ in }
+        )
+
+        powerGuard.begin()
+        XCTAssertEqual(acquireCount, 1)
+        XCTAssertFalse(powerGuard.isHoldingAssertion, "A refused acquire must fail open, not crash or throw")
+
+        powerGuard.end()
+        XCTAssertEqual(powerGuard.activeCount, 0)
+
+        shouldSucceed = true
+        powerGuard.begin()
+        XCTAssertEqual(acquireCount, 2, "A later begin() must retry the acquire rather than remembering the earlier failure forever")
+        XCTAssertTrue(powerGuard.isHoldingAssertion)
+        powerGuard.end()
+    }
+
+    /// End-to-end through `DocumentRedactionViewModel.updateState()`'s edge-triggered begin/end:
+    /// the assertion is acquired exactly once when a document enters a processing state, and
+    /// released exactly once when the heartbeat watchdog's failure path takes it back out --
+    /// covering the "incl. failure paths" half of the acceptance criteria.
+    func testPowerAssertionHeldWhileProcessingAndReleasedWhenHeartbeatWatchdogFails() async throws {
+        var acquireCount = 0
+        var releaseCount = 0
+        let powerGuard = PowerAssertionGuard(
+            acquire: { _ in acquireCount += 1; return 1 },
+            release: { _ in releaseCount += 1 }
+        )
+        let viewModel = DocumentRedactionViewModel(powerAssertion: powerGuard)
+        let item = createTestDocumentItem(status: .processing)
+        item.lastHeartbeat = Date().addingTimeInterval(-999)
+        viewModel.items = [item]
+
+        // `items` is set directly (bypassing `add(urls:)`'s async validation path), so drive
+        // `updateState()`'s processing-edge detection the same way other tests in this file
+        // already do via `stopProcessing()` (safe here: `processingTasks` is empty, so this only
+        // recomputes state -- it doesn't touch `item.status`).
+        viewModel.stopProcessing()
+        XCTAssertEqual(acquireCount, 1, "Transitioning into a processing state must acquire the assertion exactly once")
+        XCTAssertEqual(releaseCount, 0)
+
+        viewModel.ensureHeartbeatMonitorRunning(for: item)
+
+        let deadline = Date().addingTimeInterval(5.0)
+        while item.status == .processing && Date() < deadline {
+            try await Task.sleep(nanoseconds: 50_000_000)
+        }
+
+        XCTAssertEqual(item.status, .failed)
+        XCTAssertEqual(releaseCount, 1, "The heartbeat watchdog's failure path must release the assertion, not leak it")
+    }
+
+    /// `downloadModel`'s early failure path (Ollama disallowed) must still release the
+    /// assertion via `defer` -- exercises the RAII guarantee on a real failure path rather than
+    /// the success path.
+    func testDownloadModelReleasesPowerAssertionEvenOnEarlyFailurePath() async {
+        var acquireCount = 0
+        var releaseCount = 0
+        let powerGuard = PowerAssertionGuard(
+            acquire: { _ in acquireCount += 1; return 1 },
+            release: { _ in releaseCount += 1 }
+        )
+        let bridge = PythonBridgeService(autoStartOllama: false, allowOllamaService: false, powerAssertion: powerGuard)
+        // See the "Model Download Notification Tests" note above: `downloadModel` fires this
+        // before its `allowOllamaService` guard, so it must be stubbed here too, or the real
+        // closure's `PermissionManager.shared`/`UNUserNotificationCenter` access aborts the
+        // `swift test` CLI process (asynchronously, on an unrelated later test).
+        bridge.modelDownloadAuthorizationRequester = {}
+        bridge.modelDownloadCompletionNotifier = { _ in }
+
+        let ok = await bridge.downloadModel("llama3.1:8b", progress: { _ in })
+
+        XCTAssertFalse(ok, "Download should fail when the Ollama service is disallowed")
+        XCTAssertEqual(acquireCount, 1, "downloadModel must hold the assertion for the duration of the attempt")
+        XCTAssertEqual(releaseCount, 1, "downloadModel's early failure path must still release the assertion, not leak it")
+    }
+
+    /// Wake with nothing processing must not probe Ollama at all -- the common case (waking up
+    /// with no batch running) should be a pure no-op.
+    func testHandleSystemWakeNoOpsWhenNothingIsProcessing() async throws {
+        let viewModel = DocumentRedactionViewModel(powerAssertion: PowerAssertionGuard(acquire: { _ in 1 }, release: { _ in }))
+        var healthCheckCallCount = 0
+        viewModel.wakeOllamaHealthCheck = { healthCheckCallCount += 1; return true }
+
+        await viewModel.handleSystemWake()
+
+        XCTAssertEqual(healthCheckCallCount, 0, "A wake with nothing processing must not probe Ollama at all")
+    }
+
+    /// If the wake-time health check finds Ollama responsive, in-flight documents must resume
+    /// rather than fail, and `lastHeartbeat` must be refreshed so the heartbeat watchdog doesn't
+    /// see the sleep duration itself as a stall.
+    func testHandleSystemWakeResumesProcessingWhenHealthCheckPasses() async throws {
+        let viewModel = DocumentRedactionViewModel(powerAssertion: PowerAssertionGuard(acquire: { _ in 1 }, release: { _ in }))
+        let item = createTestDocumentItem(status: .processing)
+        let staleHeartbeat = Date().addingTimeInterval(-500) // would already read as stalled by wall-clock alone
+        item.lastHeartbeat = staleHeartbeat
+        viewModel.items = [item]
+        viewModel.stopProcessing() // recompute hasProcessingDocuments (see note above)
+
+        viewModel.wakeOllamaHealthCheck = { true }
+        await viewModel.handleSystemWake()
+
+        XCTAssertEqual(item.status, .processing, "A healthy wake check must not fail an in-flight document")
+        XCTAssertGreaterThan(
+            item.lastHeartbeat ?? .distantPast, staleHeartbeat,
+            "A healthy wake check must refresh lastHeartbeat so the watchdog doesn't see a false silence gap from sleep"
+        )
+
+        viewModel.stopProcessing() // cleanup running watchdog task
+    }
+
+    /// If the wake-time health check finds Ollama unresponsive, in-flight documents must fail
+    /// immediately with the wake-specific message rather than being left to the generic
+    /// heartbeat-stall message (or hanging until it eventually fires).
+    func testHandleSystemWakeFailsInFlightDocumentsWhenHealthCheckFails() async throws {
+        let viewModel = DocumentRedactionViewModel(powerAssertion: PowerAssertionGuard(acquire: { _ in 1 }, release: { _ in }))
+        let item = createTestDocumentItem(status: .processing)
+        item.lastHeartbeat = Date()
+        viewModel.items = [item]
+        viewModel.stopProcessing()
+
+        viewModel.wakeOllamaHealthCheck = { false }
+        await viewModel.handleSystemWake()
+
+        XCTAssertEqual(item.status, .failed)
+        XCTAssertEqual(item.errorMessage, DocumentRedactionViewModel.wakeHealthCheckFailedMessage)
+    }
 }
 
 // MARK: - Test Extensions
