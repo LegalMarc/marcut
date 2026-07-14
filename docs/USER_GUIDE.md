@@ -156,6 +156,25 @@ reachable, then re-run. This is separate from a processing-deadline abort
 (`AI_PROCESSING_TIMEOUT`), which continues to fail the run the same way it
 always has.
 
+### Structured-PII rules are US-centric
+
+The deterministic rules engine's structured-identifier patterns (`rules.py`:
+SSN, phone, account/routing numbers, address) are scoped to **US formats**.
+There is no dedicated pattern for non-US structured identifiers such as a UK
+National Insurance number, an IBAN, or a non-US passport number. This is a
+known, deliberate scope limit rather than an oversight -- these identifiers
+follow country-specific formats/checksums that would need their own
+validated patterns (and counter-example tests) to add safely, and a naive
+pattern risks either high false positives or a false sense of coverage.
+
+In practice this mostly matters for the `Rules Only` mode; in `Enhanced` mode
+the LLM pass is not restricted to US formats and can still catch non-US
+identifiers as free-text NAME/ORG/LOC-adjacent context, though it has no
+dedicated validator for them either. If your documents contain non-US
+structured identifiers you need redacted with confidence, treat that as
+currently **unvalidated** for this tool -- review those fields manually
+rather than relying on automatic detection.
+
 ## Troubleshooting
 - "Ollama not installed": The CLI checks for the `ollama` binary in PATH. If your server is running but the binary is missing, install Ollama or fix PATH.
 - Empty/low ORG or NAME detection: Ensure the model is running and selected (e.g., `--model qwen2.5:14b`).

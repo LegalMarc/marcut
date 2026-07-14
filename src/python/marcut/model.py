@@ -45,6 +45,10 @@ _DETERMINER_PREFIX_RE = re.compile(
     re.IGNORECASE,
 )
 _TRAILING_PAREN_S_RE = re.compile(r"\(s\)\s*$", re.IGNORECASE)
+# Trailing possessive suffix (e.g. "Company's" -> "Company", "Companies'" -> "Companies")
+# so an excluded term still matches when a document uses its possessive form.
+# Handles both straight (') and curly (’) apostrophes.
+_TRAILING_POSSESSIVE_RE = re.compile(r"['’]s\s*$|['’]\s*$")
 
 # Optimized cache: split literals (O(1) set lookup) from regex patterns
 _EXCLUDED_CACHE = {
@@ -227,6 +231,10 @@ def _normalize_for_exclusion(text: str) -> str:
     """
     text = _strip_leading_determiner(text)
     text = text.strip().lower()
+    # Strip a trailing possessive ("company's" -> "company", "companies'" -> "companies")
+    # before the generic trailing-punctuation strip below, so possessive forms of an
+    # excluded term normalize to the same key as the base term.
+    text = _TRAILING_POSSESSIVE_RE.sub("", text)
     # Strip common trailing punctuation to allow matching at sentence ends
     # e.g. "Delaware corporation." -> "delaware corporation"
     text = text.rstrip(".,;:!?\"'")

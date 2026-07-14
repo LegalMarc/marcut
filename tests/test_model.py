@@ -161,6 +161,14 @@ class TestExclusionNormalization:
         assert _normalize_for_exclusion("  The   Company  ") == "company"
         assert _normalize_for_exclusion("These   Delaware   Corporations") == "delaware corporations"
 
+    def test_normalize_strips_possessive(self):
+        """Issue #41: possessive suffix must be stripped so "Company's" normalizes to
+        the same key as "Company"."""
+        assert _normalize_for_exclusion("Company's") == "company"
+        assert _normalize_for_exclusion("Company’s") == "company"  # curly apostrophe
+        assert _normalize_for_exclusion("Companies'") == "companies"
+        assert _normalize_for_exclusion("the Company's") == "company"
+
     def test_matches_exclusion_literal_singularizes(self):
         literals = {"agreement", "company"}
         assert _matches_exclusion_literal("agreements", literals) == True

@@ -29,6 +29,18 @@ _PHONE_CONTEXT_RE = re.compile(
 # Fixed: removed anchor ^ to allow matching in window
 _CURRENCY_TRAIL_RE = re.compile(r"\s*\(?[A-Z]{3}(?:\b|/)")
 
+# Context keyword immediately preceding an undashed 9-digit run, required before we'll
+# reclassify a bare ACCOUNT-shaped digit run as an SSN (e.g. "SSN: 123456789"). Anchored
+# to the end of the lookbehind window so an unrelated earlier mention of "SSN" in the same
+# sentence does not cause a false positive -- only a keyword *immediately* before the digits
+# (allowing a colon/#/"number"/"is"/"was" in between) counts.
+_SSN_CONTEXT_ADJACENT_RE = re.compile(
+    r"(?i)(?:SSN|SS#|S\.S\.N\.?|Social\s+Security(?:\s+Number)?)\s*"
+    r"(?:(?:#|No\.?|Number)\s*)?"
+    r"(?:(?:is|was)\s*)?"
+    r":?\s*$"
+)
+
 
 def _normalize_rule_scan_text(text: str) -> str:
     if not text:
@@ -60,6 +72,20 @@ def _looks_like_phone_context(text: str, start: int, end: int) -> bool:
     if _PHONE_CONTEXT_RE.search(window_after):
         return True
     return False
+
+def _looks_like_ssn_context(text: str, start: int) -> bool:
+    """
+    Return True if an "SSN"/"Social Security" label sits immediately before the
+    digit run at `start` (only a colon/#/"number"/"is"/"was" may separate them).
+    Deliberately strict (vs. a loose nearby-window search) so an undashed 9-digit
+    number is only reclassified as an SSN when the label directly identifies it --
+    bare 9-digit runs are otherwise high-false-positive (order numbers, account
+    numbers, etc.) per issue #41.
+    """
+    if not text:
+        return False
+    window_before = text[max(0, start - 40):start]
+    return bool(_SSN_CONTEXT_ADJACENT_RE.search(window_before))
 
 def _get_exclusion_data():
     """Lazily import exclusion data from model module."""
@@ -923,16 +949,33 @@ def run_rules(text: str) -> List[Dict[str,Any]]:
                 continue
 
             if label == "PHONE":
-                if sub.isdigit() and _rule_enabled("ACCOUNT", selected):
-                    if _looks_like_account_context(scan_text, s, e):
-                        continue
+                # Account-context suppression applies to any PHONE-shaped match (digit-only
+                # or separator-formatted, e.g. "Account Number: 123-456-7890") -- previously
+                # this was gated on sub.isdigit(), so a dash/space-formatted account number
+                # that happens to match the phone pattern's separator grammar was never
+                # checked against account context and always won the PHONE label (issue #41).
+                if _rule_enabled("ACCOUNT", selected) and _looks_like_account_context(scan_text, s, e):
+                    continue
                 if sub.isdigit() and not _looks_like_phone_context(scan_text, s, e):
                     if _rule_enabled("NUMBER", selected):
                         label_out = "NUMBER"
                         conf_out = 0.70
                     else:
                         continue
-            
+
+            # Reclassify a bare 9-digit ACCOUNT-shaped match as SSN when an "SSN"/"Social
+            # Security" label sits directly in front of it (e.g. "SSN: 123456789"). Dashed
+            # SSNs (123-45-6789) are already matched unconditionally by the SSN rule above;
+            # this only covers the undashed variant, which is high-false-positive without a
+            # context requirement (see issue #41).
+            if label == "ACCOUNT" and _rule_enabled("SSN", selected):
+                stripped = sub.rstrip(" \t–—−-")
+                if len(stripped) == 9 and stripped.isdigit() and _looks_like_ssn_context(scan_text, s):
+                    e = s + len(stripped)
+                    sub = stripped
+                    label_out = "SSN"
+                    conf_out = 0.93
+
             # Special logic for ORG matches to avoid over-redaction of defined terms
             if label == "ORG":
                 extended_e = _extend_org_suffix_tail(text, e)

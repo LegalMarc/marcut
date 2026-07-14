@@ -118,9 +118,55 @@ class TestSSNPattern:
         text = "Not an SSN: 12345-6789 or 123456789"
         spans = run_rules(text)
         ssns = [s for s in spans if s['label'] == 'SSN']
-        
+
         # Should not match these
         assert len(ssns) == 0
+
+    def test_undashed_ssn_with_label(self):
+        """Issue #41: undashed SSN is detected when a label sits directly in front of it."""
+        text = "SSN: 123456789"
+        spans = run_rules(text)
+        ssns = [s for s in spans if s['label'] == 'SSN']
+
+        assert len(ssns) == 1
+        assert ssns[0]['text'] == '123456789'
+
+    def test_undashed_ssn_with_social_security_label(self):
+        """Issue #41: 'Social Security Number' label also triggers undashed detection."""
+        text = "Social Security Number: 123456789"
+        spans = run_rules(text)
+        ssns = [s for s in spans if s['label'] == 'SSN']
+
+        assert len(ssns) == 1
+        assert ssns[0]['text'] == '123456789'
+
+    def test_undashed_ssn_with_copula_label(self):
+        """Issue #41: 'SSN is <digits>' phrasing (no colon) still counts as labeled."""
+        text = "His SSN is 123456789 for our records."
+        spans = run_rules(text)
+        ssns = [s for s in spans if s['label'] == 'SSN']
+
+        assert len(ssns) == 1
+        assert ssns[0]['text'] == '123456789'
+
+    def test_undashed_bare_digits_not_ssn_without_label(self):
+        """Issue #41: a bare 9-digit run with no SSN/Social Security label stays ACCOUNT,
+        not SSN -- undashed 9-digit matching is high-false-positive (order numbers,
+        account numbers, etc.) without an adjacent context label."""
+        text = "Order number 123456789 was shipped yesterday."
+        spans = run_rules(text)
+
+        assert not any(s['label'] == 'SSN' for s in spans)
+        assert any(s['label'] == 'ACCOUNT' and s['text'].strip() == '123456789' for s in spans)
+
+    def test_undashed_ssn_requires_adjacent_label_not_just_nearby(self):
+        """Issue #41 regression guard: an 'SSN' mention earlier in the sentence that is
+        NOT immediately in front of the digits must not cause a false-positive match --
+        only a label directly adjacent to the digit run counts."""
+        text = "SSN policy requires safeguarding numbers like 123456789 from disclosure."
+        spans = run_rules(text)
+
+        assert not any(s['label'] == 'SSN' for s in spans)
 
 
 class TestCurrencyPattern:
@@ -466,6 +512,44 @@ class TestCompanySuffixPattern:
         spans = run_rules(text)
         assert any(s['label'] == 'PHONE' and s['text'] == '4155551234' for s in spans)
 
+    def test_dashed_account_number_not_labeled_phone(self):
+        """Issue #41: a dash-formatted account number must not win the PHONE label just
+        because it happens to match the phone separator grammar -- account-context
+        suppression previously only applied to digit-only PHONE matches, so any
+        separator-formatted match (e.g. "123-456-7890") skipped the account-context
+        check entirely and always kept the PHONE label."""
+        text = "Account Number: 123-456-7890"
+        spans = run_rules(text)
+        labels = {s['label'] for s in spans if '123-456-7890' in s['text']}
+
+        assert 'ACCOUNT' in labels
+        assert 'PHONE' not in labels
+
+    def test_dashed_account_no_variant_not_labeled_phone(self):
+        """Issue #41: 'Account No.' label variant also suppresses the PHONE label."""
+        text = "Account No. 123-456-7890"
+        spans = run_rules(text)
+        labels = {s['label'] for s in spans if '123-456-7890' in s['text']}
+
+        assert 'ACCOUNT' in labels
+        assert 'PHONE' not in labels
+
+    def test_dashed_phone_with_real_phone_context_stays_phone(self):
+        """Negative test: a real dash-formatted phone number in a phone context must
+        keep the PHONE label -- the widened account-context check must not swallow it."""
+        text = "Call us at (555) 123-4567"
+        spans = run_rules(text)
+
+        assert any(s['label'] == 'PHONE' and '555' in s['text'] for s in spans)
+
+    def test_dashed_phone_with_country_code_stays_phone(self):
+        """Negative test: an international phone number with no account-context keyword
+        nearby must still be labeled PHONE."""
+        text = "International: +1 555-123-4567"
+        spans = run_rules(text)
+
+        assert any(s['label'] == 'PHONE' for s in spans)
+
     def test_contract_party_orgs_trim_legal_prose(self):
         text = (
             "This Framework Agreement is made by and between Plant-A Insights Group LLC, "
@@ -636,6 +720,21 @@ class TestExclusionHelpers:
     def test_is_excluded_handles_plural_variants(self):
         assert _is_excluded("Agreements") == True
         assert _is_excluded("Agreement(s)") == True
+
+    def test_is_excluded_handles_possessive(self):
+        """Issue #41: an excluded term's possessive form must also be excluded --
+        e.g. if "Company" is excluded, "Company's" must not slip through and get
+        redacted just because the apostrophe-s wasn't stripped before lookup."""
+        assert _is_excluded("Company's") == True
+        assert _is_excluded("Company’s") == True  # curly apostrophe
+        assert _is_excluded("the Company's") == True
+        assert _is_excluded("Companies'") == True  # plural possessive
+
+    def test_is_excluded_possessive_does_not_overmatch(self):
+        """Negative test: possessive stripping must not cause non-excluded terms to be
+        treated as excluded."""
+        assert _is_excluded("Acme's") == False
+        assert _is_excluded("Foobar's") == False
 
     def test_is_excluded_combo_all_tokens(self):
         assert _is_excluded_combo("Company Parties") == True
