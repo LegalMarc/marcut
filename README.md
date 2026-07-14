@@ -21,6 +21,7 @@ See [Technical Architecture](docs/TECHNICAL_ARCHITECTURE.md) for a system design
     *   **AI Engine:** Context-aware entity recognition (Names, Organizations) using local Ollama models.
 *   **Professional Output:** Generates standard DOCX review artifacts with redacting edits marked as "Track Changes"; use **Send Final Redacted Copy** to accept Marcut redaction changes and scrub metadata in a separate share copy, or intentionally send a review copy after confirming Track Changes and metadata may remain recoverable.
 *   **Audit Ready:** Produces JSON redaction reports and metadata scrub reports for verification; reports may include raw detected text and document metadata.
+*   **Fail-Safe by Design:** Pre-flight checks (writable destination, free disk space), clear plain-English errors, live per-document progress, and fail-closed handling if the AI can't fully analyze a document (no silently incomplete redactions).
 *   **App Store Ready:** Fully sandboxed and code-signed architecture.
 
 ## 📖 Documentation

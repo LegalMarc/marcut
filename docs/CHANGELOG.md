@@ -2,6 +2,34 @@
 
 All notable changes to this project will be documented in this file.
 
+## 2026-07-14
+
+### Feature-complete hardening review (issues #36-#54)
+All 19 items from `docs/backlog/feature_complete_hardening_review_2026-07-05.md` were validated (survey file/line references were approximate, so several claims were refuted rather than fixed) and closed, each via its own PR with independent review.
+- **Feature**: Add a PII detection precision/recall evaluation harness — a synthetic DOCX corpus generated at test time, a per-entity-type scorer, and a CI-gated rules-only test, with `DEVELOPER_GUIDE.md` instructions for running the full-LLM eval locally (A1, #36, PR #55).
+- **Fix**: Verify DOCX redaction coverage across document parts — tables, headers/footers, footnotes/endnotes, textboxes, and content controls were already scanned (claim refuted), but review comments were found unscanned for PII and are now covered; also stop ORG-suffix regexes bridging paragraph/cell boundaries (A2, #37, PR #56).
+- **Fix**: Eliminate chunk-boundary entity duplication and offset drift in enhanced LLM extraction by enforcing an offset invariant and deduping overlapping cross-chunk entities (A3, #38, PR #57).
+- **Fix**: Fail closed on partial LLM chunk extraction failures — previously a failed chunk failed open silently, leaving unscanned text ranges undisclosed; now surfaced as a hard failure. Extended the same day to the `llama_cpp` backend, which had the identical gap (A4, #39, PRs #58 and #59).
+- **Fix**: Validate LLM-derived spans (bounds + text match) before applying them as redactions, dropping invalid or drifted spans instead of silently corrupting output (A5, #40).
+- **Fix**: Correct rules-layer accuracy — undashed SSN detection, phone/account-number false-positive disambiguation, and possessive-form exclusion matching; the address state-code validation claim was investigated and refuted (it already worked correctly) (A6, #41).
+- **Fix**: Harden LLM JSON response parsing with a tolerant bracket/string repair fallback that recovers truncated responses (A7, #42).
+- **Reliability**: Add bridge-level and heartbeat watchdogs so a wedged embedded Python worker fails fast with a recovery path instead of freezing the UI (B1, #43).
+- **Reliability**: Add destination-writability and free-disk-space pre-flight checks before long processing runs and model downloads (B2, #44).
+- **Reliability**: Detect and report a foreign process holding Marcut's expected Ollama port instead of silently talking to the wrong server (B3, #45).
+- **Fix**: Sanitize user-facing failure alerts via a new `FailureMessagePresenter` so raw Python tracebacks no longer surface in the UI (B4, #46).
+- **Reliability**: Hold a power assertion and health-check Ollama on system wake during long processing runs (B5, #47).
+- **Reliability**: Verify (with a Swift test) that resume-after-kill never resurrects a partially-written document as complete (B6, #48).
+- **Docs**: Re-evaluate the heartbeat timeout after the D2 streaming fix landed and close as a no-op — #54's intra-chunk token streaming (layered on the pre-existing keepalive thread) already keeps the heartbeat fresh through a single long Ollama chunk, so no new retry mechanism was needed; documented in `docs/design/streaming_progress.md` (B7, #49).
+- **Test**: Expand failure-path coverage — Swift error-flow tests, a Python malformed-DOCX corpus, and property-based offset-invariant tests (hypothesis) (B8, #50).
+- **Performance**: Profile the consistency pass and close as a no-op — the exact-match path is already single-pass and the fuzzy ORG scan is already bounded by the large-DOCX candidate limit (~134ms at realistic scale), so the O(candidates × doc length) concern was already mitigated by prior work; documented for re-open if a larger profile shows otherwise (C1, #51).
+- **Performance**: Stream the DOCX metadata-scrub ZIP rewrite part-by-part instead of buffering all changed parts in memory (C2, #52).
+- **Performance**: Benchmark LLM request concurrency and close as a no-op — raising server-side `OLLAMA_NUM_PARALLEL` gave no meaningful wall-clock win on Apple Silicon versus its near-linear memory cost, and the client-side thread pool's benefit is dispatch-latency hiding, not true parallel inference; no config change ships, findings recorded in `docs/PERFORMANCE_OPTIMIZATION.md` (C3, #53).
+- **Feature**: Provide real fractional progress via Ollama token streaming (intra-chunk progress) plus a word-count-weighted batch ETA calculator (D2, #54).
+
+### Additional fixes found during the review
+- **Fix**: Perturb the seed on Ollama extraction self-correction retries so an empty model response can't deterministically repeat — root cause of a 5-day CI failure streak (#61).
+- **Test**: Widen an overly-tight CI memory-threshold test bound that was flaking on measurement noise (#63).
+
 ## 2026-07-04
 - **Release**: Produce a real Developer ID DMG (`MarcutApp-v0.5.96-AppStore.dmg`, later reconciled to `0.5.97`) via `scripts/sh/build_devid_release.sh` against a freshly-provisioned BeeWare `Python.framework`: signed with a Developer ID Application identity, submitted to Apple's notary service (accepted), stapled, and Gatekeeper-verified (`spctl` reports `accepted`/`source=Notarized Developer ID`). Full evidence, entitlement dump, and SBOM cross-check recorded in `docs/release/entitlement_governance_verification.md`'s Final Artifact Verification section.
 - **Fix**: Give `scripts/release_preflight.sh`'s version-sync and secrets-check steps the same `config.json` → `config.example.json` fallback already used elsewhere, so the preflight gate can actually run on a fresh CI checkout where the untracked local signing config doesn't exist.
