@@ -18,6 +18,10 @@ The pre-public-beta remediation stack (T0-T14, see `docs/backlog/pre_public_beta
 
 13 additional features have also shipped: settings search bar, native download-completion notifications, redaction-settings profile export/import, a "Retry Failed" button, an in-app log viewer, a live excluded-word match preview, batch ETA display, batch job persistence/resume, a centralized `DefaultsKey` UserDefaults enum, unified model-name-parsing between `gui.py` and `PythonBridge.swift`, and a `models.json` model catalog (see Core Architecture below).
 
+The feature-complete hardening review (`docs/backlog/feature_complete_hardening_review_2026-07-05.md`, issues #36-#54) is now fully closed — each item validated and shipped via its own independently-reviewed PR. Because the survey's file/line references were approximate, several claims were refuted rather than fixed: DOCX part coverage (A2), address state-code validation (A6), consistency-pass cost (C1), and LLM concurrency tuning (C3) were all already correct or already mitigated, and closed with evidence rather than a code change. Real fixes landed for fail-closed partial-chunk handling across both the Ollama and `llama_cpp` backends (A4), offset-invariant chunk deduplication (A3), LLM span validation (A5), rules-layer accuracy, tolerant JSON repair, a bridge/heartbeat watchdog, pre-flight and system-wake reliability checks, sanitized failure alerts, streamed metadata scrubbing, and true intra-chunk streaming progress (D2). A new PII precision/recall eval harness (A1) is CI-gated.
+
+Two extra bugs surfaced during the review were also fixed: an Ollama empty-response retry bug that had caused a 5-day CI failure streak (retries now perturb the seed, #61) and an overly-tight memory-threshold test that flaked on measurement noise (#63). The Python suite stands at 555 passing tests.
+
 See `docs/CHANGELOG.md` for the full history and `docs/BACKLOG.md` for what's still open (several items have design-spike docs under `docs/design/` that should be read before implementation — a few carry real correctness/privacy risk if built without that analysis).
 
 ## Core Architecture
@@ -163,7 +167,7 @@ bash build-scripts/setup_beeware_framework.sh
 
 **Test Execution:**
 ```bash
-# Python test suite (463+ tests)
+# Python test suite (555+ tests)
 PYTHONPATH=src/python python3 -m pytest -q
 
 # Swift test suite

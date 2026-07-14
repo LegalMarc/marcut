@@ -204,6 +204,9 @@ def check_processing_deadline() -> None:
 - `remaining_seconds()` is used to size individual Ollama HTTP request timeouts so a single slow request cannot outlive the overall processing budget; `check_processing_deadline()` is called at safe checkpoints in the extraction loop so a stuck or slow model doesn't hang the app indefinitely.
 - When no deadline is set (the env var is empty/unset), `processing_deadline()` returns `None` and the helpers behave as if there is no budget - existing callers without a caller-supplied deadline are unaffected.
 
+### Streaming Progress (Intra-Chunk)
+The progress bar advances at three layered granularities (whole-phase jumps, whole-chunk jumps, and token-level updates streamed from Ollama's streaming API during a single chunk's generation). The design, its interaction with the cancellation/deadline system, and the word-count-weighted batch ETA are documented in the design spike `docs/design/streaming_progress.md` (Option B shipped under issue #54). Read that doc rather than re-deriving the flow before touching the heartbeat/progress plumbing in `model.py`, `PythonKitBridge.swift`, or `DocumentRedactionViewModel`; it also covers the downstream heartbeat-timeout validation for issue #49.
+
 ### Model Catalog (`models.json`)
 The list of supported/recommended Ollama models and their default parameters (temperature, validation skip-confidence, display metadata, etc.) lives in a single `models.json` file that is shipped in **three mirrored locations** which must stay byte-identical:
 - `assets/models.json` - canonical source checked into the repo
@@ -301,10 +304,61 @@ harness, in addition to the existing manual LLM benchmark tooling:
   PYTHONPATH=src/python python3 -m tests.pii_eval.run_eval --mode llm --model qwen2.5:14b
   ```
   Run `--mode rules` (the default) to reproduce the CI gate locally without Ollama.
+- **`tests/pii_eval/scoring.py`** — the shared scorer both the CI test and the standalone
+  runner use. It matches gold entities against predicted audit-report spans by `(label, text)`
+  using bidirectional substring containment (not exact offsets or exact string equality, which
+  are too fragile for a synthetically-generated corpus), greedily so N identical expected
+  entities require N distinct predicted spans, and emits per-label plus OVERALL
+  precision/recall/F1 (`score_entities()` / `format_score_table()`).
 - **`tests/benchmark/model_benchmark.py`** — pre-existing, broader model speed-vs-accuracy
   comparison tool (Ollama or GGUF, aggregate precision/recall/F1 against a hand-labeled
   real document); still the right tool for comparing models/prompts against a realistic
   document rather than the synthetic per-type corpus above.
+
+### Malformed-DOCX Corpus & Property-Based Tests
+Robustness against broken input and offset/merge invariants is covered by a generated corpus
+of corrupt DOCX files plus Hypothesis-driven property tests. Nothing binary is committed — the
+CI hygiene job forbids any tracked `.docx`/`.doc`/`.pdf`/`.dmg`, so both suites build their
+inputs at test time.
+
+- **`tests/malformed_docx_corpus.py`** — generator (no test cases of its own). Builds a small
+  valid DOCX in memory with python-docx, then applies ZIP/XML-level corruption to produce a
+  fixed set of variants: `truncated_zip`, `bad_content_types`, `mismatched_relationship_target`,
+  and `undeclared_xml_entity`. `generate_corpus()` returns `{variant_name: bytes}`.
+- **`tests/test_malformed_docx_corpus.py`** — feeds every variant through both
+  `DocxMap.load_accepting_revisions` and the real `run_redaction()` entry point and asserts the
+  pipeline fails *cleanly*: a classified `RedactionError` surfaced as a non-zero `(code, timings)`
+  return with a `"status": "error"` / `"error_code": "DOC_LOAD_FAILED"` report, no partial/
+  misleading output DOCX, no leftover staging temp files, no uncaught exception, and bounded
+  wall-clock time (never hangs).
+- **`tests/test_property_based.py`** — Hypothesis-based invariants over random text, random span
+  placements, and random chunk sizes/overlaps: every `_merge_overlaps()` output span still
+  satisfies `text[start:end] == span["text"]`, merged spans never overlap, and `make_chunks()`
+  round-trips offsets and fully covers the input with no gaps. It `pytest.importorskip`s
+  hypothesis, so it self-skips when the dev extra isn't installed.
+
+Run them with:
+```bash
+# Hypothesis is a dev-only dependency (never shipped in the bundle); install the dev extra:
+pip install -e ".[dev]"
+PYTHONPATH=src/python python3 -m pytest tests/test_malformed_docx_corpus.py tests/test_property_based.py
+```
+The Hypothesis profile is selected via the `HYPOTHESIS_PROFILE` env var (see `tests/conftest.py`):
+the default `ci` profile is derandomized (fixed seed, 100 examples) so property runs are
+reproducible/flake-free; set `HYPOTHESIS_PROFILE=dev` for a faster, non-derandomized run (25
+examples) while iterating.
+
+### Continuous Integration Gates
+Two workflows gate PRs; keep new tests wired into the right one:
+- **`.github/workflows/ci.yml`** — a `hygiene` job (forbids committed `.docx`/`.doc`/`.pdf`/`.dmg`
+  and `sample-files/` contents, checks `pyproject.toml` ↔ `build-scripts/config.example.json`
+  version sync, and runs a Ruff error-tier lint gate `E9,F63,F7,F82` over `src/python tests`),
+  plus a `smoke` job that runs the rules-only Python tests **including
+  `tests/test_pii_eval_harness.py`** and a compile-only Swift build.
+- **`.github/workflows/macos-build-verify.yml`** — installs the dev extra (`pip install -e ".[dev]"`,
+  which pulls in hypothesis so the property tests actually run), then runs the dependency
+  vulnerability scan, SBOM check, markdown-link check, and the full `pytest -q` suite plus Swift
+  tests.
 
 ### CLI Testing
 ```bash

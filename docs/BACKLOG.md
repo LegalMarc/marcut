@@ -14,10 +14,7 @@ All items originally listed here have shipped. See `docs/CHANGELOG.md` for detai
 - ~~Interactive Excluded Word Sandbox~~ — shipped as a live match preview in the excluded-words editor (`ExcludedWordMatcher.swift`).
 - ~~Failed File Retry Action~~ — shipped ("Retry Failed" button, `DocumentRedactionViewModel.swift`).
 - ~~Log Viewer UI~~ — shipped (`LogViewerSheet.swift`).
-
-**Still open:**
-
-- **Granular Progress Indications**: Bridge the LLM token stream back to Swift to show a true fractional progress bar, rather than jumping from phase to phase. See `docs/design/streaming_progress.md` for a design spike covering the mechanism and its interaction with the cancellation/deadline system — not yet implemented.
+- ~~Granular Progress Indications~~ — shipped as intra-chunk progress via Ollama token streaming plus a word-count-weighted batch ETA (`DocumentRedactionViewModel.swift`, `BatchETACalculator.swift`; Python side in `model.py`, `model_enhanced.py`, `llm_timing.py`). See `docs/design/streaming_progress.md`.
 
 ## 2. Maintainability & Technical Debt
 
