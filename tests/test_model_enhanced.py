@@ -545,3 +545,136 @@ def test_process_document_deadline_exceeded_not_reclassified_as_chunk_failure(mo
             warnings=[],
             suppressed=[],
         )
+
+
+# --- A4 (llama_cpp parity): fail-closed on partial chunk failure -------------
+#
+# LlamaCppRedactionPipeline.extract_entities() used to catch all of its own
+# exceptions and return [] -- indistinguishable from "the model found nothing
+# in this chunk." Combined with process_document() never threading a
+# `warnings` list through, a genuine inference/parsing failure was completely
+# invisible: no warning, no error, no retry. These tests mirror the Ollama-path
+# A4 fix above (IntelligentRedactionPipeline.process_document) for the
+# llama_cpp backend: retry once, then fail the whole run closed via the same
+# LLMChunkExtractionFailed exception, identifying the unanalyzed range.
+
+def test_llama_cpp_extract_entities_propagates_inference_failure(monkeypatch):
+    """extract_entities() must let a genuine inference/parsing failure
+    propagate rather than silently returning [] -- process_document's retry
+    and chunk_failures bookkeeping depends on seeing the real exception."""
+    pipeline = LlamaCppRedactionPipeline(model_path="/fake/path/model.gguf", temperature=0.1, seed=42)
+    monkeypatch.setattr(
+        pipeline,
+        "_generate_response",
+        lambda prompt, max_tokens=1024: (_ for _ in ()).throw(RuntimeError("Error during inference: boom")),
+    )
+
+    doc_context = DocumentContext()
+    doc_context.analyze_document("John Smith signed the agreement.")
+
+    with pytest.raises(RuntimeError, match="boom"):
+        pipeline.extract_entities("John Smith signed the agreement.", doc_context)
+
+
+def test_llama_cpp_process_document_fails_closed_when_chunk_extraction_never_succeeds(monkeypatch):
+    """Chunk 2 of 5 fails extraction on every retry attempt: the run must
+    raise LLMChunkExtractionFailed identifying that chunk's exact
+    document-coordinate character range, rather than returning spans from
+    the other four chunks as if the document were fully analyzed."""
+    chunks = [
+        {"start": i * 100, "end": i * 100 + 20, "text": f"chunk {i} content"}
+        for i in range(5)
+    ]
+    calls = {}
+
+    def fake_extract_entities(chunk_text, doc_context):
+        calls[chunk_text] = calls.get(chunk_text, 0) + 1
+        if chunk_text == "chunk 2 content":
+            raise RuntimeError("simulated llama.cpp inference failure on chunk 2")
+        return []
+
+    pipeline = LlamaCppRedactionPipeline(model_path="/fake/path/model.gguf", temperature=0.1, seed=42)
+    monkeypatch.setattr(pipeline, "extract_entities", fake_extract_entities)
+    monkeypatch.setattr(model_enhanced.time, "sleep", lambda s: None)
+
+    warnings = []
+    with pytest.raises(model_enhanced.LLMChunkExtractionFailed) as exc_info:
+        pipeline.process_document(
+            "irrelevant full-document text",
+            chunks,
+            warnings=warnings,
+        )
+
+    err = exc_info.value
+    assert err.total_chunks == 5
+    assert len(err.failures) == 1
+    failure = err.failures[0]
+    assert failure["chunk_index"] == 2
+    assert failure["start"] == 200
+    assert failure["end"] == 220
+
+    # Every chunk must still be attempted despite chunk 2's persistent
+    # failure -- the run doesn't stop early; it fails closed only once the
+    # full picture of what wasn't analyzed is known.
+    assert set(calls.keys()) == {c["text"] for c in chunks}
+
+    chunk_warnings = [w for w in warnings if w["code"] == "LLM_CHUNK_FAILED"]
+    assert len(chunk_warnings) == 1
+    assert chunk_warnings[0]["start"] == 200
+    assert chunk_warnings[0]["end"] == 220
+
+
+def test_llama_cpp_process_document_deadline_exceeded_not_reclassified_as_chunk_failure(monkeypatch):
+    """A deadline that elapses between a chunk's retry attempts must
+    surface as ProcessingDeadlineExceeded -- never reclassified as an
+    ordinary LLMChunkExtractionFailed (and certainly never swallowed as a
+    successful, but partially unanalyzed, result)."""
+
+    def failing_then_deadline_extract(chunk_text, doc_context):
+        # Deterministically simulate the deadline elapsing while this
+        # (failed) extraction attempt was in flight, rather than relying on
+        # real sleep/timing.
+        monkeypatch.setenv("MARCUT_PROCESSING_DEADLINE_MONOTONIC", str(time.monotonic() - 0.01))
+        raise RuntimeError("transient extraction failure")
+
+    pipeline = LlamaCppRedactionPipeline(model_path="/fake/path/model.gguf", temperature=0.1, seed=42)
+    monkeypatch.setattr(pipeline, "extract_entities", failing_then_deadline_extract)
+
+    with pytest.raises(ProcessingDeadlineExceeded):
+        pipeline.process_document(
+            "John Smith",
+            [{"text": "John Smith", "start": 0, "end": 10}],
+            warnings=[],
+        )
+
+
+def test_llama_cpp_process_document_succeeds_without_failures(monkeypatch):
+    """Sanity check: a fully successful run (no chunk failures) still
+    returns spans normally, adjusts offsets to document coordinates, and
+    does not raise."""
+    def fake_extract_entities(chunk_text, doc_context):
+        # Entity offsets are chunk-relative; process_document must shift
+        # them into document coordinates using chunk_start.
+        start = chunk_text.index("John Smith")
+        return [Entity(
+            text="John Smith", label="NAME", start=start, end=start + len("John Smith"),
+            confidence=0.85, needs_redaction=True,
+        )]
+
+    pipeline = LlamaCppRedactionPipeline(model_path="/fake/path/model.gguf", temperature=0.1, seed=42)
+    monkeypatch.setattr(pipeline, "extract_entities", fake_extract_entities)
+
+    text = "Preamble. John Smith signed."
+    chunk_start = len("Preamble. ")
+    warnings = []
+    spans = pipeline.process_document(
+        text,
+        [{"start": chunk_start, "end": len(text), "text": text[chunk_start:]}],
+        warnings=warnings,
+    )
+
+    assert len(spans) == 1
+    assert spans[0]["start"] == chunk_start
+    assert spans[0]["text"] == "John Smith"
+    assert text[spans[0]["start"]:spans[0]["end"]] == "John Smith"
+    assert warnings == []

@@ -1407,7 +1407,9 @@ def run_enhanced_model(
         if not model_path:
             raise ValueError("model_path required for llama_cpp backend")
         pipeline = LlamaCppRedactionPipeline(model_path, temperature, seed, threads=kwargs.get("threads", 4))
-        return pipeline.process_document(text, chunks, progress_callback=progress_callback)
+        return pipeline.process_document(
+            text, chunks, progress_callback=progress_callback, warnings=warnings
+        )
     else:
         raise ValueError(f"Unsupported backend: {backend}. Use 'ollama' or 'llama_cpp'")
 
@@ -1474,61 +1476,63 @@ class LlamaCppRedactionPipeline:
             raise RuntimeError(f"Error during inference: {e}")
 
     def extract_entities(self, text: str, doc_context: DocumentContext) -> List[Entity]:
-        """Extract entities using local Llama.cpp model."""
-        try:
-            prompt_context = build_prompt_context(doc_context)
-            prompt = build_extraction_prompt(text, prompt_context)
+        """Extract entities using local Llama.cpp model.
 
-            # Generate response locally
-            # Note: We trust the prompt builder to provide the correct JSON structure instruction
-            response_text = self._generate_response(prompt)
+        Does not catch its own exceptions: inference/parsing failures must
+        propagate to the caller (`process_document`'s retry+chunk_failures
+        loop) rather than being swallowed into an empty result, which would
+        silently report a chunk as "scanned, found nothing" when it was
+        never successfully analyzed.
+        """
+        prompt_context = build_prompt_context(doc_context)
+        prompt = build_extraction_prompt(text, prompt_context)
 
-            # Parse JSON response
-            parsed = parse_llm_response(response_text)
+        # Generate response locally
+        # Note: We trust the prompt builder to provide the correct JSON structure instruction
+        response_text = self._generate_response(prompt)
 
-            # Convert parsed dict items to Entity objects
-            entities = []
-            for item in parsed.get("entities", []):
-                entity_text = item.get("text", "")
-                if not entity_text:
-                    continue
+        # Parse JSON response
+        parsed = parse_llm_response(response_text)
 
-                raw_label = item.get("label") or item.get("type") or ""
-                label = _map_label(raw_label)
-                if not label and raw_label:
-                    label = raw_label.strip().upper()
-                if label not in ["NAME", "ORG", "LOC", "DATE", "MONEY", "NUMBER", "EMAIL", "PHONE", "SSN"]:
-                    continue
+        # Convert parsed dict items to Entity objects
+        entities = []
+        for item in parsed.get("entities", []):
+            entity_text = item.get("text", "")
+            if not entity_text:
+                continue
 
-                # Validate candidate (prevent span explosion on garbage)
-                if not _valid_candidate(entity_text, label):
-                    continue
+            raw_label = item.get("label") or item.get("type") or ""
+            label = _map_label(raw_label)
+            if not label and raw_label:
+                label = raw_label.strip().upper()
+            if label not in ["NAME", "ORG", "LOC", "DATE", "MONEY", "NUMBER", "EMAIL", "PHONE", "SSN"]:
+                continue
 
-                # Find all occurrences of the entity text
-                start_search = 0
-                while True:
-                    start = text.find(entity_text, start_search)
-                    if start == -1:
-                        break
+            # Validate candidate (prevent span explosion on garbage)
+            if not _valid_candidate(entity_text, label):
+                continue
 
-                    entity = Entity(
-                        text=entity_text,
-                        label=label,
-                        start=start,
-                        end=start + len(entity_text),
-                        confidence=item.get("confidence", 0.85),
-                        needs_redaction=item.get("needs_redaction", True),
-                        rationale=item.get("rationale"),
-                        source=self.model_path
-                    )
-                    entities.append(entity)
-                    start_search = start + 1
+            # Find all occurrences of the entity text
+            start_search = 0
+            while True:
+                start = text.find(entity_text, start_search)
+                if start == -1:
+                    break
 
-            return entities
+                entity = Entity(
+                    text=entity_text,
+                    label=label,
+                    start=start,
+                    end=start + len(entity_text),
+                    confidence=item.get("confidence", 0.85),
+                    needs_redaction=item.get("needs_redaction", True),
+                    rationale=item.get("rationale"),
+                    source=self.model_path
+                )
+                entities.append(entity)
+                start_search = start + 1
 
-        except Exception as e:
-            print(f"Error in Llama.cpp entity extraction: {e}")
-            return []
+        return entities
 
     def validate_entity(self, entity: Entity, full_text: str, doc_context: DocumentContext) -> Dict:
         """Validate a single entity using local Llama.cpp model."""
@@ -1560,14 +1564,29 @@ class LlamaCppRedactionPipeline:
                 "rationale": f"Validation failed: {str(e)}"
             }
 
-    def process_document(self, text: str, chunks: List[Dict], progress_callback=None) -> List[Dict]:
-        """Process document using the enhanced pipeline with Ollama."""
+    def process_document(
+        self,
+        text: str,
+        chunks: List[Dict],
+        progress_callback=None,
+        warnings: Optional[List[Dict[str, Any]]] = None,
+    ) -> List[Dict]:
+        """Process document using the enhanced pipeline with local llama.cpp inference."""
+        if warnings is None:
+            warnings = []
+
         # Create document context
         doc_context = DocumentContext()
         doc_context.analyze_document(text)
 
         all_entities = []
         total_chunks = len(chunks)
+        # One entry per chunk whose extraction never succeeded after retries --
+        # if non-empty once every chunk has been attempted, the run fails
+        # closed (see LLMChunkExtractionFailed) instead of silently completing
+        # with text ranges that were never analyzed. Mirrors
+        # IntelligentRedactionPipeline.process_document's Ollama-path handling.
+        chunk_failures: List[Dict[str, Any]] = []
 
         # Extract entities from each chunk
         for i, chunk in enumerate(chunks):
@@ -1576,9 +1595,43 @@ class LlamaCppRedactionPipeline:
 
             chunk_text = chunk["text"]
             chunk_start = chunk["start"]
+            chunk_end = chunk.get("end", chunk_start + len(chunk_text))
 
-            # Extract entities from this chunk
-            entities = self.extract_entities(chunk_text, doc_context)
+            # Extract entities from this chunk, with the same retry cadence
+            # as the Ollama path (immediate retry, then one more after a 2s
+            # backoff) before giving up on the chunk.
+            entities: List[Entity] = []
+            extract_error: Optional[Exception] = None
+            for attempt_idx, wait_s in enumerate((0, 2), start=1):
+                try:
+                    check_processing_deadline()
+                    entities = self.extract_entities(chunk_text, doc_context)
+                    check_processing_deadline()
+                    extract_error = None
+                    break
+                except ProcessingDeadlineExceeded:
+                    raise
+                except Exception as e:
+                    extract_error = e
+                    print(f"Extraction attempt {attempt_idx} failed for chunk {i}: {e}")
+                    if wait_s:
+                        time.sleep(wait_s)
+
+            if extract_error is not None:
+                warnings.append({
+                    "code": "LLM_CHUNK_FAILED",
+                    "message": f"AI extraction failed for chunk {i + 1} after retries.",
+                    "details": str(extract_error),
+                    "start": chunk_start,
+                    "end": chunk_end,
+                })
+                chunk_failures.append({
+                    "chunk_index": i,
+                    "start": chunk_start,
+                    "end": chunk_end,
+                    "error": str(extract_error),
+                })
+                continue
 
             # Adjust entity positions to document coordinates
             for entity in entities:
@@ -1588,6 +1641,14 @@ class LlamaCppRedactionPipeline:
                 entity.text = text[entity.start:entity.end]
 
             all_entities.extend(entities)
+
+        # Privacy-first fail-closed default: see LLMChunkExtractionFailed and
+        # IntelligentRedactionPipeline.process_document for the Ollama-path
+        # rationale -- the llama.cpp backend must fail the same way rather
+        # than silently returning partial results as if the document were
+        # fully scanned.
+        if chunk_failures:
+            raise LLMChunkExtractionFailed(chunk_failures, total_chunks)
 
         # Convert entities to span format
         spans = []

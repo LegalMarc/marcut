@@ -1722,7 +1722,7 @@ def _collect_enhanced_spans(
             threads=threads,
         )
         model_spans = pipeline.process_document(
-            text, chunks, progress_callback=progress_callback
+            text, chunks, progress_callback=progress_callback, warnings=warnings
         )
     else:
         if debug:

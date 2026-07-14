@@ -917,12 +917,14 @@ class TestLLMDetailTiming:
                 captured["seed"] = seed
                 captured["threads"] = threads
 
-            def process_document(self, text, chunks, progress_callback=None):
+            def process_document(self, text, chunks, progress_callback=None, warnings=None):
                 captured["chunks"] = chunks
+                captured["warnings"] = warnings
                 return [{"start": 0, "end": 10, "label": "NAME", "text": "John Smith"}]
 
         monkeypatch.setattr(pipeline, "LlamaCppRedactionPipeline", FakeLlamaPipeline)
 
+        run_warnings = []
         spans = pipeline._collect_enhanced_spans(
             "John Smith",
             model_id="ignored-model",
@@ -935,6 +937,7 @@ class TestLLMDetailTiming:
             backend="llama_cpp",
             llama_gguf="/models/local.gguf",
             threads=8,
+            warnings=run_warnings,
         )
 
         assert spans[0]["text"] == "John Smith"
@@ -942,6 +945,7 @@ class TestLLMDetailTiming:
         assert captured["temperature"] == 0.4
         assert captured["seed"] == 789
         assert captured["threads"] == 8
+        assert captured["warnings"] is run_warnings
 
     def test_processing_deadline_failure_does_not_write_output_docx(self, monkeypatch, tmp_path):
         self._patch_minimal_enhanced_pipeline(monkeypatch)
@@ -1030,6 +1034,48 @@ class TestLLMDetailTiming:
         report_payload = report_path.read_text(encoding="utf-8")
         assert "AI_CHUNK_EXTRACTION_INCOMPLETE" in report_payload
         assert "250-500" in report_payload
+
+    def test_llama_cpp_chunk_extraction_failure_fails_closed_end_to_end(self, monkeypatch, tmp_path):
+        """A4 parity: the llama_cpp backend must fail closed the same way the
+        Ollama backend does. Unlike the test above (which mocks
+        _collect_enhanced_spans directly), this exercises the real
+        LlamaCppRedactionPipeline.process_document retry/fail-closed logic
+        through the real _collect_enhanced_spans dispatch, only stubbing the
+        model inference call itself -- proving the wiring from the llama_cpp
+        pipeline through to run_redaction's error handling actually works,
+        not just that run_redaction reacts correctly to the exception type."""
+        from marcut import model_enhanced
+
+        self._patch_minimal_enhanced_pipeline(monkeypatch)
+        monkeypatch.setattr(model_enhanced.time, "sleep", lambda s: None)
+
+        def always_fails(self, text, doc_context):
+            raise RuntimeError("simulated llama.cpp inference failure")
+
+        monkeypatch.setattr(pipeline.LlamaCppRedactionPipeline, "extract_entities", always_fails)
+
+        output_path = tmp_path / "output.docx"
+        report_path = tmp_path / "report.json"
+
+        code, _timings = pipeline.run_redaction(
+            str(tmp_path / "input.docx"),
+            str(output_path),
+            str(report_path),
+            mode="rules_override",
+            model_id="ignored-model",
+            chunk_tokens=250,
+            overlap=50,
+            temperature=0.1,
+            seed=42,
+            debug=False,
+            backend="llama_cpp",
+            llama_gguf="/fake/path/model.gguf",
+        )
+
+        assert code == 2
+        assert not output_path.exists()
+        report_payload = report_path.read_text(encoding="utf-8")
+        assert "AI_CHUNK_EXTRACTION_INCOMPLETE" in report_payload
 
 
 class TestTransactionalArtifacts:
