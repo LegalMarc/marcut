@@ -722,7 +722,7 @@ def ollama_extract(
     except (TypeError, ValueError):
         num_predict = 2048
 
-    def _request(prompt: str, format_value) -> str:
+    def _request(prompt: str, format_value, *, seed_override: Optional[int] = None) -> str:
         check_processing_deadline()
         if cancel_event is not None and cancel_event.is_set():
             raise ProcessingDeadlineExceeded("Processing cancelled")
@@ -734,7 +734,7 @@ def ollama_extract(
             "think": False,   # Disable thinking mode for Qwen 3.5 and similar models
             "options": {
                 "temperature": max(temperature, 0.1),
-                "seed": seed,
+                "seed": seed if seed_override is None else seed_override,
                 "num_ctx": 12288,
                 "num_predict": num_predict,
                 "top_p": 0.9
@@ -868,6 +868,25 @@ def ollama_extract(
         )
         response_text = ""
 
+    if not response_text.strip():
+        # An empty completion is a distinct failure mode from "present but
+        # malformed" JSON: Ollama's sampling is otherwise deterministic for a
+        # fixed seed, so simply retrying the identical request (or even a
+        # differently-worded correction prompt at the same seed) reproduces
+        # the same empty output. Perturb the seed for one direct retry of the
+        # original request before falling through to self-correction below,
+        # so the retry actually has a chance to sample something different.
+        _log_app_event("Ollama returned an empty response; retrying once with a perturbed seed.")
+        try:
+            response_text = _request(base_prompt, schema_format, seed_override=seed + 1)
+        except (
+            requests.exceptions.HTTPError,
+            requests.exceptions.RequestException,
+            requests.exceptions.ConnectionError,
+            OllamaStreamIncompleteError,
+        ):
+            response_text = ""
+
     try:
         parsed = parse_llm_response(response_text)
     except json.JSONDecodeError as first_error:
@@ -890,7 +909,10 @@ Your invalid response was:
 
 Please correct your response. Return ONLY the valid JSON object that adheres to the schema. Do not include any other text or explanations.
 """
-        corrected_text = _request(correction_prompt, "json")
+        # seed + 2, not + 1: if the empty-response retry above already tried
+        # seed + 1 and still came back empty, reusing it here would repeat
+        # the same failure again -- use a third distinct seed.
+        corrected_text = _request(correction_prompt, "json", seed_override=seed + 2)
         try:
             parsed = parse_llm_response(corrected_text)
         except json.JSONDecodeError as final_error:
