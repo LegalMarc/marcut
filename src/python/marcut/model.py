@@ -85,6 +85,62 @@ def get_ollama_base_url() -> str:
     return normalize_ollama_base_url(loopback_only=not allow_remote)
 
 
+def _repair_unbalanced_json(json_str: str) -> Optional[str]:
+    """
+    Best-effort tolerant repair for truncated/unbalanced JSON -- e.g. an LLM
+    response cut off mid-generation by a token limit before its closing
+    brackets were emitted.
+
+    Walks the string tracking open `{`/`[` and whether we're inside a string
+    literal, then: closes an unterminated string, strips a dangling trailing
+    comma, and appends whatever closing brackets/braces are needed to balance
+    what was opened -- innermost first, matching normal JSON nesting order.
+
+    Returns None when the input isn't a truncation this can safely repair
+    (already balanced, or a closer appears with nothing open), so the caller
+    falls through to raising the original decode error unchanged.
+    """
+    if not json_str:
+        return None
+
+    stack: List[str] = []
+    in_string = False
+    escape = False
+    for ch in json_str:
+        if in_string:
+            if escape:
+                escape = False
+            elif ch == '\\':
+                escape = True
+            elif ch == '"':
+                in_string = False
+            continue
+        if ch == '"':
+            in_string = True
+        elif ch in '{[':
+            stack.append(ch)
+        elif ch in '}]':
+            if not stack:
+                # A closer with nothing open isn't a truncation -- some other
+                # syntax problem. Not safe to guess a repair.
+                return None
+            stack.pop()
+
+    if not stack and not in_string:
+        # Already balanced; whatever made json.loads fail isn't something
+        # bracket/string repair can fix.
+        return None
+
+    repaired = json_str
+    if in_string:
+        repaired += '"'
+    repaired = repaired.rstrip()
+    repaired = re.sub(r',\s*$', '', repaired)
+    closers = {'{': '}', '[': ']'}
+    repaired += ''.join(closers[ch] for ch in reversed(stack))
+    return repaired
+
+
 def parse_llm_response(response_text: str) -> Dict[str, Any]:
     """
     Sanitize and parse an LLM response, raising json.JSONDecodeError when invalid.
@@ -96,15 +152,36 @@ def parse_llm_response(response_text: str) -> Dict[str, Any]:
         json_str = code_block_match.group(1).strip()
     else:
         start = cleaned.find('{')
-        end = cleaned.rfind('}') + 1
-        if start == -1 or end <= start:
+        if start == -1:
             raise json.JSONDecodeError("No JSON object found in response", cleaned, 0)
-        json_str = cleaned[start:end]
+        end = cleaned.rfind('}') + 1
+        if end <= start:
+            # No closing brace anywhere -- likely generation was cut off
+            # before any closer was emitted. Take the rest of the string
+            # from the opening brace and let the tolerant-repair fallback
+            # below attempt to balance it, rather than giving up here.
+            json_str = cleaned[start:]
+        else:
+            json_str = cleaned[start:end]
 
     json_str = re.sub(r'(?m)//.*$', '', json_str)
     json_str = re.sub(r',\s*(\]|\})', r'\1', json_str)
 
-    return json.loads(json_str)
+    try:
+        return json.loads(json_str)
+    except json.JSONDecodeError as decode_error:
+        # Tolerant-repair fallback for truncated JSON (e.g. the response hit
+        # a token limit mid-object) before giving up: try to balance
+        # brackets/strings and re-parse. If that still doesn't parse, raise
+        # the original error so callers see the real failure, not a repair
+        # artifact.
+        repaired = _repair_unbalanced_json(json_str)
+        if repaired is not None:
+            try:
+                return json.loads(repaired)
+            except json.JSONDecodeError:
+                pass
+        raise decode_error
 
 def llama_cpp_extract(
     model_path: str,

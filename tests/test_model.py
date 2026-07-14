@@ -77,9 +77,64 @@ These are all the entities."""
     def test_parse_invalid_json_raises(self):
         """Test that invalid JSON raises JSONDecodeError."""
         response = "This is not JSON at all"
-        
+
         with pytest.raises(json.JSONDecodeError):
             parse_llm_response(response)
+
+    def test_parse_nested_json(self):
+        """Test parsing entities with nested object/array structure (Issue #42)."""
+        response = json.dumps({
+            "entities": [
+                {
+                    "text": "Sample 123 Holdings, Inc.",
+                    "type": "ORG",
+                    "metadata": {"aliases": ["Sample 123"], "confidence": {"score": 0.9}},
+                },
+                {"text": "Jane Doe", "type": "NAME"},
+            ]
+        })
+        result = parse_llm_response(response)
+
+        assert len(result['entities']) == 2
+        assert result['entities'][0]['metadata']['confidence']['score'] == 0.9
+
+    def test_parse_truncated_json_missing_closing_brackets(self):
+        """Test tolerant repair of JSON cut off after a complete entity object
+        (Issue #42: truncated LLM output, e.g. hit a token limit)."""
+        response = '{"entities": [{"text": "John Smith", "type": "NAME"}'
+        result = parse_llm_response(response)
+
+        assert result['entities'][0]['text'] == 'John Smith'
+
+    def test_parse_truncated_json_mid_string_value(self):
+        """Test tolerant repair when generation is cut off mid-string."""
+        response = '{"entities": [{"text": "John Smith", "type": "NAM'
+        result = parse_llm_response(response)
+
+        assert result['entities'][0]['text'] == 'John Smith'
+
+    def test_parse_truncated_json_trailing_comma_before_cutoff(self):
+        """Test tolerant repair when truncated right after a dangling comma
+        between array elements."""
+        response = '{"entities": [{"text": "John Smith", "type": "NAME"},'
+        result = parse_llm_response(response)
+
+        assert result['entities'][0]['text'] == 'John Smith'
+
+    def test_parse_unrepairable_json_still_raises(self):
+        """Test that a closer with nothing open (not a truncation) still
+        raises JSONDecodeError rather than being silently guessed at."""
+        response = '{"entities": []}}'
+
+        with pytest.raises(json.JSONDecodeError):
+            parse_llm_response(response)
+
+    def test_parse_code_fence_with_truncated_content(self):
+        """Test tolerant repair still applies inside a fenced code block."""
+        response = '```json\n{"entities": [{"text": "Test Corp", "type": "ORG"}\n```'
+        result = parse_llm_response(response)
+
+        assert result['entities'][0]['text'] == 'Test Corp'
 
 
 class TestMapLabel:
@@ -389,6 +444,67 @@ class TestOllamaDiagnostics:
         assert secret not in log_text
         assert secret not in str(exc_info.value)
         assert "Raw response omitted" in log_text
+
+    def test_truncated_first_response_recovered_without_self_correction(self, monkeypatch):
+        """Issue #42: a truncated (but bracket-repairable) first response should
+        parse via the tolerant-repair fallback -- no self-correction round-trip,
+        and no RuntimeError."""
+
+        class MockResponse:
+            def __init__(self, response_text):
+                self.response_text = response_text
+
+            def raise_for_status(self):
+                return None
+
+            def json(self):
+                return {"response": self.response_text}
+
+        # Only one response queued: a second `.post` call (i.e. a
+        # self-correction retry) would raise StopIteration and fail the test.
+        responses = iter([
+            MockResponse('{"entities": [{"text": "Sample 123 Inc", "type": "ORG"}'),
+        ])
+
+        def fake_post(*args, **kwargs):
+            return next(responses)
+
+        monkeypatch.delenv("OLLAMA_HOST", raising=False)
+        monkeypatch.setattr(model_module.requests, "post", fake_post)
+
+        spans = ollama_extract("mock-model", "Contact Sample 123 Inc for details.", temperature=0.0)
+        assert any(s["label"] == "ORG" for s in spans)
+
+    def test_self_corrected_response_truncated_is_still_recovered(self, monkeypatch):
+        """Issue #42: if the first response is unparseable prose, the existing
+        self-correction round-trip fires; if *that* corrected response is itself
+        truncated, the tolerant-repair fallback must still recover it instead of
+        raising RuntimeError (previously the only outcome once self-correction
+        also failed to parse)."""
+
+        class MockResponse:
+            def __init__(self, response_text):
+                self.response_text = response_text
+
+            def raise_for_status(self):
+                return None
+
+            def json(self):
+                return {"response": self.response_text}
+
+        responses = iter([
+            MockResponse("Sorry, I cannot comply with that request."),
+            MockResponse('{"entities": [{"text": "Jane Doe", "type": "NAME"}'),
+        ])
+
+        def fake_post(*args, **kwargs):
+            return next(responses)
+
+        monkeypatch.delenv("OLLAMA_HOST", raising=False)
+        monkeypatch.setattr(model_module.requests, "post", fake_post)
+
+        spans = ollama_extract("mock-model", "Contact Jane Doe for details.", temperature=0.0)
+        assert any(s["label"] == "NAME" for s in spans)
 
 
 class TestIsGenericTerm:
