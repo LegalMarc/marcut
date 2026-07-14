@@ -176,6 +176,19 @@ final class DocumentRedactionViewModel: ObservableObject {
     private var processingTasks: [UUID: Task<Void, Never>] = [:]
     private var heartbeatTasks: [UUID: Task<Void, Never>] = [:]
 
+    /// Identifies the *current* processing attempt for a document, keyed by item id. A fresh
+    /// token is minted each time `processDocumentWithPythonKit` starts a run. The completion
+    /// handler for that run captures the token and refuses to mutate `item.status` if it no
+    /// longer matches this dictionary's entry -- i.e. a newer attempt (a retry) has since
+    /// superseded it, or the attempt was explicitly abandoned (see `stopProcessing`).
+    ///
+    /// This exists because of B1's bridge-level watchdog: a truly wedged embedded Python call
+    /// cannot be killed, only abandoned (see `PythonBridgeError`), so its completion handler may
+    /// still run -- possibly much later, after the heartbeat watchdog below has already failed
+    /// the document and the user has retried it. Without this guard that late, stale completion
+    /// would silently overwrite the newer attempt's live status.
+    private var activeAttemptTokens: [UUID: UUID] = [:]
+
     // MARK: - Batch ETA Tracking
     /// Wall-clock time each document started processing in the current run, keyed by item id.
     /// Used to compute a per-document duration sample once the document reaches a terminal state.
@@ -184,6 +197,15 @@ final class DocumentRedactionViewModel: ObservableObject {
     /// start of every `processAllDocuments` call.
     private var batchETASamples: [BatchETASample] = []
     private let heartbeatTimeout: TimeInterval = 120.0
+    /// How often the heartbeat watchdog re-checks a processing document for staleness. Small
+    /// relative to `heartbeatTimeout` so a stall is reported soon after crossing the threshold,
+    /// without busy-polling.
+    private let heartbeatPollInterval: TimeInterval = 5.0
+    /// Shown when the heartbeat watchdog or the bridge-level watchdog (`PythonRunOutcome
+    /// .stalled`) gives up on a document. Covers both "this call itself timed out" and "the
+    /// embedded engine was already marked unavailable by an earlier stall" -- restarting the
+    /// app is the only recovery in either case (see `PythonBridgeError`).
+    static let processingStalledMessage = "Processing stalled - the embedded engine stopped responding. Restart Marcut to resume processing."
     // Note: retryCounts was removed along with retry logic - heartbeat stalls now immediately fail
     private var hasPrefetchedModels = false
 
@@ -1137,6 +1159,10 @@ final class DocumentRedactionViewModel: ObservableObject {
         runner: PythonKitRunner
     ) async {
         runner.clearCancellationRequest()
+        // Mint a fresh attempt token for this run (see `activeAttemptTokens`) so a stale
+        // completion from an earlier, abandoned attempt on this same item can't clobber it.
+        let attemptToken = UUID()
+        activeAttemptTokens[item.id] = attemptToken
         DebugLogger.shared.log("🔄 processDocumentWithPythonKit started for item.id=\(item.id) (\(item.url.lastPathComponent))", component: "DocumentRedactionViewModel")
         if settings.debug {
             setenv("MARCUT_LOG_PATH", DebugLogger.shared.logPath, 1)
@@ -1248,11 +1274,20 @@ final class DocumentRedactionViewModel: ObservableObject {
             progressTask.cancel()
 
             await MainActor.run {
+                // A wedged embedded Python call can only be abandoned, never killed (see
+                // `PythonBridgeError`), so this completion may fire long after the fact --
+                // possibly after the heartbeat watchdog already failed this document and the
+                // user retried it. If a newer attempt has since taken over `item.id`, this
+                // result is stale: apply nothing.
+                guard self.activeAttemptTokens[item.id] == attemptToken else {
+                    DebugLogger.shared.log("⚠️ Ignoring stale completion for \(item.url.lastPathComponent) (superseded by a newer attempt or abandoned)", component: "CompletionTask")
+                    return
+                }
                 guard let currentItem = self.items.first(where: { $0.id == item.id }) else {
                     DebugLogger.shared.log("⚠️ Completion task: item.id=\(item.id) not found in items", component: "CompletionTask")
                     return
                 }
-                
+
                 let previousStatus = currentItem.status
                 switch outcome {
                 case .success:
@@ -1296,6 +1331,10 @@ final class DocumentRedactionViewModel: ObservableObject {
                         DebugLogger.shared.log("❌ PythonKit processing failed for \(currentItem.url.lastPathComponent) (no failure report found)", component: "DocumentRedactionViewModel")
                     }
                     self.assignFailureMessageIfNeeded(currentItem)
+                case .stalled:
+                    currentItem.status = .failed
+                    currentItem.errorMessage = Self.processingStalledMessage
+                    DebugLogger.shared.log("❌ PythonKit processing stalled (bridge watchdog abandoned the worker) for \(currentItem.url.lastPathComponent)", component: "DocumentRedactionViewModel")
                 }
                 self.finalizeProcessing(for: currentItem)
             }
@@ -1340,6 +1379,11 @@ final class DocumentRedactionViewModel: ObservableObject {
                 item.cleanupProgressAnimations()
                 item.releaseSecurityScope()
             }
+            // A wedged underlying call can only be abandoned, not killed (see
+            // `PythonBridgeError`), so its completion may still fire after this point.
+            // Dropping the attempt token here ensures that late result is ignored rather than
+            // silently overwriting the `.cancelled` status set above.
+            activeAttemptTokens.removeValue(forKey: id)
         }
         processingTasks.removeAll()
 
@@ -1530,6 +1574,10 @@ final class DocumentRedactionViewModel: ObservableObject {
             hbTask.cancel()
             heartbeatTasks.removeValue(forKey: item.id)
         }
+        // See `stopProcessing` for why this matters: a wedged call's completion can still fire
+        // after the document is gone from `items`, so drop its token rather than let it resolve
+        // silently against a (by then, unrelated) reused id.
+        activeAttemptTokens.removeValue(forKey: item.id)
 
         // Release security scope when document is removed
         item.releaseSecurityScope()
@@ -2502,22 +2550,79 @@ final class DocumentRedactionViewModel: ObservableObject {
     
 }
 
-// MARK: - Heartbeat Monitoring (Logging Only)
-// NOTE: Heartbeat stall detection has been DISABLED.
-// The processing timeout (user-configurable) is the primary document-level timeout.
-// PythonKit still applies per-phase safeguards and total timeouts.
-// This heartbeat system now only logs activity for debugging purposes.
-private extension DocumentRedactionViewModel {
+// MARK: - Heartbeat Monitoring (B1 watchdog)
+//
+// Detects a genuinely wedged embedded Python call: one where not even the keepalive signal
+// Python emits roughly every 3s during a long LLM call (`send_keepalive` in
+// `model_enhanced.py`) is getting through, which only happens if the interpreter itself is
+// stuck (GIL held forever, blocked in native C code) rather than merely slow. A single
+// long-but-alive chunk still refreshes `item.lastHeartbeat` via that keepalive, so watching for
+// prolonged *total* silence (`heartbeatTimeout`, not a per-chunk gap) is what avoids the false
+// positives that got an earlier version of this mechanism disabled: it used a 30s per-chunk-gap
+// threshold that fired on legitimately slow (but alive) chunks. `heartbeatTimeout` (120s of no
+// progress signal at all, whether chunk boundary or keepalive) plus the keepalive protocol above
+// is the fix for that.
+//
+// This is deliberately independent from, and fires much sooner than, the separate bridge-level
+// watchdog in `PythonKitBridge.swift` (`PythonBridgeError.workerStalled` / `PythonRunOutcome
+// .stalled`): that one exists to eventually reclaim the worker thread itself and stop future
+// calls from silently queuing behind it forever, but its bound is necessarily generous (tens of
+// minutes) so it doesn't cut off a legitimate long run before that run's own configured timeout
+// would. This one exists to give the *user* a fast, specific "processing stalled" signal instead
+// of a progress bar that silently stops moving forever.
+extension DocumentRedactionViewModel {
     func ensureHeartbeatMonitorRunning(for item: DocumentItem) {
-        // Heartbeat monitoring disabled - rely on processing timeout only.
-        // The heartbeat stall detection was causing false positives when
-        // gaps between LLM chunks exceeded 30 seconds, even though processing
-        // was still working correctly.
-        //
-        // We still update lastHeartbeat timestamps for UI display purposes,
-        // but we no longer fail documents based on heartbeat gaps.
+        guard heartbeatTasks[item.id] == nil else { return }
+
+        let itemId = item.id
+        let timeout = heartbeatTimeout
+        let pollInterval = heartbeatPollInterval
+
+        let task = Task { @MainActor [weak self] in
+            while !Task.isCancelled {
+                guard let self else { return }
+                guard let currentItem = self.items.first(where: { $0.id == itemId }) else {
+                    self.heartbeatTasks.removeValue(forKey: itemId)
+                    return
+                }
+                guard currentItem.status == .processing else {
+                    // Reached a terminal state through the normal completion path (or was
+                    // stopped/removed) -- nothing left for the watchdog to do.
+                    self.heartbeatTasks.removeValue(forKey: itemId)
+                    return
+                }
+                if let last = currentItem.lastHeartbeat {
+                    let elapsed = Date().timeIntervalSince(last)
+                    if elapsed >= timeout {
+                        DebugLogger.shared.log(
+                            "⏱️ Heartbeat watchdog: no progress signal for \(String(format: "%.0f", elapsed))s (>= \(String(format: "%.0f", timeout))s) on \(currentItem.url.lastPathComponent); marking stalled",
+                            component: "HeartbeatWatchdog"
+                        )
+                        self.failStalledDocument(currentItem)
+                        return
+                    }
+                }
+                try? await Task.sleep(nanoseconds: UInt64(pollInterval * 1_000_000_000))
+            }
+        }
+        heartbeatTasks[item.id] = task
     }
 
+    /// Marks a document that has gone silent past `heartbeatTimeout` as failed with a
+    /// user-facing "processing stalled" message, invalidates its attempt token (see
+    /// `activeAttemptTokens`) so a late completion from the still-wedged underlying call can't
+    /// resurrect it, and best-effort requests cancellation of the underlying run -- best-effort
+    /// only, since PythonKit cannot forcibly reclaim a call already stuck in native code (see
+    /// `PythonBridgeError`).
+    func failStalledDocument(_ item: DocumentItem) {
+        guard item.status == .processing else { return }
+        item.status = .failed
+        item.errorMessage = Self.processingStalledMessage
+        activeAttemptTokens.removeValue(forKey: item.id)
+        AppDelegate.pythonRunner?.cancelCurrentOperation(source: "heartbeat_watchdog_stall")
+        DebugLogger.shared.log("❌ Heartbeat watchdog marked \(item.url.lastPathComponent) failed (processing stalled)", component: "HeartbeatWatchdog")
+        finalizeProcessing(for: item)
+    }
 }
 // MARK: - Progress Mapping
 private extension DocumentRedactionViewModel {

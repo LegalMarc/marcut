@@ -210,10 +210,46 @@ enum PythonInitError: Error {
     case ollamaUnavailable(String)
 }
 
+/// Errors raised by the bridge-level watchdog around `PythonWorkerThread` calls (see
+/// `PythonWorkerThread.performWithWatchdog`). This is a distinct, outer safety net from the
+/// existing interrupt-based step/total timeout system (`withTimeout` + `cancelCurrentOperation`
+/// below): that system depends on the embedded CPython interpreter cooperating -- periodically
+/// checking for a pending signal -- which only happens between bytecode instructions. A call
+/// stuck in native C code (a pathological lxml parse, a hung syscall, a GIL held forever by a
+/// wedged extension) never reaches such a checkpoint, so `PyErr_SetInterrupt()` never has an
+/// effect and the worker thread's blocking wait never returns. `PythonBridgeError` is what the
+/// caller sees instead of hanging forever in that case.
+enum PythonBridgeError: Error, CustomStringConvertible, LocalizedError {
+    /// `operation` did not return from the embedded Python worker thread within its configured
+    /// watchdog timeout. PythonKit cannot safely kill or preempt an embedded interpreter
+    /// mid-call, so the in-flight call is abandoned in place (its eventual result, if the
+    /// underlying native thread is merely slow rather than truly wedged, is discarded) and the
+    /// owning `PythonWorkerThread` is marked permanently stalled: every later call on that same
+    /// worker -- for this document or any other queued after it -- fails fast with this same
+    /// error instead of silently queuing forever behind a thread that will never run it, which
+    /// is what "only force-quit recovers" looked like before this existed. Recovery requires a
+    /// fresh `PythonKitRunner`, i.e. restarting the app.
+    case workerStalled(operation: String)
+
+    var description: String {
+        switch self {
+        case .workerStalled(let operation):
+            return "Embedded Python worker did not respond within the watchdog timeout during '\(operation)'; the runner has been abandoned and will reject further calls until Marcut is restarted."
+        }
+    }
+
+    var errorDescription: String? { description }
+}
+
 public enum PythonRunOutcome {
     case success
     case cancelled
     case failure
+    /// The bridge-level watchdog gave up waiting on the embedded worker (see
+    /// `PythonBridgeError.workerStalled`) -- either this call itself timed out, or the worker
+    /// was already marked stalled by an earlier one. Kept distinct from `.failure` so callers
+    /// can surface a specific "processing stalled" message instead of a generic failure.
+    case stalled
 }
 
 private enum PythonTimeoutOverrides {
@@ -238,6 +274,15 @@ private enum PythonTimeoutOverrides {
         return false
     }
 
+    /// Outer bridge-level watchdog bound for a `PythonWorkerThread.performWithWatchdog` call
+    /// site (see `PythonBridgeError`). Independent of `step`/`total`/`disable` above, but
+    /// `disable(for: "WORKER_WATCHDOG")` (or the blanket `MARCUT_DISABLE_PY_TIMEOUTS`) is
+    /// checked separately by callers before using this value, matching the existing pattern.
+    static func watchdog(for operation: String, default defaultValue: TimeInterval) -> TimeInterval {
+        let key = "MARCUT_\(operation.uppercased())_WATCHDOG_TIMEOUT"
+        return value(for: key, default: defaultValue)
+    }
+
     private static func value(for key: String, default defaultValue: TimeInterval) -> TimeInterval {
         guard let raw = env()[key], let parsed = TimeInterval(raw), parsed > 0 else {
             return defaultValue
@@ -246,11 +291,14 @@ private enum PythonTimeoutOverrides {
     }
 }
 
-private final class PythonWorkerThread: Thread {
+// Internal (not private) so the watchdog behavior below is directly unit-testable via
+// `@testable import MarcutApp` without needing a live embedded CPython interpreter.
+final class PythonWorkerThread: Thread {
     private let condition = NSCondition()
     private var tasks: [() -> Void] = []
     private var running = true
     private let readySemaphore = DispatchSemaphore(value: 0)
+    private var isStalled = false
 
     override init() {
         super.init()
@@ -293,7 +341,44 @@ private final class PythonWorkerThread: Thread {
         condition.unlock()
     }
 
-    func perform<T>(_ work: @escaping () throws -> T) throws -> T {
+    /// Whether an earlier `performWithWatchdog` call already timed out on this worker. Once
+    /// true, the underlying `Thread` is presumed permanently wedged -- it is single-threaded
+    /// and drains `tasks` strictly in FIFO order in `main()`, so a task that never returns
+    /// blocks every task queued after it, forever -- and is abandoned: no further work is
+    /// enqueued onto it.
+    func isCurrentlyStalled() -> Bool {
+        condition.lock()
+        let stalled = isStalled
+        condition.unlock()
+        return stalled
+    }
+
+    private func markStalled() {
+        condition.lock()
+        isStalled = true
+        condition.unlock()
+    }
+
+    /// Runs `work` on the dedicated Python worker thread and blocks the caller until it
+    /// returns -- but for at most `timeout` seconds (`nil` or a non-positive value waits
+    /// indefinitely, matching the historical unbounded behavior; used when the caller has
+    /// explicitly disabled watchdog timeouts for debugging).
+    ///
+    /// If `work` has not signalled completion within `timeout`, this worker is abandoned:
+    /// there is no safe way to preempt an embedded CPython call that may be holding the GIL or
+    /// blocked in native C code (see `PythonBridgeError`), so the call is given up on and this
+    /// thread is marked stalled for the rest of the process's lifetime. Every subsequent call
+    /// -- for this document or any other -- fails fast with `PythonBridgeError.workerStalled`
+    /// instead of silently queuing behind the now-dead thread.
+    func performWithWatchdog<T>(
+        timeout: TimeInterval?,
+        operation: String,
+        _ work: @escaping () throws -> T
+    ) throws -> T {
+        if isCurrentlyStalled() {
+            throw PythonBridgeError.workerStalled(operation: operation)
+        }
+
         let semaphore = DispatchSemaphore(value: 0)
         var result: Result<T, Error>!
         enqueue {
@@ -304,11 +389,25 @@ private final class PythonWorkerThread: Thread {
             }
             semaphore.signal()
         }
-        semaphore.wait()
+
+        guard let timeout, timeout > 0 else {
+            semaphore.wait()
+            return try result.get()
+        }
+
+        let waitOutcome = semaphore.wait(timeout: .now() + timeout)
+        if waitOutcome == .timedOut {
+            markStalled()
+            throw PythonBridgeError.workerStalled(operation: operation)
+        }
         return try result.get()
     }
 
     func performAsync(_ work: @escaping () -> Void) {
+        // Fire-and-forget calls (e.g. broadcasting cancellation) don't block a caller, so a
+        // stalled worker can't hang anything here -- but skip enqueueing anyway so the task
+        // queue on an already-abandoned thread doesn't grow forever.
+        if isCurrentlyStalled() { return }
         enqueue(work)
     }
 }
@@ -738,19 +837,29 @@ public final class PythonKitRunner {
         "MARCUT_LOG_PATH"
     ]
 
+    /// Resolves the outer bridge-level watchdog bound for `operation`, or `nil` for an
+    /// unbounded wait when watchdog timeouts have been explicitly disabled for debugging
+    /// (`MARCUT_DISABLE_WORKER_WATCHDOG_TIMEOUT=1` or the blanket `MARCUT_DISABLE_PY_TIMEOUTS`).
+    private static func watchdogTimeout(for operation: String, default defaultValue: TimeInterval) -> TimeInterval? {
+        guard !PythonTimeoutOverrides.disable(for: "WORKER_WATCHDOG") else { return nil }
+        return PythonTimeoutOverrides.watchdog(for: operation, default: defaultValue)
+    }
+
     init(logger: @escaping (String) -> Void) throws {
         self.logger = logger
         self.worker = PythonWorkerThread()
         worker.start()
         worker.waitUntilReady()
 
-        let config: PythonRuntimeConfig = try worker.perform {
+        let initTimeout = Self.watchdogTimeout(for: "PYTHON_INIT", default: 60.0)
+        let config: PythonRuntimeConfig = try worker.performWithWatchdog(timeout: initTimeout, operation: "python_init") {
             try PythonRuntime.initialize(logger: logger)
         }
         self.cfg = config
 
         do {
-            try worker.perform {
+            let warmupTimeout = Self.watchdogTimeout(for: "PYTHON_WARMUP", default: 90.0)
+            try worker.performWithWatchdog(timeout: warmupTimeout, operation: "python_warmup") {
                 try Self.warmupPythonEnvironment(logger: logger)
             }
             logger("PK_WARMUP_OK")
@@ -1401,12 +1510,29 @@ public final class PythonKitRunner {
     ) -> (stream: AsyncStream<PythonRunnerProgressUpdate>, result: Task<PythonRunOutcome, Never>) {
         let streamContinuation = AsyncStream<PythonRunnerProgressUpdate>.makeStream()
 
+        // Outer bridge-level watchdog bound (see `PythonBridgeError`): generous enough to sit
+        // well above every inner phase timeout this call could legitimately take (env setup +
+        // imports + pipeline import + the configured/default processing step), plus a grace
+        // period for the existing interrupt-based cancellation to unwind on its own first. Only
+        // fires for a call the inner mechanism truly could not unstick.
+        let enhancedWatchdogTimeout = Self.watchdogTimeout(
+            for: "ENHANCED_OLLAMA",
+            default: {
+                let baseline = processingStepTimeout ?? PythonTimeoutOverrides.step(for: "PROCESSING", default: 600.0)
+                let setupBudget = PythonTimeoutOverrides.total(for: "ENV_SETUP", default: 600.0)
+                    + PythonTimeoutOverrides.total(for: "IMPORTS", default: 600.0)
+                    + PythonTimeoutOverrides.total(for: "PIPELINE_IMPORT", default: 600.0)
+                let grace = PythonTimeoutOverrides.watchdog(for: "ENHANCED_OLLAMA_GRACE", default: 120.0)
+                return baseline + setupBudget + grace
+            }()
+        )
+
         // Run processing off the main actor to avoid UI blocking
         let processingTask = Task.detached(priority: .userInitiated) { [weak self] in
             guard let self else { return PythonRunOutcome.failure }
             let outcome: PythonRunOutcome
             do {
-                outcome = try self.worker.perform {
+                outcome = try self.worker.performWithWatchdog(timeout: enhancedWatchdogTimeout, operation: "enhanced_ollama") {
                     self.externalCancellationChecker = cancellationChecker
                     defer {
                         self.externalCancellationChecker = nil
@@ -1436,6 +1562,10 @@ public final class PythonKitRunner {
                         }
                     )
                 }
+            } catch let stallError as PythonBridgeError {
+                self.logger("PK_ENHANCED_OLLAMA_WATCHDOG_STALL: \(stallError)")
+                streamContinuation.continuation.finish()
+                return .stalled
             } catch {
                 self.logger("PK_ENHANCED_OLLAMA_EXCEPTION: \(error)")
                 streamContinuation.continuation.finish()
@@ -1473,9 +1603,23 @@ public final class PythonKitRunner {
                 try? await Task.sleep(nanoseconds: 200_000_000)
             }
 
+            // Same outer watchdog rationale as the enhanced/Ollama path above, sized against
+            // the rules-mock pipeline's own (larger, deterministic) phase timeout defaults.
+            let rulesWatchdogTimeout = Self.watchdogTimeout(
+                for: "RULES_MOCK",
+                default: {
+                    let setupBudget = PythonTimeoutOverrides.total(for: "ENV_SETUP", default: 600.0)
+                        + PythonTimeoutOverrides.total(for: "IMPORTS", default: 600.0)
+                        + PythonTimeoutOverrides.total(for: "PIPELINE_IMPORT", default: 600.0)
+                        + PythonTimeoutOverrides.total(for: "PROCESSING", default: 7200.0)
+                    let grace = PythonTimeoutOverrides.watchdog(for: "RULES_MOCK_GRACE", default: 120.0)
+                    return setupBudget + grace
+                }()
+            )
+
             let outcome: PythonRunOutcome
             do {
-                outcome = try self.worker.perform {
+                outcome = try self.worker.performWithWatchdog(timeout: rulesWatchdogTimeout, operation: "rules_mock") {
                     self.externalCancellationChecker = cancellationChecker
                     defer {
                         self.externalCancellationChecker = nil
@@ -1489,6 +1633,10 @@ public final class PythonKitRunner {
                         cancellationChecker: cancellationChecker
                     )
                 }
+            } catch let stallError as PythonBridgeError {
+                self.logger("PK_RULES_WATCHDOG_STALL: \(stallError)")
+                streamContinuation.continuation.finish()
+                return .stalled
             } catch {
                 self.logger("PK_RULES_EXCEPTION: \(error)")
                 streamContinuation.continuation.finish()
@@ -1510,9 +1658,12 @@ public final class PythonKitRunner {
     ) async throws -> (success: Bool, error: String?, report: [String: Any]?) {
         let startTime = Date()
         logger("PK_METADATA_SCRUB_START: \(inputPath)")
-        
-        // Perform Python call on worker thread
-        let result: (Bool, String?, [String: Any]?) = try worker.perform { [logger, self] in
+
+        // Perform Python call on worker thread, bounded by the bridge-level watchdog (see
+        // `PythonBridgeError`) -- this is a fast, deterministic, non-LLM operation, so a
+        // generous-but-finite bound is enough to catch a genuine hang without false positives.
+        let scrubWatchdogTimeout = Self.watchdogTimeout(for: "METADATA_SCRUB", default: 120.0)
+        let result: (Bool, String?, [String: Any]?) = try worker.performWithWatchdog(timeout: scrubWatchdogTimeout, operation: "metadata_scrub") { [logger, self] in
             guard let state = PyGILState_Ensure() else {
                 let missing = PythonSymbolState.missingList().joined(separator: ", ")
                 let detail = missing.isEmpty ? "Missing CPython symbols" : "Missing CPython symbols: \(missing)"
@@ -1593,7 +1744,9 @@ public final class PythonKitRunner {
     ) async throws -> (success: Bool, error: String?, report: [String: Any]?, htmlPath: String?) {
         logger("PK_METADATA_REPORT_START: \(inputPath)")
 
-        let result: (Bool, String?, [String: Any]?, String?, String?) = try worker.perform { [logger, self] in
+        // Same bridge-level watchdog rationale as `scrubMetadataOnlyAsync` above.
+        let reportWatchdogTimeout = Self.watchdogTimeout(for: "METADATA_REPORT", default: 120.0)
+        let result: (Bool, String?, [String: Any]?, String?, String?) = try worker.performWithWatchdog(timeout: reportWatchdogTimeout, operation: "metadata_report") { [logger, self] in
             guard let state = PyGILState_Ensure() else {
                 let missing = PythonSymbolState.missingList().joined(separator: ", ")
                 let detail = missing.isEmpty ? "Missing CPython symbols" : "Missing CPython symbols: \(missing)"
@@ -1660,7 +1813,9 @@ public final class PythonKitRunner {
     /// Generate HTML for an existing scrub/metadata JSON report
     func generateScrubHTML(from jsonPath: String) async -> String? {
         do {
-            let htmlPath: String = try worker.perform { [logger] in
+            // Same bridge-level watchdog rationale as the metadata paths above.
+            let htmlWatchdogTimeout = Self.watchdogTimeout(for: "GENERATE_SCRUB_HTML", default: 60.0)
+            let htmlPath: String = try worker.performWithWatchdog(timeout: htmlWatchdogTimeout, operation: "generate_scrub_html") { [logger] in
                 guard let state = PyGILState_Ensure() else {
                     let missing = PythonSymbolState.missingList().joined(separator: ", ")
                     let detail = missing.isEmpty ? "Missing CPython symbols" : "Missing CPython symbols: \(missing)"

@@ -827,6 +827,117 @@ final class MarcutAppTests: XCTestCase {
         XCTAssertTrue(viewModel.hasFailedDocuments, "A failed document should flip the flag on")
     }
 
+    // MARK: - Watchdog Tests (issue #43 / B1: embedded Python worker hang/crash)
+
+    /// `PythonWorkerThread` is the actual bridge boundary a hung/crashed embedded Python call
+    /// can wedge forever (see `PythonKitBridge.swift`). This exercises the fix without needing a
+    /// live embedded interpreter: a closure that blocks past the watchdog timeout stands in for
+    /// a genuine unkillable hang (a pathological lxml parse, a GIL held forever, etc).
+    func testPythonWorkerThreadWatchdogAbandonsStalledCallWithoutBlockingCaller() throws {
+        let worker = PythonWorkerThread()
+        worker.start()
+        worker.waitUntilReady()
+        defer { worker.stop() }
+
+        // Stands in for a call into a permanently wedged embedded interpreter: from the
+        // caller's point of view it never returns. `releaseStalledCall` exists only so the
+        // leaked background closure doesn't block forever after this test finishes -- it must
+        // NOT be what unblocks `performWithWatchdog` below; the watchdog timeout must be.
+        let releaseStalledCall = DispatchSemaphore(value: 0)
+
+        let callStart = Date()
+        XCTAssertThrowsError(
+            try worker.performWithWatchdog(timeout: 0.2, operation: "test_stall") { () -> Int in
+                releaseStalledCall.wait()
+                return 1
+            }
+        ) { error in
+            guard case PythonBridgeError.workerStalled(let operation) = error else {
+                XCTFail("Expected PythonBridgeError.workerStalled, got \(error)")
+                return
+            }
+            XCTAssertEqual(operation, "test_stall")
+        }
+        let elapsed = Date().timeIntervalSince(callStart)
+        XCTAssertLessThan(
+            elapsed, 2.0,
+            "The caller must not block past the watchdog timeout even though the underlying call never returns -- this is what keeps a hang from freezing the UI"
+        )
+        XCTAssertTrue(worker.isCurrentlyStalled(), "A timed-out call must mark the worker as stalled")
+
+        // A second, otherwise-healthy call on the same worker must fail immediately rather than
+        // silently queue forever behind the now-permanently-wedged first task -- this is the
+        // "abandon the worker thread and prevent further Python calls" strategy from the ticket,
+        // which is what keeps every *subsequent* document from hanging too.
+        let secondCallStart = Date()
+        XCTAssertThrowsError(
+            try worker.performWithWatchdog(timeout: 5.0, operation: "test_after_stall") { 2 }
+        ) { error in
+            guard case PythonBridgeError.workerStalled = error else {
+                XCTFail("Expected PythonBridgeError.workerStalled, got \(error)")
+                return
+            }
+        }
+        XCTAssertLessThan(
+            Date().timeIntervalSince(secondCallStart), 0.5,
+            "A worker already known to be stalled must reject further calls immediately, not wait out another timeout"
+        )
+
+        releaseStalledCall.signal()
+    }
+
+    func testPythonWorkerThreadWatchdogAllowsUnboundedWaitWhenTimeoutIsNil() throws {
+        let worker = PythonWorkerThread()
+        worker.start()
+        worker.waitUntilReady()
+        defer { worker.stop() }
+
+        // `timeout: nil` is the explicit debug opt-out (mirrors `MARCUT_DISABLE_PY_TIMEOUTS`);
+        // it must still complete normally for a call that finishes quickly.
+        let value = try worker.performWithWatchdog(timeout: nil, operation: "test_unbounded") { 42 }
+        XCTAssertEqual(value, 42)
+        XCTAssertFalse(worker.isCurrentlyStalled())
+    }
+
+    /// The user-facing half of the fix: `DocumentRedactionViewModel` reuses the existing
+    /// heartbeat plumbing (`lastHeartbeat`, `heartbeatTasks`) to detect a document whose
+    /// embedded call has gone completely silent, and fails it instead of leaving its progress
+    /// bar frozen forever with no error and no way to recover short of a force-quit.
+    func testHeartbeatWatchdogMarksStalledProcessingDocumentFailed() async throws {
+        let viewModel = createTestViewModel()
+        let item = createTestDocumentItem(status: .processing)
+        // A document whose last progress signal is already far past the stall threshold is
+        // exactly what a genuine hang looks like from the ViewModel's point of view.
+        item.lastHeartbeat = Date().addingTimeInterval(-999)
+        viewModel.items = [item]
+
+        viewModel.ensureHeartbeatMonitorRunning(for: item)
+
+        let deadline = Date().addingTimeInterval(5.0)
+        while item.status == .processing && Date() < deadline {
+            try await Task.sleep(nanoseconds: 50_000_000)
+        }
+
+        XCTAssertEqual(item.status, .failed, "A document with no progress signal for longer than the stall threshold must be marked failed, not left hanging forever")
+        XCTAssertEqual(item.errorMessage, DocumentRedactionViewModel.processingStalledMessage)
+    }
+
+    /// Guards against reintroducing the false-positive bug that got the previous version of
+    /// this watchdog disabled: a document that's still actively sending progress signals must
+    /// not be failed out from under the user.
+    func testHeartbeatWatchdogLeavesActivelyProgressingDocumentAlone() async throws {
+        let viewModel = createTestViewModel()
+        let item = createTestDocumentItem(status: .processing)
+        item.lastHeartbeat = Date() // fresh -- processing is alive and well
+        viewModel.items = [item]
+
+        viewModel.ensureHeartbeatMonitorRunning(for: item)
+        try await Task.sleep(nanoseconds: 300_000_000)
+
+        XCTAssertEqual(item.status, .processing, "A document with a recent heartbeat must not be marked failed")
+        viewModel.stopProcessing()
+    }
+
     // MARK: - Log Viewer Tests
 
     func testDiscoverLogFilesReturnsMostRecentlyModifiedFirst() throws {
