@@ -1429,6 +1429,178 @@ final class MarcutAppTests: XCTestCase {
         }
     }
 
+    // MARK: - Kill-Mid-Document Resume Safety Tests (issue #48 / B6)
+    //
+    // "Verify resume-after-quit never presents partial outputs as complete." Validated by
+    // reading the two halves of the path together:
+    //
+    // 1. Swift side (`DocumentRedactionViewModel.updateState()` -> `persistPendingBatchJobIfNeeded()`
+    //    -> `pendingBatchJobPaths`): a document only leaves the persisted resume record once its
+    //    status actually reaches `.completed` -- which itself is only ever set from the
+    //    `completionTask` closure in `processDocumentWithPythonKit`, i.e. *after* the embedded
+    //    Python call has returned. A `kill -9` mid-document terminates that call (and the whole
+    //    process, Swift runtime included) before it can return, so the item's last-known status is
+    //    still one of `.checking`/`.processing`/`.analyzing`/`.redacting`/`.validDocument` --
+    //    exactly the states `pendingBatchJobPaths` treats as "needs (re)processing". Because the
+    //    filter groups `.validDocument` and `isProcessing` into the same bucket, a document doesn't
+    //    need a *fresh* disk write the instant it starts processing -- it was already durably
+    //    persisted while merely queued (right after the previous document's completion shrank the
+    //    list), long before the kill. `UserDefaults.set()` round-trips through `cfprefsd`
+    //    out-of-process, so this isn't lost even by a hard kill of the app process itself.
+    // 2. Python side (`marcut/pipeline.py` `_sibling_temp_path` / `_replace_existing_temp`): the
+    //    redacted `.docx` and its audit report are each written to a hidden sibling temp file and
+    //    moved into place with a single atomic `os.replace()`, so the destination path itself is
+    //    never observable as a half-written file -- worst case on a kill mid-finalize is an
+    //    orphaned hidden temp file beside the destination, not a truncated "real" file at the
+    //    real path.
+    //
+    // Together: a document that was mid-processing at kill time is never dropped, is never
+    // resurrected as `.completed`, and resume always re-validates/reprocesses it from scratch via
+    // `add(urls:)` rather than trusting whatever (if anything) already sits at its destination.
+    //
+    // Manual verification (not automatable in CI -- needs a real `kill -9` and a live batch):
+    //   1. Build and launch the app; add a 5-document batch; start "Redact Documents".
+    //   2. While document 3 is mid-processing (status shows "Analyzing.../Redacting..."), run
+    //      `kill -9 <MarcutApp pid>` from Terminal.
+    //   3. Relaunch the app. Confirm the resume prompt lists documents 3, 4, 5 (not 1 or 2, which
+    //      had already completed) and that accepting it re-adds them as fresh, unprocessed items
+    //      (not pre-marked complete).
+    //   4. Inspect the destination folder: document 3's redacted `.docx` must either be absent or
+    //      be the previous run's output (never a truncated/partial file), and any hidden
+    //      `.<name>.tmp*` sibling files left behind must not be mistaken for real output by the
+    //      app or the user.
+    //   5. Repeat step 2 with the kill timed as close as possible to the final artifact write
+    //      (large document, right as the progress UI would show "Creating Output") to exercise
+    //      the `os.replace()` finalize window specifically.
+
+    /// A document that was mid-processing at the moment of a kill (SIGKILL, crash, force-quit)
+    /// must still be captured in the persisted resume record, while a document that had already
+    /// reached `.completed` before the kill must not be re-persisted for reprocessing. This is
+    /// the core state invariant issue #48 asks to validate: the record must reflect what actually
+    /// finished, not merely what was once queued.
+    func testPendingRecordCapturesMidProcessingDocumentAndExcludesCompletedDocument() throws {
+        try withPreservedStandardPendingBatchJobRecord {
+            let completedItem = DocumentItem(url: URL(fileURLWithPath: "/tmp/b6-doc1-completed.docx"))
+            completedItem.status = .completed
+            let midProcessingItem = DocumentItem(url: URL(fileURLWithPath: "/tmp/b6-doc2-mid-kill.docx"))
+            midProcessingItem.status = .analyzing // where processing was when the kill landed
+            let queuedItem = DocumentItem(url: URL(fileURLWithPath: "/tmp/b6-doc3-queued.docx"))
+            queuedItem.status = .validDocument
+
+            let viewModel = createTestViewModel()
+            viewModel.items = [completedItem, midProcessingItem, queuedItem]
+            // `items` is set directly, bypassing `add(urls:)`'s async validation path -- force
+            // `updateState()`'s persistence pass the same way `testHasFailedDocumentsReflectsItemStatuses`
+            // above does, via `add(urls: [])` (a no-op add that still triggers `updateState()`).
+            viewModel.add(urls: [])
+
+            let persisted = PendingBatchJobStore.load()
+            XCTAssertNotNil(persisted, "A batch with documents still pending/mid-processing must persist a resume record")
+            XCTAssertEqual(
+                Set(persisted?.documentPaths ?? []),
+                Set([midProcessingItem.url.path, queuedItem.url.path]),
+                "The completed document must be excluded; the mid-processing and still-queued documents must both be present"
+            )
+        }
+    }
+
+    /// End-to-end version of the invariant above, exercised through the actual resume path.
+    /// `resumePendingJob()` must bring a mid-kill document back as a *fresh*, unprocessed item --
+    /// never `.completed` -- deterministically and synchronously, before any async re-validation
+    /// even runs. Per `PendingBatchJobRecord`'s doc comment, resume is document-list-level: the
+    /// item starts over at `.checking`, not wherever it left off.
+    func testResumeAfterMidDocumentKillCreatesFreshPendingItemNeverCompleted() throws {
+        try withPreservedStandardPendingBatchJobRecord {
+            let midProcessingDocURL = URL(fileURLWithPath: "/tmp/b6-mid-kill-doc.docx")
+            let record = PendingBatchJobRecord(
+                documentPaths: [midProcessingDocURL.path],
+                settings: RedactionSettings()
+            )
+            PendingBatchJobStore.save(record)
+
+            let viewModel = createTestViewModel()
+            viewModel.pendingResumeRecord = record
+            viewModel.resumePendingJob()
+
+            XCTAssertEqual(viewModel.items.count, 1)
+            XCTAssertNotEqual(
+                viewModel.items.first?.status, .completed,
+                "A resumed mid-kill document must never be resurrected as already complete"
+            )
+            XCTAssertEqual(
+                viewModel.items.first?.status, .checking,
+                "Resume must start the document over fresh (issue #19 'Out of scope'), not resume wherever it left off"
+            )
+        }
+    }
+
+    /// Companion to the above, covering the specific risk this ticket names: a same-named file
+    /// left at the destination by a killed run (e.g. a truncated write, or the previous run's
+    /// output) must not make resume treat the document as already done. `resumePendingJob()` ->
+    /// `add(urls:)` only ever looks at the *input* document's own validity; it never inspects the
+    /// destination path at all, so a leftover destination file is inert to this decision. Uses a
+    /// real, valid sample DOCX (skipped if the gitignored fixture isn't present locally) so the
+    /// async re-validation path actually runs end-to-end rather than stopping at `.checking`.
+    func testResumeAfterMidDocumentKillReprocessesFromScratchRegardlessOfLeftoverDestinationFile() async throws {
+        let sourceDocx = sampleFileURL("Sample 123 Consent.docx")
+        guard FileManager.default.fileExists(atPath: sourceDocx.path) else {
+            throw XCTSkip("Missing sample file: \(sourceDocx.path)")
+        }
+
+        let existingRecord = UserDefaults.standard.data(forKey: PendingBatchJobStore.defaultsKey)
+        defer {
+            if let existingRecord {
+                UserDefaults.standard.set(existingRecord, forKey: PendingBatchJobStore.defaultsKey)
+            } else {
+                UserDefaults.standard.removeObject(forKey: PendingBatchJobStore.defaultsKey)
+            }
+        }
+
+        let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let midProcessingDocURL = tempDir.appendingPathComponent("mid-kill-doc.docx")
+        try FileManager.default.copyItem(at: sourceDocx, to: midProcessingDocURL)
+
+        // Simulate a leftover, half-written output artifact from the killed run sitting right
+        // next to the source document -- exactly what a `kill -9` mid-`os.replace()` could leave
+        // behind. Resume must never treat this file's mere existence as evidence the document
+        // finished.
+        let leftoverOutputURL = tempDir.appendingPathComponent("mid-kill-doc (Redacted).docx")
+        let leftoverContents = Data("not a real docx -- truncated by the kill".utf8)
+        try leftoverContents.write(to: leftoverOutputURL)
+
+        let record = PendingBatchJobRecord(
+            documentPaths: [midProcessingDocURL.path],
+            settings: RedactionSettings()
+        )
+        PendingBatchJobStore.save(record)
+
+        let viewModel = createTestViewModel()
+        viewModel.pendingResumeRecord = record
+        viewModel.resumePendingJob()
+
+        let deadline = Date().addingTimeInterval(10.0)
+        while viewModel.items.first?.status == .checking && Date() < deadline {
+            try await Task.sleep(nanoseconds: 50_000_000)
+        }
+
+        XCTAssertEqual(viewModel.items.count, 1)
+        XCTAssertEqual(
+            viewModel.items.first?.status, .validDocument,
+            "The resumed document must come back as freshly pending after re-validation, never as already complete"
+        )
+        XCTAssertNotEqual(viewModel.items.first?.status, .completed)
+
+        // The leftover artifact must be untouched -- resume must not have read, validated
+        // against, or otherwise short-circuited on it.
+        XCTAssertEqual(
+            try? Data(contentsOf: leftoverOutputURL), leftoverContents,
+            "Resume must not touch whatever already sits at the destination path"
+        )
+    }
+
     // MARK: - Failure Message Mapping Tests (issue #46 / B4)
     //
     // `FailureMessagePresenter.message(forCode:)` is the single place that turns a pipeline
