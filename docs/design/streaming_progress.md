@@ -1,6 +1,10 @@
 # Design Spike: Streaming LLM Progress from Python to Swift for a Fractional Progress Bar
 
-Status: Design spike (no code changes). Companion to issue #23.
+Status: Design spike; Option B (below) has since shipped under issue #54
+(`764dd231`, "stream Ollama tokens for intra-chunk progress and
+word-count-weighted batch ETA"). Companion to issue #23. See "Heartbeat
+Timeout Validation (Issue #49)" at the end of this doc for a downstream
+consequence of that implementation.
 
 ## Goal
 
@@ -363,5 +367,60 @@ preserve every one of them:
   request start, not a true rolling idle-timeout. Whether that's sufficient
   or needs `stream=True` combined with a lower per-socket-read timeout is a
   small follow-on spike, not part of this MVP.
+
+## Heartbeat Timeout Validation (Issue #49)
+
+**Origin**: hardening review 2026-07-05 (B7) flagged that
+`heartbeatTimeout = 120.0` in `DocumentRedactionViewModel.swift` (~line 230)
+transitions a processing document straight to `.failed` when no heartbeat
+arrives for 120s, and asked whether Python-side heartbeats are emitted
+*during* a single long Ollama HTTP call or only between pipeline steps — if
+only between steps, one legitimately slow chunk on a big model/slow Mac would
+starve the heartbeat and produce a false failure. The ticket explicitly asked
+to check issue #54 first and close with evidence if streaming progress
+already resolved it, rather than build anything new.
+
+**Validated against current code** (post-#54, `764dd231`):
+
+1. **Two independent signals now refresh the heartbeat during a single
+   chunk's Ollama call, not just at chunk boundaries.** `model_enhanced.py`'s
+   `send_keepalive()` (a daemon thread, pre-existing, ~line 1096) emits an
+   `emit_mass_event()` progress update every 3s for the entire duration any
+   `progress_callback` is registered — independent of chunk completion.
+   Layered on top of that, `on_chunk_token_progress()` (added by #54, ~line
+   1156) fires an additional `emit_mass_event()` update every time Ollama's
+   NDJSON stream advances by >= 40 chars or >= 0.25s, i.e. throughout token
+   generation *inside* a single chunk's HTTP call — this is the mechanism the
+   in-code comment at `model_enhanced.py:1143-1152` explicitly calls out as
+   closing "the #49 false-failure gap for a single long-running chunk."
+2. **Every such event reaches the Swift-side heartbeat, unconditionally.**
+   `DocumentRedactionViewModel.swift`'s progress-consuming task
+   (`currentItem.lastHeartbeat = Date()`, ~line 1302) refreshes the timestamp
+   on *every* update pulled off the PythonKit `AsyncStream`, regardless of
+   stage/chunk-boundary mapping — a comment there notes this update is
+   unconditional so it survives status transitions. So both the 3s keepalive
+   and the sub-second intra-chunk token-progress events keep `lastHeartbeat`
+   fresh well inside the 120s `heartbeatTimeout`, for as long as the
+   underlying Ollama call and worker thread are actually alive.
+3. **Existing tests already cover both acceptance criteria and pass.**
+   `MarcutAppTests.testHeartbeatWatchdogLeavesActivelyProgressingDocumentAlone`
+   asserts a document with a recent (but never chunk-boundary-driven)
+   heartbeat is left alone by the watchdog; `MarcutAppTests
+   .testHeartbeatWatchdogMarksStalledProcessingDocumentFailed` asserts a
+   genuinely silent document (no heartbeat signal at all — the case where the
+   interpreter itself is wedged, e.g. GIL held forever, and neither the
+   keepalive thread nor the token-progress callback can run) still fails
+   within the bounded `heartbeatTimeout`/`heartbeatPollInterval` window. Both
+   pass today, along with the rest of `swift test --package-path
+   src/swift/MarcutApp` (100 tests) and `PYTHONPATH=src/python python3 -m
+   pytest -q` (529 passed, 6 skipped) as of this validation.
+
+**Decision: no code change ships for #49.** The false-failure scenario the
+ticket worried about — a healthy, single long-running chunk starving the
+heartbeat — was already closed as a direct, verified consequence of #54's
+intra-chunk token-streaming implementation (layered on the pre-existing 3s
+keepalive thread, which independently would already have been frequent
+enough on its own). The genuinely-dead-worker path remains correctly bounded
+by the existing watchdog. Closing #49 with this evidence.
 - Streaming for the validation/classification Ollama calls — not worth it
   given their response sizes are small and latency is already low.
