@@ -13,13 +13,17 @@ these check invariants that must hold regardless of the specific input:
 Uses a fixed, derandomized hypothesis profile (see tests/conftest.py) so runs
 are reproducible/flake-free in CI, per this issue's acceptance criteria.
 
-Note on scope (see PR discussion): make_chunks() only guarantees progress
-when overlap < max_len (every real caller keeps overlap comfortably below
-max_len -- see chunker.py and pipeline.py's chunk_tokens/overlap plumbing).
-An overlap >= max_len configuration doesn't advance the sliding window and is
-a separate, pre-existing non-termination issue outside the scope of this
-DOCX-redaction test-coverage ticket; it is intentionally out of the fuzzed
-input domain below so this file never hangs.
+Note on scope: make_chunks() now clamps overlap to max_len - 1 whenever
+overlap >= max_len (see chunker.py and its regression tests in
+tests/test_chunker.py::TestOverlapGreaterThanOrEqualMaxLen), so it always
+terminates. This file still keeps overlap < max_len out of its fuzzed input
+domain regardless: an overlap right at the max_len boundary produces a
+1-char sliding-window step, i.e. thousands of near-duplicate chunks for a
+document of any real size -- correct but pathologically slow, and not a
+configuration any real caller uses (every real caller keeps overlap
+comfortably below max_len -- see chunker.py and pipeline.py's
+chunk_tokens/overlap plumbing). Excluding it here keeps this property suite
+fast rather than avoiding a hang.
 """
 
 from __future__ import annotations

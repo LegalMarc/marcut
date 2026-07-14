@@ -956,7 +956,7 @@ struct SettingsView: View {
                 Slider(value: Binding(
                     get: { Double(localSettings.overlap) },
                     set: { localSettings.overlap = Int($0) }
-                ), in: 50...500, step: 25)
+                ), in: 50...400, step: 25)
                 .accessibilityIdentifier("settings.ai.chunkOverlap")
                 Text("Higher = catches entities at chunk boundaries but increases processing time. Lower = faster but may miss split names.")
                     .font(.system(size: 12))

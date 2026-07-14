@@ -35,6 +35,11 @@ def make_chunks(text, max_len=2500, overlap=200):
     chunks = []
     i = 0
     n = len(text)
+    # An overlap >= max_len would make the next window start (j - overlap)
+    # land at or before the current position, so i would never advance and
+    # the loop would spin forever. Clamp so each step always makes progress.
+    if overlap >= max_len:
+        overlap = max(0, max_len - 1)
     while i < n:
         j = min(n, i + max_len)
         chunks.append({'start': i, 'end': j, 'text': text[i:j]})
