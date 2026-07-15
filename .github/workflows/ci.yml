@@ -87,5 +87,11 @@ jobs:
 
       - name: SwiftFormat (lint gate)
         run: |
-          brew install swiftformat
-          swiftformat --lint src/swift/MarcutApp/Sources src/swift/MarcutApp/Tests
+          # Pinned to an exact release rather than `brew install` -- the runner image's
+          # pre-cached brew version silently drifts from what contributors have locally,
+          # and different SwiftFormat versions disagree on some rules (E4 hardening, 2026-07).
+          curl -sL -o /tmp/swiftformat.zip "https://github.com/nicklockwood/SwiftFormat/releases/download/0.62.1/swiftformat.zip"
+          unzip -o -q /tmp/swiftformat.zip -d /tmp/swiftformat
+          chmod +x /tmp/swiftformat/swiftformat
+          /tmp/swiftformat/swiftformat --version
+          /tmp/swiftformat/swiftformat --lint src/swift/MarcutApp/Sources src/swift/MarcutApp/Tests

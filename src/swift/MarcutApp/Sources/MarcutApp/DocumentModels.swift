@@ -784,7 +784,7 @@ struct AlertInfo: Identifiable {
     let message: String
 }
 
-enum RedactionStatus: Sendable {
+enum RedactionStatus {
     case checking
     case validDocument
     case invalidDocument
@@ -846,7 +846,7 @@ enum RedactionStatus: Sendable {
     }
 }
 
-enum DocumentOperation: String, Sendable {
+enum DocumentOperation: String {
     case redaction
     case scrub
 }

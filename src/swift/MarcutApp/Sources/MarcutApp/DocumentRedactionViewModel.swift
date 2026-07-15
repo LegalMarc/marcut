@@ -245,7 +245,8 @@ final class DocumentRedactionViewModel: ObservableObject {
     /// embedded engine was already marked unavailable by an earlier stall" -- restarting the
     /// app is the only recovery in either case (see `PythonBridgeError`).
     static let processingStalledMessage = "Processing stalled - the embedded engine stopped responding. Restart Marcut to resume processing."
-    // Note: retryCounts was removed along with retry logic - heartbeat stalls now immediately fail
+
+    /// Note: retryCounts was removed along with retry logic - heartbeat stalls now immediately fail
     private var hasPrefetchedModels = false
 
     enum FirstRunEntryPoint: Equatable {
@@ -1886,13 +1887,9 @@ final class DocumentRedactionViewModel: ObservableObject {
 
         let alert = NSAlert()
         alert.messageText = "Send Document"
-        alert.informativeText = """
-        Choose the DOCX you want to send.
-
-        Final redacted copy accepts Marcut's redaction Track Changes in a new copy and scrubs metadata before sending.
-
-        Review copy sends the current review artifact with Track Changes and metadata exactly as they are in that file.
-        """
+        alert.informativeText = "Choose the DOCX you want to send.\n\n"
+            + "Final redacted copy accepts Marcut's redaction Track Changes in a new copy and scrubs metadata before sending.\n\n"
+            + "Review copy sends the current review artifact with Track Changes and metadata exactly as they are in that file."
         alert.alertStyle = .warning
         alert.addButton(withTitle: "Send Final Redacted Copy")
         alert.addButton(withTitle: "Send Review Copy")
