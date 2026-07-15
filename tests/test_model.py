@@ -84,9 +84,38 @@ These are all the entities."""
             {"text": "John", "type": "NAME"} // This is a name
         ]}'''
         result = parse_llm_response(response)
-        
+
         assert 'entities' in result
-    
+
+    def test_parse_json_with_url_entity_containing_double_slash(self):
+        """A `//`-containing string value (e.g. a URL entity) must survive
+        comment-stripping intact -- a naive `//.*$` regex would truncate the
+        string mid-value and corrupt the JSON (root cause of the nightly E2E
+        failure streak: the LLM extracting "https://legal.example" as an
+        entity)."""
+        response = json.dumps({
+            "entities": [
+                {"text": "alice@example.com", "type": "NAME"},
+                {"text": "https://legal.example", "type": "ORG"},
+            ]
+        })
+        result = parse_llm_response(response)
+
+        assert len(result['entities']) == 2
+        assert result['entities'][1]['text'] == 'https://legal.example'
+
+    def test_parse_json_with_comment_after_url_entity(self):
+        """A genuine trailing `//` comment after a URL-containing entity line
+        must still be stripped, without corrupting the URL itself."""
+        response = '''{"entities": [
+            {"text": "https://legal.example", "type": "ORG"}, // a URL
+            {"text": "Jane Doe", "type": "NAME"}
+        ]}'''
+        result = parse_llm_response(response)
+
+        assert result['entities'][0]['text'] == 'https://legal.example'
+        assert result['entities'][1]['text'] == 'Jane Doe'
+
     def test_parse_empty_entities(self):
         """Test parsing response with no entities."""
         response = '{"entities": []}'
