@@ -191,12 +191,19 @@ class TestCliArgMappings:
 
     def test_all_fields_have_cli_args(self):
         """Test that all MetadataCleaningSettings bool fields have CLI args."""
+        from dataclasses import fields
         settings = MetadataCleaningSettings()
         mapped_fields = set(CLI_ARG_MAP.values())
-        
+
         # All mapped fields should be in settings
         for field in mapped_fields:
             assert hasattr(settings, field), f"CLI mapped field {field} not in settings"
+
+        # All bool fields on the dataclass should in turn be mapped to a CLI arg,
+        # so a newly-added field can't silently ship without one.
+        setting_fields = {f.name for f in fields(settings) if f.type is bool}
+        unmapped = setting_fields - mapped_fields
+        assert not unmapped, f"Settings bool fields missing a CLI_ARG_MAP entry: {sorted(unmapped)}"
 
     def test_cli_arg_format(self):
         """Test that all CLI args follow --no-clean-* format."""
