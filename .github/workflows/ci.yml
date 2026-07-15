@@ -38,6 +38,23 @@ jobs:
           pip install ruff
           ruff check src/python tests
 
+      - name: Help docs in sync (assets/*.md is canonical; regenerate, don't hand-edit the Swift copies)
+        run: |
+          python3 scripts/render_help_html.py
+          # Only the .md fallback copies are tracked -- Resources/*.html is gitignored
+          # (pure regenerated build output). If the .md copies are fresh, the HTML
+          # rendering from them is deterministic and therefore fresh too.
+          tracked=(
+            "src/swift/MarcutApp/Sources/MarcutApp/Resources/help.md"
+            "src/swift/MarcutApp/Sources/MarcutApp/Resources/forensics-guide.md"
+          )
+          if ! git diff --quiet -- "${tracked[@]}"; then
+            echo "::error::assets/help.md or assets/forensics-guide.md is out of sync with the generated Swift Resources copies. Edit the assets/*.md source and run 'python3 scripts/render_help_html.py' to regenerate, then commit both the assets/ source and the Swift Resources .md copy."
+            git diff -- "${tracked[@]}"
+            exit 1
+          fi
+          echo "Help docs in sync."
+
   smoke:
     runs-on: macos-14
     steps:
