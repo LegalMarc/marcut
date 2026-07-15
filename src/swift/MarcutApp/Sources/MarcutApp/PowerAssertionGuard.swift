@@ -114,5 +114,7 @@ final class PowerAssertionGuard {
 
     /// Whether an OS-level assertion is currently held. `false` if the count is zero, or if the
     /// count is positive but the OS refused every `acquire()` attempt so far.
-    var isHoldingAssertion: Bool { assertionID != nil }
+    var isHoldingAssertion: Bool {
+        assertionID != nil
+    }
 }

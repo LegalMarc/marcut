@@ -8,18 +8,32 @@ struct MetadataCleaningSheet: View {
     @State private var collapsedStates: [String: [MetadataCleaningPreset: Bool]] = [:] // Per-preset collapse states
     @Environment(\.dismiss) private var dismiss
     @Environment(\.colorScheme) private var colorScheme
-    
-    private let groupNames = ["appProperties", "coreProperties", "customProperties", "documentStructure", "embeddedContent", "advancedHardening"]
-    
+
+    private let groupNames = [
+        "appProperties",
+        "coreProperties",
+        "customProperties",
+        "documentStructure",
+        "embeddedContent",
+        "advancedHardening",
+    ]
+
     init(settings: Binding<MetadataCleaningSettings>) {
         self._settings = settings
         let currentPreset = settings.wrappedValue.detectPreset()
         self._selectedPreset = State(initialValue: currentPreset)
         self._customSettings = State(initialValue: settings.wrappedValue)
-        
+
         // Initialize default collapsed states (all expanded)
         var defaultStates: [String: [MetadataCleaningPreset: Bool]] = [:]
-        for name in ["appProperties", "coreProperties", "customProperties", "documentStructure", "embeddedContent", "advancedHardening"] {
+        for name in [
+            "appProperties",
+            "coreProperties",
+            "customProperties",
+            "documentStructure",
+            "embeddedContent",
+            "advancedHardening",
+        ] {
             defaultStates[name] = [:]
             for preset in MetadataCleaningPreset.allCases {
                 defaultStates[name]?[preset] = false // false = expanded
@@ -27,7 +41,7 @@ struct MetadataCleaningSheet: View {
         }
         self._collapsedStates = State(initialValue: defaultStates)
     }
-    
+
     var body: some View {
         VStack(spacing: 0) {
             // Header
@@ -35,20 +49,20 @@ struct MetadataCleaningSheet: View {
                 Text("Metadata Cleaning Options")
                     .font(.title2)
                     .fontWeight(.semibold)
-                
+
                 Text("Select which metadata fields to remove during redaction")
                     .font(.body)
                     .foregroundColor(.secondary)
             }
             .padding(.top, 24)
             .padding(.bottom, 16)
-            
+
             // Preset Picker with label
             HStack {
                 Text("Preset:")
                     .font(.system(size: 13, weight: .medium))
                     .foregroundColor(.secondary)
-                
+
                 Picker("", selection: $selectedPreset) {
                     ForEach(MetadataCleaningPreset.allCases) { preset in
                         Text(preset.displayName).tag(preset)
@@ -60,12 +74,12 @@ struct MetadataCleaningSheet: View {
                 .onChange(of: selectedPreset) { _, newPreset in
                     applyPreset(newPreset)
                 }
-                
+
                 Spacer()
             }
             .padding(.horizontal, 24)
             .padding(.bottom, 16)
-            
+
             // Scrollable checkbox groups
             ScrollView {
                 VStack(alignment: .leading, spacing: 20) {
@@ -77,27 +91,79 @@ struct MetadataCleaningSheet: View {
                         collapsedStates: $collapsedStates,
                         currentPreset: selectedPreset,
                         items: [
-                            MetadataItem(label: "Company", description: "Organization name (often auto-filled from system)", binding: makeCustomBinding($settings.cleanCompany)),
-                            MetadataItem(label: "Manager", description: "Manager's name field", binding: makeCustomBinding($settings.cleanManager)),
-                            MetadataItem(label: "Total Editing Time", description: "Cumulative minutes spent editing", binding: makeCustomBinding($settings.cleanTotalEditingTime)),
-                            MetadataItem(label: "Application", description: "Application name (e.g., \"Microsoft Office Word\")", binding: makeCustomBinding($settings.cleanApplication)),
-                            MetadataItem(label: "App Version", description: "Specific Office version number", binding: makeCustomBinding($settings.cleanAppVersion)),
-                            MetadataItem(label: "Template", description: "Template name used (e.g., \"Normal.dotm\")", binding: makeCustomBinding($settings.cleanTemplate)),
-                            MetadataItem(label: "Hyperlink Base", description: "Base URL for resolving relative links", binding: makeCustomBinding($settings.cleanHyperlinkBase)),
-                            MetadataItem(label: "Document Statistics", description: "Character, word, line, paragraph, and page counts", binding: makeCustomBinding($settings.cleanStatistics)),
-                            MetadataItem(label: "Document Security", description: "Security settings value", binding: makeCustomBinding($settings.cleanDocSecurity)),
-                            MetadataItem(label: "Thumbnail Settings", description: "Scale/crop display settings", binding: makeCustomBinding($settings.cleanScaleCrop)),
-                            MetadataItem(label: "Shared Document Flag", description: "Whether document was shared", binding: makeCustomBinding($settings.cleanSharedDoc)),
-                            MetadataItem(label: "Links Up-to-Date Flag", description: "Status of external link updates", binding: makeCustomBinding($settings.cleanLinksUpToDate)),
-                            MetadataItem(label: "Hyperlinks Changed Flag", description: "Status of hyperlink modifications", binding: makeCustomBinding($settings.cleanHyperlinksChanged)),
+                            MetadataItem(
+                                label: "Company",
+                                description: "Organization name (often auto-filled from system)",
+                                binding: makeCustomBinding($settings.cleanCompany)
+                            ),
+                            MetadataItem(
+                                label: "Manager",
+                                description: "Manager's name field",
+                                binding: makeCustomBinding($settings.cleanManager)
+                            ),
+                            MetadataItem(
+                                label: "Total Editing Time",
+                                description: "Cumulative minutes spent editing",
+                                binding: makeCustomBinding($settings.cleanTotalEditingTime)
+                            ),
+                            MetadataItem(
+                                label: "Application",
+                                description: "Application name (e.g., \"Microsoft Office Word\")",
+                                binding: makeCustomBinding($settings.cleanApplication)
+                            ),
+                            MetadataItem(
+                                label: "App Version",
+                                description: "Specific Office version number",
+                                binding: makeCustomBinding($settings.cleanAppVersion)
+                            ),
+                            MetadataItem(
+                                label: "Template",
+                                description: "Template name used (e.g., \"Normal.dotm\")",
+                                binding: makeCustomBinding($settings.cleanTemplate)
+                            ),
+                            MetadataItem(
+                                label: "Hyperlink Base",
+                                description: "Base URL for resolving relative links",
+                                binding: makeCustomBinding($settings.cleanHyperlinkBase)
+                            ),
+                            MetadataItem(
+                                label: "Document Statistics",
+                                description: "Character, word, line, paragraph, and page counts",
+                                binding: makeCustomBinding($settings.cleanStatistics)
+                            ),
+                            MetadataItem(
+                                label: "Document Security",
+                                description: "Security settings value",
+                                binding: makeCustomBinding($settings.cleanDocSecurity)
+                            ),
+                            MetadataItem(
+                                label: "Thumbnail Settings",
+                                description: "Scale/crop display settings",
+                                binding: makeCustomBinding($settings.cleanScaleCrop)
+                            ),
+                            MetadataItem(
+                                label: "Shared Document Flag",
+                                description: "Whether document was shared",
+                                binding: makeCustomBinding($settings.cleanSharedDoc)
+                            ),
+                            MetadataItem(
+                                label: "Links Up-to-Date Flag",
+                                description: "Status of external link updates",
+                                binding: makeCustomBinding($settings.cleanLinksUpToDate)
+                            ),
+                            MetadataItem(
+                                label: "Hyperlinks Changed Flag",
+                                description: "Status of hyperlink modifications",
+                                binding: makeCustomBinding($settings.cleanHyperlinksChanged)
+                            ),
                         ],
                         onSelectAll: { switchToCustomAndApply { selectAllInGroup(appProperties: true) } },
                         onClearAll: { switchToCustomAndApply { clearAllInGroup(appProperties: true) } },
                         onInvert: { switchToCustomAndApply { invertGroup(appProperties: true) } }
                     )
-                    
+
                     Divider()
-                    
+
                     // Group 2: Core Properties
                     MetadataGroupView(
                         title: "Core Properties",
@@ -106,29 +172,89 @@ struct MetadataCleaningSheet: View {
                         collapsedStates: $collapsedStates,
                         currentPreset: selectedPreset,
                         items: [
-                            MetadataItem(label: "Author", description: "Document creator's name", binding: makeCustomBinding($settings.cleanAuthor)),
-                            MetadataItem(label: "Last Modified By", description: "Last person who edited", binding: makeCustomBinding($settings.cleanLastModifiedBy)),
-                            MetadataItem(label: "Title", description: "Document title", binding: makeCustomBinding($settings.cleanTitle)),
-                            MetadataItem(label: "Subject", description: "Document subject", binding: makeCustomBinding($settings.cleanSubject)),
-                            MetadataItem(label: "Keywords", description: "Search keywords/tags", binding: makeCustomBinding($settings.cleanKeywords)),
-                            MetadataItem(label: "Comments", description: "Document description field", binding: makeCustomBinding($settings.cleanComments)),
-                            MetadataItem(label: "Category", description: "Document category", binding: makeCustomBinding($settings.cleanCategory)),
-                            MetadataItem(label: "Content Status", description: "Status (Draft, Final, etc.)", binding: makeCustomBinding($settings.cleanContentStatus)),
-                            MetadataItem(label: "Created Date", description: "Creation timestamp", binding: makeCustomBinding($settings.cleanCreatedDate)),
-                            MetadataItem(label: "Modified Date", description: "Last modification timestamp", binding: makeCustomBinding($settings.cleanModifiedDate)),
-                            MetadataItem(label: "Last Printed", description: "Last print timestamp", binding: makeCustomBinding($settings.cleanLastPrinted)),
-                            MetadataItem(label: "Revision Number", description: "Document revision count", binding: makeCustomBinding($settings.cleanRevisionNumber)),
-                            MetadataItem(label: "Identifier", description: "Unique document identifier", binding: makeCustomBinding($settings.cleanIdentifier)),
-                            MetadataItem(label: "Language", description: "Document language code", binding: makeCustomBinding($settings.cleanLanguage)),
-                            MetadataItem(label: "Version", description: "Document version string", binding: makeCustomBinding($settings.cleanVersion)),
+                            MetadataItem(
+                                label: "Author",
+                                description: "Document creator's name",
+                                binding: makeCustomBinding($settings.cleanAuthor)
+                            ),
+                            MetadataItem(
+                                label: "Last Modified By",
+                                description: "Last person who edited",
+                                binding: makeCustomBinding($settings.cleanLastModifiedBy)
+                            ),
+                            MetadataItem(
+                                label: "Title",
+                                description: "Document title",
+                                binding: makeCustomBinding($settings.cleanTitle)
+                            ),
+                            MetadataItem(
+                                label: "Subject",
+                                description: "Document subject",
+                                binding: makeCustomBinding($settings.cleanSubject)
+                            ),
+                            MetadataItem(
+                                label: "Keywords",
+                                description: "Search keywords/tags",
+                                binding: makeCustomBinding($settings.cleanKeywords)
+                            ),
+                            MetadataItem(
+                                label: "Comments",
+                                description: "Document description field",
+                                binding: makeCustomBinding($settings.cleanComments)
+                            ),
+                            MetadataItem(
+                                label: "Category",
+                                description: "Document category",
+                                binding: makeCustomBinding($settings.cleanCategory)
+                            ),
+                            MetadataItem(
+                                label: "Content Status",
+                                description: "Status (Draft, Final, etc.)",
+                                binding: makeCustomBinding($settings.cleanContentStatus)
+                            ),
+                            MetadataItem(
+                                label: "Created Date",
+                                description: "Creation timestamp",
+                                binding: makeCustomBinding($settings.cleanCreatedDate)
+                            ),
+                            MetadataItem(
+                                label: "Modified Date",
+                                description: "Last modification timestamp",
+                                binding: makeCustomBinding($settings.cleanModifiedDate)
+                            ),
+                            MetadataItem(
+                                label: "Last Printed",
+                                description: "Last print timestamp",
+                                binding: makeCustomBinding($settings.cleanLastPrinted)
+                            ),
+                            MetadataItem(
+                                label: "Revision Number",
+                                description: "Document revision count",
+                                binding: makeCustomBinding($settings.cleanRevisionNumber)
+                            ),
+                            MetadataItem(
+                                label: "Identifier",
+                                description: "Unique document identifier",
+                                binding: makeCustomBinding($settings.cleanIdentifier)
+                            ),
+                            MetadataItem(
+                                label: "Language",
+                                description: "Document language code",
+                                binding: makeCustomBinding($settings.cleanLanguage)
+                            ),
+                            MetadataItem(
+                                label: "Version",
+                                description: "Document version string",
+                                binding: makeCustomBinding($settings.cleanVersion)
+                            ),
                         ],
                         onSelectAll: { switchToCustomAndApply { selectAllInGroup(coreProperties: true) } },
                         onClearAll: { switchToCustomAndApply { clearAllInGroup(coreProperties: true) } },
                         onInvert: { switchToCustomAndApply { invertGroup(coreProperties: true) } }
                     )
-                    
+
                     Divider()
-                    
+
                     // Group 3: Custom Properties
                     MetadataGroupView(
                         title: "Custom Properties",
@@ -137,15 +263,19 @@ struct MetadataCleaningSheet: View {
                         collapsedStates: $collapsedStates,
                         currentPreset: selectedPreset,
                         items: [
-                            MetadataItem(label: "Custom Properties & Custom XML", description: "User-defined properties and custom XML parts", binding: makeCustomBinding($settings.cleanCustomProperties)),
+                            MetadataItem(
+                                label: "Custom Properties & Custom XML",
+                                description: "User-defined properties and custom XML parts",
+                                binding: makeCustomBinding($settings.cleanCustomProperties)
+                            ),
                         ],
                         onSelectAll: { switchToCustomAndApply { settings.cleanCustomProperties = true } },
                         onClearAll: { switchToCustomAndApply { settings.cleanCustomProperties = false } },
                         onInvert: { switchToCustomAndApply { settings.cleanCustomProperties.toggle() } }
                     )
-                    
+
                     Divider()
-                    
+
                     // Group 4: Document Structure
                     MetadataGroupView(
                         title: "Document Structure",
@@ -154,29 +284,89 @@ struct MetadataCleaningSheet: View {
                         collapsedStates: $collapsedStates,
                         currentPreset: selectedPreset,
                         items: [
-                            MetadataItem(label: "Visible Review Comments", description: "Active comment annotations", binding: makeCustomBinding($settings.cleanReviewCommentsVisible)),
-                            MetadataItem(label: "Hidden/Resolved Review Comments", description: "Resolved or hidden comment annotations", binding: makeCustomBinding($settings.cleanReviewCommentsHidden)),
-                            MetadataItem(label: "Track Changes", description: "Insertions, deletions, formatting changes", binding: makeCustomBinding($settings.cleanTrackChanges)),
-                            MetadataItem(label: "RSIDs", description: "Revision Save IDs (fingerprinting data)", binding: makeCustomBinding($settings.cleanRSIDs)),
-                            MetadataItem(label: "Document GUID", description: "Unique document identifier in settings", binding: makeCustomBinding($settings.cleanDocumentGUID)),
-                            MetadataItem(label: "Spell/Grammar State", description: "Proofing state markers", binding: makeCustomBinding($settings.cleanSpellGrammarState)),
-                            MetadataItem(label: "Document Variables", description: "Programmatic variables", binding: makeCustomBinding($settings.cleanDocumentVariables)),
-                            MetadataItem(label: "Mail Merge Data", description: "Data source bindings and merge fields", binding: makeCustomBinding($settings.cleanMailMerge)),
-                            MetadataItem(label: "Data Bindings", description: "Content control XML bindings", binding: makeCustomBinding($settings.cleanDataBindings)),
-                            MetadataItem(label: "Document Versions", description: "Legacy version history parts", binding: makeCustomBinding($settings.cleanDocumentVersions)),
-                            MetadataItem(label: "Ink Annotations", description: "Pen/ink markup data", binding: makeCustomBinding($settings.cleanInkAnnotations)),
-                            MetadataItem(label: "Hidden Text", description: "Runs marked as hidden text", binding: makeCustomBinding($settings.cleanHiddenText)),
-                            MetadataItem(label: "Invisible Objects", description: "Shapes marked as hidden", binding: makeCustomBinding($settings.cleanInvisibleObjects)),
-                            MetadataItem(label: "Headers & Footers", description: "Remove all header/footer parts", binding: makeCustomBinding($settings.cleanHeadersFooters)),
-                            MetadataItem(label: "Watermarks", description: "Remove watermark shapes in headers", binding: makeCustomBinding($settings.cleanWatermarks)),
+                            MetadataItem(
+                                label: "Visible Review Comments",
+                                description: "Active comment annotations",
+                                binding: makeCustomBinding($settings.cleanReviewCommentsVisible)
+                            ),
+                            MetadataItem(
+                                label: "Hidden/Resolved Review Comments",
+                                description: "Resolved or hidden comment annotations",
+                                binding: makeCustomBinding($settings.cleanReviewCommentsHidden)
+                            ),
+                            MetadataItem(
+                                label: "Track Changes",
+                                description: "Insertions, deletions, formatting changes",
+                                binding: makeCustomBinding($settings.cleanTrackChanges)
+                            ),
+                            MetadataItem(
+                                label: "RSIDs",
+                                description: "Revision Save IDs (fingerprinting data)",
+                                binding: makeCustomBinding($settings.cleanRSIDs)
+                            ),
+                            MetadataItem(
+                                label: "Document GUID",
+                                description: "Unique document identifier in settings",
+                                binding: makeCustomBinding($settings.cleanDocumentGUID)
+                            ),
+                            MetadataItem(
+                                label: "Spell/Grammar State",
+                                description: "Proofing state markers",
+                                binding: makeCustomBinding($settings.cleanSpellGrammarState)
+                            ),
+                            MetadataItem(
+                                label: "Document Variables",
+                                description: "Programmatic variables",
+                                binding: makeCustomBinding($settings.cleanDocumentVariables)
+                            ),
+                            MetadataItem(
+                                label: "Mail Merge Data",
+                                description: "Data source bindings and merge fields",
+                                binding: makeCustomBinding($settings.cleanMailMerge)
+                            ),
+                            MetadataItem(
+                                label: "Data Bindings",
+                                description: "Content control XML bindings",
+                                binding: makeCustomBinding($settings.cleanDataBindings)
+                            ),
+                            MetadataItem(
+                                label: "Document Versions",
+                                description: "Legacy version history parts",
+                                binding: makeCustomBinding($settings.cleanDocumentVersions)
+                            ),
+                            MetadataItem(
+                                label: "Ink Annotations",
+                                description: "Pen/ink markup data",
+                                binding: makeCustomBinding($settings.cleanInkAnnotations)
+                            ),
+                            MetadataItem(
+                                label: "Hidden Text",
+                                description: "Runs marked as hidden text",
+                                binding: makeCustomBinding($settings.cleanHiddenText)
+                            ),
+                            MetadataItem(
+                                label: "Invisible Objects",
+                                description: "Shapes marked as hidden",
+                                binding: makeCustomBinding($settings.cleanInvisibleObjects)
+                            ),
+                            MetadataItem(
+                                label: "Headers & Footers",
+                                description: "Remove all header/footer parts",
+                                binding: makeCustomBinding($settings.cleanHeadersFooters)
+                            ),
+                            MetadataItem(
+                                label: "Watermarks",
+                                description: "Remove watermark shapes in headers",
+                                binding: makeCustomBinding($settings.cleanWatermarks)
+                            ),
                         ],
                         onSelectAll: { switchToCustomAndApply { selectAllInGroup(documentStructure: true) } },
                         onClearAll: { switchToCustomAndApply { clearAllInGroup(documentStructure: true) } },
                         onInvert: { switchToCustomAndApply { invertGroup(documentStructure: true) } }
                     )
-                    
+
                     Divider()
-                    
+
                     // Group 5: Embedded Content
                     MetadataGroupView(
                         title: "Embedded Content",
@@ -185,24 +375,64 @@ struct MetadataCleaningSheet: View {
                         collapsedStates: $collapsedStates,
                         currentPreset: selectedPreset,
                         items: [
-                            MetadataItem(label: "Thumbnail Image", description: "Document preview image", binding: makeCustomBinding($settings.cleanThumbnail)),
-                            MetadataItem(label: "Hyperlink URLs", description: "External links (converted to plain text)", binding: makeCustomBinding($settings.cleanHyperlinkURLs)),
-                            MetadataItem(label: "Alt Text on Images", description: "Descriptive text on embedded images", binding: makeCustomBinding($settings.cleanAltText)),
-                            MetadataItem(label: "OLE Objects", description: "Embedded Excel, PDFs, etc.", binding: makeCustomBinding($settings.cleanOLEObjects)),
-                            MetadataItem(label: "VBA Macros", description: "Embedded code (security risk)", binding: makeCustomBinding($settings.cleanVBAMacros)),
-                            MetadataItem(label: "Digital Signatures", description: "Document signing data", binding: makeCustomBinding($settings.cleanDigitalSignatures)),
-                            MetadataItem(label: "Printer Settings", description: "Print configuration data", binding: makeCustomBinding($settings.cleanPrinterSettings)),
-                            MetadataItem(label: "Embedded Fonts", description: "Embedded font information", binding: makeCustomBinding($settings.cleanEmbeddedFonts)),
-                            MetadataItem(label: "Glossary/AutoText", description: "Auto-complete entries", binding: makeCustomBinding($settings.cleanGlossary)),
-                            MetadataItem(label: "Fast Save Data", description: "Incremental save fragments", binding: makeCustomBinding($settings.cleanFastSaveData)),
+                            MetadataItem(
+                                label: "Thumbnail Image",
+                                description: "Document preview image",
+                                binding: makeCustomBinding($settings.cleanThumbnail)
+                            ),
+                            MetadataItem(
+                                label: "Hyperlink URLs",
+                                description: "External links (converted to plain text)",
+                                binding: makeCustomBinding($settings.cleanHyperlinkURLs)
+                            ),
+                            MetadataItem(
+                                label: "Alt Text on Images",
+                                description: "Descriptive text on embedded images",
+                                binding: makeCustomBinding($settings.cleanAltText)
+                            ),
+                            MetadataItem(
+                                label: "OLE Objects",
+                                description: "Embedded Excel, PDFs, etc.",
+                                binding: makeCustomBinding($settings.cleanOLEObjects)
+                            ),
+                            MetadataItem(
+                                label: "VBA Macros",
+                                description: "Embedded code (security risk)",
+                                binding: makeCustomBinding($settings.cleanVBAMacros)
+                            ),
+                            MetadataItem(
+                                label: "Digital Signatures",
+                                description: "Document signing data",
+                                binding: makeCustomBinding($settings.cleanDigitalSignatures)
+                            ),
+                            MetadataItem(
+                                label: "Printer Settings",
+                                description: "Print configuration data",
+                                binding: makeCustomBinding($settings.cleanPrinterSettings)
+                            ),
+                            MetadataItem(
+                                label: "Embedded Fonts",
+                                description: "Embedded font information",
+                                binding: makeCustomBinding($settings.cleanEmbeddedFonts)
+                            ),
+                            MetadataItem(
+                                label: "Glossary/AutoText",
+                                description: "Auto-complete entries",
+                                binding: makeCustomBinding($settings.cleanGlossary)
+                            ),
+                            MetadataItem(
+                                label: "Fast Save Data",
+                                description: "Incremental save fragments",
+                                binding: makeCustomBinding($settings.cleanFastSaveData)
+                            ),
                         ],
                         onSelectAll: { switchToCustomAndApply { selectAllInGroup(embeddedContent: true) } },
                         onClearAll: { switchToCustomAndApply { clearAllInGroup(embeddedContent: true) } },
                         onInvert: { switchToCustomAndApply { invertGroup(embeddedContent: true) } }
                     )
-                    
+
                     Divider()
-                    
+
                     // Group 6: Advanced Hardening
                     MetadataGroupView(
                         title: "Advanced Hardening",
@@ -211,17 +441,61 @@ struct MetadataCleaningSheet: View {
                         collapsedStates: $collapsedStates,
                         currentPreset: selectedPreset,
                         items: [
-                            MetadataItem(label: "External Link Paths", description: "File paths in external links", binding: makeCustomBinding($settings.cleanExternalLinks)),
-                            MetadataItem(label: "Network (UNC) Paths", description: "\\\\server\\share style paths", binding: makeCustomBinding($settings.cleanUNCPaths)),
-                            MetadataItem(label: "User Profile Paths", description: "Home directory paths (~/name or %USERPROFILE%)", binding: makeCustomBinding($settings.cleanUserPaths)),
-                            MetadataItem(label: "Internal URLs", description: "Internal site URLs (intranet, etc.)", binding: makeCustomBinding($settings.cleanInternalURLs)),
-                            MetadataItem(label: "OLE Source Paths", description: "Source paths embedded in OLE objects", binding: makeCustomBinding($settings.cleanOLESources)),
-                            MetadataItem(label: "Image EXIF Data", description: "GPS, camera info, author in JPEG/PNG", binding: makeCustomBinding($settings.cleanImageEXIF)),
-                            MetadataItem(label: "Custom Style Names", description: "Rename identifying style names", binding: makeCustomBinding($settings.cleanStyleNames)),
-                            MetadataItem(label: "Chart Labels", description: "Clean identifying chart text", binding: makeCustomBinding($settings.cleanChartLabels)),
-                            MetadataItem(label: "Form Field Defaults", description: "Clear pre-filled form values", binding: makeCustomBinding($settings.cleanFormDefaults)),
-                            MetadataItem(label: "Language Settings", description: "Locale and language fingerprints", binding: makeCustomBinding($settings.cleanLanguageSettings)),
-                            MetadataItem(label: "ActiveX Controls", description: "Remove embedded ActiveX", binding: makeCustomBinding($settings.cleanActiveX)),
+                            MetadataItem(
+                                label: "External Link Paths",
+                                description: "File paths in external links",
+                                binding: makeCustomBinding($settings.cleanExternalLinks)
+                            ),
+                            MetadataItem(
+                                label: "Network (UNC) Paths",
+                                description: "\\\\server\\share style paths",
+                                binding: makeCustomBinding($settings.cleanUNCPaths)
+                            ),
+                            MetadataItem(
+                                label: "User Profile Paths",
+                                description: "Home directory paths (~/name or %USERPROFILE%)",
+                                binding: makeCustomBinding($settings.cleanUserPaths)
+                            ),
+                            MetadataItem(
+                                label: "Internal URLs",
+                                description: "Internal site URLs (intranet, etc.)",
+                                binding: makeCustomBinding($settings.cleanInternalURLs)
+                            ),
+                            MetadataItem(
+                                label: "OLE Source Paths",
+                                description: "Source paths embedded in OLE objects",
+                                binding: makeCustomBinding($settings.cleanOLESources)
+                            ),
+                            MetadataItem(
+                                label: "Image EXIF Data",
+                                description: "GPS, camera info, author in JPEG/PNG",
+                                binding: makeCustomBinding($settings.cleanImageEXIF)
+                            ),
+                            MetadataItem(
+                                label: "Custom Style Names",
+                                description: "Rename identifying style names",
+                                binding: makeCustomBinding($settings.cleanStyleNames)
+                            ),
+                            MetadataItem(
+                                label: "Chart Labels",
+                                description: "Clean identifying chart text",
+                                binding: makeCustomBinding($settings.cleanChartLabels)
+                            ),
+                            MetadataItem(
+                                label: "Form Field Defaults",
+                                description: "Clear pre-filled form values",
+                                binding: makeCustomBinding($settings.cleanFormDefaults)
+                            ),
+                            MetadataItem(
+                                label: "Language Settings",
+                                description: "Locale and language fingerprints",
+                                binding: makeCustomBinding($settings.cleanLanguageSettings)
+                            ),
+                            MetadataItem(
+                                label: "ActiveX Controls",
+                                description: "Remove embedded ActiveX",
+                                binding: makeCustomBinding($settings.cleanActiveX)
+                            ),
                             MetadataItem(
                                 label: "Nuclear Option: Custom XML Parts",
                                 description: "Remove all /customXml package parts",
@@ -267,9 +541,9 @@ struct MetadataCleaningSheet: View {
                 .padding(.horizontal, 24)
                 .padding(.bottom, 24)
             }
-            
+
             Divider()
-            
+
             // Footer buttons
             HStack(spacing: 12) {
                 Button("Cancel") {
@@ -278,9 +552,9 @@ struct MetadataCleaningSheet: View {
                 .buttonStyle(.bordered)
                 .controlSize(.large)
                 .accessibilityIdentifier("metadata.cancel")
-                
+
                 Spacer()
-                
+
                 Button("Save Preferences") {
                     settings.save()
                     dismiss()
@@ -303,7 +577,7 @@ struct MetadataCleaningSheet: View {
             selectedPreset = newSettings.detectPreset()
         }
     }
-    
+
     private func applyPreset(_ preset: MetadataCleaningPreset) {
         switch preset {
         case .maximum:
@@ -317,7 +591,7 @@ struct MetadataCleaningSheet: View {
             settings = customSettings
         }
     }
-    
+
     /// Apply action and switch to Custom preset
     private func switchToCustomAndApply(_ action: () -> Void) {
         if selectedPreset != .custom {
@@ -326,7 +600,7 @@ struct MetadataCleaningSheet: View {
         }
         action()
     }
-    
+
     /// Creates a binding that switches to Custom when modified
     private func makeCustomBinding(_ binding: Binding<Bool>) -> Binding<Bool> {
         Binding<Bool>(
@@ -340,8 +614,14 @@ struct MetadataCleaningSheet: View {
             }
         )
     }
-    
-    private func selectAllInGroup(appProperties: Bool = false, coreProperties: Bool = false, documentStructure: Bool = false, embeddedContent: Bool = false, advancedHardening: Bool = false) {
+
+    private func selectAllInGroup(
+        appProperties: Bool = false,
+        coreProperties: Bool = false,
+        documentStructure: Bool = false,
+        embeddedContent: Bool = false,
+        advancedHardening: Bool = false
+    ) {
         if appProperties {
             settings.cleanCompany = true
             settings.cleanManager = true
@@ -414,8 +694,14 @@ struct MetadataCleaningSheet: View {
             settings.cleanAlternateContent = true
         }
     }
-    
-    private func clearAllInGroup(appProperties: Bool = false, coreProperties: Bool = false, documentStructure: Bool = false, embeddedContent: Bool = false, advancedHardening: Bool = false) {
+
+    private func clearAllInGroup(
+        appProperties: Bool = false,
+        coreProperties: Bool = false,
+        documentStructure: Bool = false,
+        embeddedContent: Bool = false,
+        advancedHardening: Bool = false
+    ) {
         if appProperties {
             settings.cleanCompany = false
             settings.cleanManager = false
@@ -488,8 +774,14 @@ struct MetadataCleaningSheet: View {
             settings.cleanAlternateContent = false
         }
     }
-    
-    private func invertGroup(appProperties: Bool = false, coreProperties: Bool = false, documentStructure: Bool = false, embeddedContent: Bool = false, advancedHardening: Bool = false) {
+
+    private func invertGroup(
+        appProperties: Bool = false,
+        coreProperties: Bool = false,
+        documentStructure: Bool = false,
+        embeddedContent: Bool = false,
+        advancedHardening: Bool = false
+    ) {
         if appProperties {
             settings.cleanCompany.toggle()
             settings.cleanManager.toggle()
@@ -569,7 +861,7 @@ struct MetadataCleaningSheet: View {
 struct MetadataItem {
     let label: String
     let description: String
-    var warning: String? = nil
+    var warning: String?
     var binding: Binding<Bool>
 }
 
@@ -583,18 +875,18 @@ struct MetadataGroupView: View {
     let onSelectAll: () -> Void
     let onClearAll: () -> Void
     let onInvert: () -> Void
-    
+
     private var isExpanded: Bool {
         !(collapsedStates[groupKey]?[currentPreset] ?? false)
     }
-    
+
     private func setExpanded(_ expanded: Bool) {
         if collapsedStates[groupKey] == nil {
             collapsedStates[groupKey] = [:]
         }
         collapsedStates[groupKey]?[currentPreset] = !expanded
     }
-    
+
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             // Header with expand/collapse
@@ -609,10 +901,10 @@ struct MetadataGroupView: View {
                             .font(.system(size: 12, weight: .semibold))
                             .foregroundColor(.secondary)
                             .frame(width: 16)
-                        
+
                         Text(title)
                             .font(.system(size: 14, weight: .semibold))
-                        
+
                         Text("(\(subtitle))")
                             .font(.system(size: 12))
                             .foregroundColor(.secondary)
@@ -620,25 +912,25 @@ struct MetadataGroupView: View {
                 }
                 .buttonStyle(.plain)
                 .accessibilityIdentifier("metadata.\(groupKey).toggleGroup")
-                
+
                 Spacer()
-                
+
                 // Only show All/None/Invert buttons in Custom mode
-                if isExpanded && currentPreset == .custom {
+                if isExpanded, currentPreset == .custom {
                     Button("All") {
                         onSelectAll()
                     }
                     .buttonStyle(.bordered)
                     .controlSize(.mini)
                     .accessibilityIdentifier("metadata.\(groupKey).selectAll")
-                    
+
                     Button("None") {
                         onClearAll()
                     }
                     .buttonStyle(.bordered)
                     .controlSize(.mini)
                     .accessibilityIdentifier("metadata.\(groupKey).selectNone")
-                    
+
                     Button("Invert") {
                         onInvert()
                     }
@@ -647,7 +939,7 @@ struct MetadataGroupView: View {
                     .accessibilityIdentifier("metadata.\(groupKey).invert")
                 }
             }
-            
+
             if isExpanded {
                 VStack(alignment: .leading, spacing: 6) {
                     ForEach(items.indices, id: \.self) { index in

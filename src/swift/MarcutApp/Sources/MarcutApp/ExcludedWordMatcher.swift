@@ -126,7 +126,8 @@ enum ExcludedWordMatcher {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         let range = NSRange(trimmed.startIndex..., in: trimmed)
         guard let match = determinerPrefixRegex.firstMatch(in: trimmed, options: [], range: range),
-              let matchRange = Range(match.range, in: trimmed) else {
+              let matchRange = Range(match.range, in: trimmed)
+        else {
             return trimmed
         }
         return String(trimmed[matchRange.upperBound...])
@@ -154,9 +155,9 @@ enum ExcludedWordMatcher {
             return normalized
                 .replacingOccurrences(of: "\\(s\\)\\s*$", with: "", options: .regularExpression)
                 .trimmingCharacters(in: .whitespaces)
-        } else if normalized.hasSuffix("ies") && normalized.count > 3 {
+        } else if normalized.hasSuffix("ies"), normalized.count > 3 {
             return String(normalized.dropLast(3)) + "y"
-        } else if normalized.hasSuffix("s") && normalized.count > 1 {
+        } else if normalized.hasSuffix("s"), normalized.count > 1 {
             return String(normalized.dropLast()).trimmingTrailingWhitespace()
         }
         return nil

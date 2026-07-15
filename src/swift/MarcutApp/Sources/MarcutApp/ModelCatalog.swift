@@ -21,15 +21,15 @@ struct ModelCatalogEntry: Codable, Equatable, Identifiable {
     func resolvedAccentColor(for colorScheme: ColorScheme) -> Color {
         switch accentColor {
         case "accent":
-            return CustomColors.accentColor(for: colorScheme)
+            CustomColors.accentColor(for: colorScheme)
         case "orange":
-            return Color.orange
+            Color.orange
         case "green":
-            return Color.green
+            Color.green
         case "purple":
-            return Color.purple
+            Color.purple
         default:
-            return CustomColors.accentColor(for: colorScheme)
+            CustomColors.accentColor(for: colorScheme)
         }
     }
 }
@@ -58,7 +58,7 @@ final class ModelCatalog {
 
     /// All supported model identifiers, in catalog order.
     var modelIds: Set<String> {
-        Set(models.map { $0.id })
+        Set(models.map(\.id))
     }
 
     private init() {

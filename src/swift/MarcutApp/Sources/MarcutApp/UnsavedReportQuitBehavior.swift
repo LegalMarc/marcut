@@ -5,16 +5,18 @@ enum UnsavedReportQuitBehavior: Int, CaseIterable, Identifiable {
     case alwaysQuit = 1
     case alwaysCancel = 2
 
-    var id: Int { rawValue }
+    var id: Int {
+        rawValue
+    }
 
     var label: String {
         switch self {
         case .warn:
-            return "Warn"
+            "Warn"
         case .alwaysQuit:
-            return "Always Quit"
+            "Always Quit"
         case .alwaysCancel:
-            return "Always Cancel"
+            "Always Cancel"
         }
     }
 }

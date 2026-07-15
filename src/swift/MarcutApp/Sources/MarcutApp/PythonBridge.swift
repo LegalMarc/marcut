@@ -1,8 +1,8 @@
-import Foundation
 import Combine
 import Darwin
+import Foundation
 
-// Helper functions outside of actor context
+/// Helper functions outside of actor context
 private let pythonBridgeLogQueue = DispatchQueue(label: "com.marclaw.marcutapp.pythonbridge.log", qos: .utility)
 
 private func logToFile(_ path: String, _ message: String) {
@@ -35,14 +35,14 @@ private func logToFile(_ path: String, _ message: String) {
 private func removeANSIEscapeCodes(_ input: String) -> String {
     // Remove ANSI escape sequences using regex
     let patterns = [
-        "\\x1B\\[[0-9;]*[mGKH]",  // Common color and cursor codes
-        "\\x1B\\[\\?[0-9]+[hl]",   // Mode settings
-        "\\x1B\\[[0-9]*[ABCD]",    // Cursor movement
-        "\\x1B\\[[0-9;]*[Jm]",     // Clear and color
-        "\\[\\?2026[hl]",          // Bracketed paste mode
-        "\\[\\?25[hl]",            // Cursor visibility
-        "\\[[0-9]+G",              // Cursor column
-        "\\[K"                     // Clear line
+        "\\x1B\\[[0-9;]*[mGKH]", // Common color and cursor codes
+        "\\x1B\\[\\?[0-9]+[hl]", // Mode settings
+        "\\x1B\\[[0-9]*[ABCD]", // Cursor movement
+        "\\x1B\\[[0-9;]*[Jm]", // Clear and color
+        "\\[\\?2026[hl]", // Bracketed paste mode
+        "\\[\\?25[hl]", // Cursor visibility
+        "\\[[0-9]+G", // Cursor column
+        "\\[K", // Clear line
     ]
 
     var result = input
@@ -85,8 +85,7 @@ private func parseOllamaPullProgressLine(_ line: String) -> Double? {
     if let match = cleaned.range(of: #"[0-9]+(\.[0-9]+)?%"#, options: .regularExpression) {
         let raw = cleaned[match].replacingOccurrences(of: "%", with: "")
         if let percent = Double(raw) {
-            let scaled = min(95.0, 5.0 + percent * 0.9)
-            return scaled
+            return min(95.0, 5.0 + percent * 0.9)
         }
     }
 
@@ -110,7 +109,7 @@ private enum ModelPromotion {
     private static let fileManager = FileManager.default
 
     static func safeFileName(for modelName: String) -> String {
-        return modelName
+        modelName
             .replacingOccurrences(of: ":", with: "-")
             .replacingOccurrences(of: "/", with: "-")
     }
@@ -129,7 +128,8 @@ private enum ModelPromotion {
             return true
         }
         guard let attributes = try? fileManager.attributesOfItem(atPath: url.path),
-              let size = (attributes[.size] as? NSNumber)?.int64Value else {
+              let size = (attributes[.size] as? NSNumber)?.int64Value
+        else {
             return false
         }
         return size == expectedSize
@@ -154,52 +154,81 @@ private enum ModelPromotion {
             return models
         }
 
-        if let registries = try? fileManager.contentsOfDirectory(at: manifestsDir, includingPropertiesForKeys: nil, options: [.skipsHiddenFiles]) {
+        if let registries = try? fileManager.contentsOfDirectory(
+            at: manifestsDir,
+            includingPropertiesForKeys: nil,
+            options: [.skipsHiddenFiles]
+        ) {
             for registry in registries {
-                bridgeLog("MODEL_DISCOVERY: Searching registry \(registry.lastPathComponent)", component: "MODEL_PROMOTION")
-                guard let libraries = try? fileManager.contentsOfDirectory(at: registry, includingPropertiesForKeys: nil, options: [.skipsHiddenFiles]) else { continue }
+                bridgeLog(
+                    "MODEL_DISCOVERY: Searching registry \(registry.lastPathComponent)",
+                    component: "MODEL_PROMOTION"
+                )
+                guard let libraries = try? fileManager.contentsOfDirectory(
+                    at: registry,
+                    includingPropertiesForKeys: nil,
+                    options: [.skipsHiddenFiles]
+                ) else { continue }
                 for library in libraries {
                     bridgeLog("MODEL_DISCOVERY:  -> Library \(library.lastPathComponent)", component: "MODEL_PROMOTION")
-                    guard let modelDirs = try? fileManager.contentsOfDirectory(at: library, includingPropertiesForKeys: nil, options: [.skipsHiddenFiles]) else { continue }
+                    guard let modelDirs = try? fileManager.contentsOfDirectory(
+                        at: library,
+                        includingPropertiesForKeys: nil,
+                        options: [.skipsHiddenFiles]
+                    ) else { continue }
                     for modelDir in modelDirs {
-                        bridgeLog("MODEL_DISCOVERY:     -> ModelDir \(modelDir.lastPathComponent)", component: "MODEL_PROMOTION")
+                        bridgeLog(
+                            "MODEL_DISCOVERY:     -> ModelDir \(modelDir.lastPathComponent)",
+                            component: "MODEL_PROMOTION"
+                        )
                         if modelDir.lastPathComponent.contains("sha256") {
                             continue
                         }
-                        
+
                         // Check for manifest.json (legacy) OR tag files (modern)
                         // We iterate all files in the model directory
-                        if let files = try? fileManager.contentsOfDirectory(at: modelDir, includingPropertiesForKeys: nil, options: [.skipsHiddenFiles]) {
+                        if let files = try? fileManager.contentsOfDirectory(
+                            at: modelDir,
+                            includingPropertiesForKeys: nil,
+                            options: [.skipsHiddenFiles]
+                        ) {
                             for file in files {
                                 // Skip system files
-                                if file.lastPathComponent.hasPrefix(".") { continue }
-                                
+                                if file.lastPathComponent.hasPrefix(".") {
+                                    continue
+                                }
+
                                 // If it's a JSON file or just a tag name (no extension)
                                 // We assume it's a valid model tag if it parses as a manifest
                                 let libraryName = library.lastPathComponent
                                 let modelName = modelDir.lastPathComponent
-                                let tagName = file.lastPathComponent == "manifest.json" ? "latest" : file.lastPathComponent
-                                
+                                let tagName = file.lastPathComponent == "manifest.json" ? "latest" : file
+                                    .lastPathComponent
+
                                 // Construct the full model ID: library/model:tag
-                                // But Marcut uses library:model format mostly? 
-                                // Actually, discoverModels returns a Set<String>. 
-                                // The existing code returned "library:model". 
+                                // But Marcut uses library:model format mostly?
+                                // Actually, discoverModels returns a Set<String>.
+                                // The existing code returned "library:model".
                                 // Let's stick to "library:model" if tag is latest, or "library:model:tag" if not?
-                                // The user selects "llama3.2:3b". 
-                                // If we find "library/llama3.2/3b", we should probably return "llama3.2:3b" (omitting library if it's 'library'?)
-                                
+                                // The user selects "llama3.2:3b".
+                                // If we find "library/llama3.2/3b", we should probably return "llama3.2:3b" (omitting
+                                // library if it's 'library'?)
+
                                 // Let's try to match what the user expects: "llama3.2:3b"
                                 var identifier = "\(modelName)"
-                                if tagName != "latest" && tagName != "manifest.json" {
+                                if tagName != "latest", tagName != "manifest.json" {
                                     identifier += ":\(tagName)"
                                 }
-                                
+
                                 // If library is NOT 'library', prepend it?
                                 if libraryName != "library" {
                                     identifier = "\(libraryName)/\(identifier)"
                                 }
-                                
-                                bridgeLog("MODEL_DISCOVERY:        Found model candidate: \(identifier) at \(file.path)", component: "MODEL_PROMOTION")
+
+                                bridgeLog(
+                                    "MODEL_DISCOVERY:        Found model candidate: \(identifier) at \(file.path)",
+                                    component: "MODEL_PROMOTION"
+                                )
                                 models.insert(identifier)
                             }
                         }
@@ -236,7 +265,10 @@ private enum ModelPromotion {
         }
 
         do {
-            try fileManager.createDirectory(at: canonicalURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try fileManager.createDirectory(
+                at: canonicalURL.deletingLastPathComponent(),
+                withIntermediateDirectories: true
+            )
 
             if fileManager.fileExists(atPath: canonicalURL.path) {
                 try fileManager.removeItem(at: canonicalURL)
@@ -259,8 +291,11 @@ private enum ModelPromotion {
             if let expectedSize = manifest.size,
                let attributes = try? fileManager.attributesOfItem(atPath: canonicalURL.path),
                let actualSize = (attributes[.size] as? NSNumber)?.int64Value,
-               actualSize != expectedSize {
-                log("Canonical file size mismatch for \(modelName). Expected \(expectedSize), got \(actualSize). Removing corrupted file.")
+               actualSize != expectedSize
+            {
+                log(
+                    "Canonical file size mismatch for \(modelName). Expected \(expectedSize), got \(actualSize). Removing corrupted file."
+                )
                 try? fileManager.removeItem(at: canonicalURL)
                 return false
             }
@@ -277,18 +312,18 @@ private enum ModelPromotion {
         // Parse model base name and tag
         // Input: "llama3.2:3b" -> library="library", model="llama3.2", tag="3b"
         // Input: "library/llama3.2:3b" -> library="library", model="llama3.2", tag="3b"
-        
+
         var libraryName = "library"
         var modelBaseName = modelName
         var modelTag = "latest"
-        
+
         // Check for library prefix (e.g. "user/model")
         if modelName.contains("/") {
             let parts = modelName.split(separator: "/", maxSplits: 1)
             libraryName = String(parts[0])
             modelBaseName = String(parts[1])
         }
-        
+
         // Check for tag suffix (e.g. "model:tag")
         if modelBaseName.contains(":") {
             let parts = modelBaseName.split(separator: ":", maxSplits: 1)
@@ -305,7 +340,11 @@ private enum ModelPromotion {
         log("MANIFEST_INFO: Searching registries in \(manifestsDir.path)...")
         log("MANIFEST_INFO: Model parsed as library='\(libraryName)', baseName='\(modelBaseName)', tag='\(modelTag)'")
 
-        if let registries = try? fileManager.contentsOfDirectory(at: manifestsDir, includingPropertiesForKeys: nil, options: [.skipsHiddenFiles]) {
+        if let registries = try? fileManager.contentsOfDirectory(
+            at: manifestsDir,
+            includingPropertiesForKeys: nil,
+            options: [.skipsHiddenFiles]
+        ) {
             for registry in registries {
                 let modelDir = registry
                     .appendingPathComponent(libraryName, isDirectory: true)
@@ -332,7 +371,11 @@ private enum ModelPromotion {
                 }
 
                 // Final fallback: look for any JSON file in the model directory
-                if let contents = try? fileManager.contentsOfDirectory(at: modelDir, includingPropertiesForKeys: nil, options: [.skipsHiddenFiles]) {
+                if let contents = try? fileManager.contentsOfDirectory(
+                    at: modelDir,
+                    includingPropertiesForKeys: nil,
+                    options: [.skipsHiddenFiles]
+                ) {
                     for file in contents {
                         if file.pathExtension == "json" || file.lastPathComponent == modelTag {
                             log("MANIFEST_INFO:  -> Attempting fallback file: \(file.path)")
@@ -348,7 +391,11 @@ private enum ModelPromotion {
 
         log("MANIFEST_INFO: Direct path failed. Starting fallback enumeration...")
         // Final fallback: search entire manifests tree for any manifest
-        let enumerator = fileManager.enumerator(at: manifestsDir, includingPropertiesForKeys: nil, options: [.skipsHiddenFiles])
+        let enumerator = fileManager.enumerator(
+            at: manifestsDir,
+            includingPropertiesForKeys: nil,
+            options: [.skipsHiddenFiles]
+        )
         while let next = enumerator?.nextObject() as? URL {
             let fileName = next.lastPathComponent
             let modelDir = next.deletingLastPathComponent()
@@ -357,12 +404,14 @@ private enum ModelPromotion {
 
             // Check if this could be our manifest (either tag-named or manifest.json)
             let isManifestCandidate = (fileName == "manifest.json" ||
-                                      fileName == modelTag ||
-                                      (fileName as NSString).pathExtension == "json")
+                fileName == modelTag ||
+                (fileName as NSString).pathExtension == "json")
 
             if isManifestCandidate {
-                log("MANIFEST_INFO:  -> Found candidate manifest. Checking if '\(libraryComponent)/\(modelNameComponent)' matches '\(libraryName)/\(modelBaseName)' with file '\(fileName)'")
-                if libraryComponent == libraryName && modelNameComponent == modelBaseName {
+                log(
+                    "MANIFEST_INFO:  -> Found candidate manifest. Checking if '\(libraryComponent)/\(modelNameComponent)' matches '\(libraryName)/\(modelBaseName)' with file '\(fileName)'"
+                )
+                if libraryComponent == libraryName, modelNameComponent == modelBaseName {
                     if let parsed = parseManifest(at: next) {
                         log("MANIFEST_INFO:  ✅ Found manifest via enumeration")
                         return parsed
@@ -387,7 +436,8 @@ private enum ModelPromotion {
             .data(using: .utf8) ?? data
 
         guard let object = try? JSONSerialization.jsonObject(with: cleanedData, options: [.fragmentsAllowed]),
-              let json = object as? [String: Any] else {
+              let json = object as? [String: Any]
+        else {
             return nil
         }
 
@@ -397,7 +447,8 @@ private enum ModelPromotion {
             for layer in sorted {
                 if let mediaType = layer["mediaType"] as? String,
                    mediaType.lowercased().contains("gguf"),
-                   let digest = layer["digest"] as? String {
+                   let digest = layer["digest"] as? String
+                {
                     return ManifestData(digest: digest, size: value(from: layer["size"]))
                 }
             }
@@ -408,7 +459,8 @@ private enum ModelPromotion {
         }
 
         if let config = json["config"] as? [String: Any],
-           let digest = config["digest"] as? String {
+           let digest = config["digest"] as? String
+        {
             return ManifestData(digest: digest, size: value(from: config["size"]))
         }
 
@@ -417,7 +469,9 @@ private enum ModelPromotion {
 
     private static func blobFileName(for digest: String) -> String? {
         var trimmed = digest.trimmingCharacters(in: .whitespacesAndNewlines)
-        if trimmed.isEmpty { return nil }
+        if trimmed.isEmpty {
+            return nil
+        }
 
         if trimmed.hasPrefix("sha256:") {
             trimmed.removeFirst("sha256:".count)
@@ -468,7 +522,7 @@ final class PythonBridgeService: ObservableObject {
     private var launchedOllamaPort: Int32?
     private var ollamaStartTask: Task<Bool, Never>?
     // XPC removed - CLI subprocess only approach - fail-fast direct execution
-    
+
     // Store active processes by document ID to allow cancellation
     private var activeProcesses: [UUID: Process] = [:]
     private var activeModelDownloadSession: URLSession?
@@ -491,7 +545,6 @@ final class PythonBridgeService: ObservableObject {
         )
     }
 
-    
     /// Public getter for the current Ollama host (including dynamic port)
     /// Reads from MARCUT_OLLAMA_HOST environment variable which is set when port changes
     var currentOllamaHost: String {
@@ -521,10 +574,12 @@ final class PythonBridgeService: ObservableObject {
             }
             let parts = hostPort.split(separator: ":")
             if let last = parts.last, parts.count >= 2,
-               let parsed = Int(last), (1...65535).contains(parsed) {
+               let parsed = Int(last), (1 ... 65535).contains(parsed)
+            {
                 port = parsed
             } else if parts.count == 1,
-                      let parsed = Int(parts[0]), (1...65535).contains(parsed) {
+                      let parsed = Int(parts[0]), (1 ... 65535).contains(parsed)
+            {
                 port = parsed
             }
         }
@@ -534,26 +589,28 @@ final class PythonBridgeService: ObservableObject {
 
     private var promotionsInFlight: Set<String> = []
 
-    // Shared Application Support container (sandbox-safe)
+    /// Shared Application Support container (sandbox-safe)
     private lazy var appSupportURL: URL = {
         // Force fallback to standard Application Support (Sandbox Safe)
         let fallback = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("MarcutApp", isDirectory: true)
-        
+
         do {
             try FileManager.default.createDirectory(at: fallback, withIntermediateDirectories: true)
             bridgeLog("Using Application Support container: \(fallback.path)", component: "STORAGE")
         } catch {
-            bridgeLog("Failed to prepare Application Support directory: \(fallback.path) - \(error)", component: "STORAGE")
+            bridgeLog(
+                "Failed to prepare Application Support directory: \(fallback.path) - \(error)",
+                component: "STORAGE"
+            )
         }
         return fallback
     }()
 
-    // Local, writable Application Support root for Ollama runtime artifacts
-    private lazy var localAppSupportURL: URL = {
-        // Align local storage with the shared appSupportURL so XPC helper can access the same paths
-        return appSupportURL
-    }()
+    /// Local, writable Application Support root for Ollama runtime artifacts
+    private lazy var localAppSupportURL: URL = // Align local storage with the shared appSupportURL so XPC helper can
+        // access the same paths
+        appSupportURL
 
     private func prepareOllamaTmpDir() -> URL? {
         guard let tmpDir = prepareAppContainerTempDir() else {
@@ -567,17 +624,21 @@ final class PythonBridgeService: ObservableObject {
 
     private func prepareAppContainerTempDir() -> URL? {
         let fm = FileManager.default
-        
+
         // Candidates for temp directory (checked in order)
         let candidates: [URL] = [
             localAppSupportURL.appendingPathComponent("ollama_tmp", isDirectory: true),
-            localAppSupportURL.appendingPathComponent("tmp", isDirectory: true)
+            localAppSupportURL.appendingPathComponent("tmp", isDirectory: true),
         ]
 
         for tmpDir in candidates {
             bridgeLog("Checking Temp Dir Candidate: \(tmpDir.path)", component: "Ollama")
             do {
-                try fm.createDirectory(at: tmpDir, withIntermediateDirectories: true, attributes: [.posixPermissions: NSNumber(value: Int16(0o700))])
+                try fm.createDirectory(
+                    at: tmpDir,
+                    withIntermediateDirectories: true,
+                    attributes: [.posixPermissions: NSNumber(value: Int16(0o700))]
+                )
                 try? fm.setAttributes([.posixPermissions: NSNumber(value: Int16(0o700))], ofItemAtPath: tmpDir.path)
                 bridgeLog("✅ Using temp dir: \(tmpDir.path)", component: "Ollama")
                 return tmpDir
@@ -598,14 +659,20 @@ final class PythonBridgeService: ObservableObject {
         return (fs.f_flags & UInt32(MNT_NOEXEC)) == 0
     }
 
-    nonisolated private static func secureEraseDirectory(_ dir: URL) {
+    private nonisolated static func secureEraseDirectory(_ dir: URL) {
         let fm = FileManager.default
         guard fm.fileExists(atPath: dir.path) else { return }
 
-        if let enumerator = fm.enumerator(at: dir, includingPropertiesForKeys: [.isRegularFileKey], options: [], errorHandler: nil) {
+        if let enumerator = fm.enumerator(
+            at: dir,
+            includingPropertiesForKeys: [.isRegularFileKey],
+            options: [],
+            errorHandler: nil
+        ) {
             for case let fileURL as URL in enumerator {
                 if let values = try? fileURL.resourceValues(forKeys: [.isRegularFileKey]),
-                   values.isRegularFile == true {
+                   values.isRegularFile == true
+                {
                     secureEraseFile(fileURL)
                 }
             }
@@ -618,7 +685,7 @@ final class PythonBridgeService: ObservableObject {
         }
     }
 
-    nonisolated private static func secureEraseFile(_ url: URL) {
+    private nonisolated static func secureEraseFile(_ url: URL) {
         let fm = FileManager.default
         // Secure erase zero-out removed:
         // APFS copy-on-write makes zeroing files ineffective and increases SSD wear.
@@ -631,7 +698,7 @@ final class PythonBridgeService: ObservableObject {
             bridgeLog("ℹ️ No ollama log file found at \(ollamaLogFileURL.path)", component: "Ollama")
             return
         }
-        
+
         do {
             let data = try Data(contentsOf: ollamaLogFileURL)
             if let content = String(data: data, encoding: .utf8) {
@@ -648,9 +715,9 @@ final class PythonBridgeService: ObservableObject {
         localAppSupportURL.appendingPathComponent("ollama", isDirectory: true)
     }
 
-    // Models directory
+    /// Models directory
     private var modelsDirectory: URL {
-        return localAppSupportURL.appendingPathComponent("models", isDirectory: true)
+        localAppSupportURL.appendingPathComponent("models", isDirectory: true)
     }
 
     private var workDirectory: URL {
@@ -687,7 +754,6 @@ final class PythonBridgeService: ObservableObject {
         FileManager.default.createFile(atPath: logURL.path, contents: nil)
     }
 
-  
     private let autoStartOllama: Bool
     private let allowOllamaService: Bool
     private var ruleFilterValue: String = RedactionRule.serializedList(from: RedactionRule.defaultSelection)
@@ -697,7 +763,6 @@ final class PythonBridgeService: ObservableObject {
     /// download kicked off mid-batch) just add to the reference count. Injectable so tests can
     /// verify acquire/release counts without touching real IOKit state.
     private let powerAssertion: PowerAssertionGuard
-
 
     init(autoStartOllama: Bool = true, allowOllamaService: Bool = true, powerAssertion: PowerAssertionGuard? = nil) {
         self.isDebugLoggingEnabled = DebugPreferences.isEnabled()
@@ -710,27 +775,26 @@ final class PythonBridgeService: ObservableObject {
         // Dynamic port selection
         self.ollamaPort = PythonBridgeService.findFreePort(start: 11434, maxAttempts: 20)
         bridgeLog("Selected Ollama port: \(self.ollamaPort)", component: "Ollama")
-        
+
         setupEnvironment()
         applyRuleFilter(RedactionRule.defaultSelection)
 
         checkEnvironment(autoStart: autoStartOllama)
     }
-    
+
     /// Updates the MARCUT_OLLAMA_HOST/OLLAMA_HOST process environment variables with the current port
     private func updateOllamaPortEnvironment() {
         let host = "127.0.0.1:\(ollamaPort)"
-        setenv("MARCUT_OLLAMA_HOST", host, 1)          // used by Python clients (expects host:port)
-        setenv("OLLAMA_HOST", host, 1)                 // Ollama server/CLI expects host:port (no scheme)
+        setenv("MARCUT_OLLAMA_HOST", host, 1) // used by Python clients (expects host:port)
+        setenv("OLLAMA_HOST", host, 1) // Ollama server/CLI expects host:port (no scheme)
         bridgeLog("Set MARCUT_OLLAMA_HOST/OLLAMA_HOST=\(host)", component: "Ollama")
     }
-    
-    
+
     /// Finds a free port starting from `start`, trying up to `maxAttempts` times.
     /// Returns the first available port, or the `start` port if all fail (fallback).
     private static func findFreePort(start: Int32, maxAttempts: Int) -> Int32 {
-        for _ in 0..<maxAttempts {
-            let port = Int32.random(in: 11434...12434)
+        for _ in 0 ..< maxAttempts {
+            let port = Int32.random(in: 11434 ... 12434)
             if isPortFree(port) {
                 return port
             }
@@ -756,7 +820,7 @@ final class PythonBridgeService: ObservableObject {
         // Use withUnsafePointer to pass the address safely
         let result = withUnsafePointer(to: &addr) { pointer -> Int32 in
             return pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) { sockaddrPointer in
-                return bind(socketFileDescriptor, sockaddrPointer, socklen_t(MemoryLayout<sockaddr_in>.size))
+                bind(socketFileDescriptor, sockaddrPointer, socklen_t(MemoryLayout<sockaddr_in>.size))
             }
         }
         bindResult = result
@@ -827,7 +891,7 @@ final class PythonBridgeService: ObservableObject {
         if parts.count >= 3 {
             relevant = Array(parts.suffix(2))
         }
-        if relevant.count == 2 && relevant.first == "library" {
+        if relevant.count == 2, relevant.first == "library" {
             return String(relevant[1])
         }
         return relevant.map { String($0) }.joined(separator: "/")
@@ -883,7 +947,10 @@ final class PythonBridgeService: ObservableObject {
         bridgeLog("MODEL_PROMOTION: Found \(appModels.count) models in app container", component: "MODEL_PROMOTION")
 
         guard !allModels.isEmpty else {
-            bridgeLog("MODEL_PROMOTION: No models found in either app or system directories", component: "MODEL_PROMOTION")
+            bridgeLog(
+                "MODEL_PROMOTION: No models found in either app or system directories",
+                component: "MODEL_PROMOTION"
+            )
             return
         }
 
@@ -904,7 +971,10 @@ final class PythonBridgeService: ObservableObject {
         // Priority 1: Try bundled Ollama binary in Contents/MacOS (sibling to main executable)
         // This is the correct location for executables in a Mac App Store bundle
         if let executableURL = Bundle.main.executableURL {
-            let macosOllamaURL = executableURL.deletingLastPathComponent().appendingPathComponent("ollama", isDirectory: false)
+            let macosOllamaURL = executableURL.deletingLastPathComponent().appendingPathComponent(
+                "ollama",
+                isDirectory: false
+            )
             bridgeLog("Checking for Ollama at: \(macosOllamaURL.path)", component: "Ollama")
             if fileManager.fileExists(atPath: macosOllamaURL.path) {
                 bridgeLog("✅ Found Ollama at Contents/MacOS", component: "Ollama")
@@ -913,7 +983,7 @@ final class PythonBridgeService: ObservableObject {
                 bridgeLog("ℹ️ Ollama not in Contents/MacOS (checking Resources)", component: "Ollama")
             }
         }
-        
+
         // Priority 2: Fallback to Resources (legacy location)
         if let resourceURL = Bundle.main.resourceURL {
             let resourceOllamaURL = resourceURL.appendingPathComponent("ollama", isDirectory: false)
@@ -928,16 +998,16 @@ final class PythonBridgeService: ObservableObject {
 
         // System Ollama fallback removed to ensure App Store compliance and robustness.
         // We must rely only on the bundled binary.
-        
+
         bridgeLog("❌ CRITICAL: No Ollama executable found in bundled resources.", component: "Ollama")
         return nil
     }
-    
+
     /// Async helper to prepare binary for execution (fix permissions)
     private func prepareOllamaBinary() async -> String? {
         guard let path = resolveOllamaPath() else { return nil }
         await fixBinaryPermissions(at: URL(fileURLWithPath: path))
-        
+
         // After fixing permissions, verify it's executable
         if FileManager.default.isExecutableFile(atPath: path) {
             bridgeLog("Found bundled Ollama binary and confirmed executable: \(path)", component: "Ollama")
@@ -957,7 +1027,7 @@ final class PythonBridgeService: ObservableObject {
             bridgeLog("Skipping permission fix for bundled binary: \(path)", component: "Ollama")
             return
         }
-        
+
         await Task.detached(priority: .userInitiated) {
             // 1. Remove quarantine attribute
             let xattrProcess = Process()
@@ -965,7 +1035,7 @@ final class PythonBridgeService: ObservableObject {
             xattrProcess.arguments = ["-d", "com.apple.quarantine", path]
             try? xattrProcess.run()
             xattrProcess.waitUntilExit()
-            
+
             // 2. Ensure executable permission (chmod +x)
             let chmodProcess = Process()
             chmodProcess.executableURL = URL(fileURLWithPath: "/bin/chmod")
@@ -973,7 +1043,7 @@ final class PythonBridgeService: ObservableObject {
             try? chmodProcess.run()
             chmodProcess.waitUntilExit()
         }.value
-        
+
         bridgeLog("Attempted permission fix for: \(path)", component: "Ollama")
     }
 
@@ -982,7 +1052,7 @@ final class PythonBridgeService: ObservableObject {
         stripUnsafeRemoteOllamaOverrides(from: &env)
         let proxyKeys = [
             "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY",
-            "http_proxy", "https_proxy", "all_proxy", "no_proxy"
+            "http_proxy", "https_proxy", "all_proxy", "no_proxy",
         ]
         for key in proxyKeys {
             env[key] = nil
@@ -991,7 +1061,7 @@ final class PythonBridgeService: ObservableObject {
         // Aggressively strip any OLLAMA_ variables to prevent leaks from host environment (e.g. LM Studio config)
         for key in Array(env.keys) {
             if key.uppercased().hasPrefix("OLLAMA_") {
-                 env[key] = nil
+                env[key] = nil
             }
         }
 
@@ -1012,7 +1082,7 @@ final class PythonBridgeService: ObservableObject {
             "MARCUT_METADATA_ARGS",
             "MARCUT_METADATA_PRESET",
             "MARCUT_METADATA_SETTINGS_JSON",
-            "MARCUT_SCRUB_REPORT_PATH"
+            "MARCUT_SCRUB_REPORT_PATH",
         ]
         for key in embeddedRuntimeKeys {
             if let rawValue = getenv(key) {
@@ -1043,8 +1113,8 @@ final class PythonBridgeService: ObservableObject {
         env["HOME"] = localAppSupportURL.path
 
         // Ensure Ollama uses local storage only
-        env["OLLAMA_HOST"] = ollamaHost          // server/CLI expects host:port (no scheme)
-        env["MARCUT_OLLAMA_HOST"] = ollamaHost   // Python clients expect host:port
+        env["OLLAMA_HOST"] = ollamaHost // server/CLI expects host:port (no scheme)
+        env["MARCUT_OLLAMA_HOST"] = ollamaHost // Python clients expect host:port
         // Use app container temp directory for App Store safety
         guard let tmpDir = prepareAppContainerTempDir() else {
             let message = "Ollama could not start: cannot create temp directory in app container"
@@ -1056,7 +1126,7 @@ final class PythonBridgeService: ObservableObject {
         env["TMPDIR"] = tmpDir.path
         env["OLLAMA_TMPDIR"] = tmpDir.path
         lastOllamaTmpDir = tmpDir
-        
+
         if let runnersDir = Bundle.main.resourceURL?.appendingPathComponent("ollama_runners") {
             env["OLLAMA_RUNNERS_DIR"] = runnersDir.path
             bridgeLog("Set OLLAMA_RUNNERS_DIR=\(runnersDir.path)", component: "Ollama")
@@ -1100,7 +1170,7 @@ final class PythonBridgeService: ObservableObject {
         if isDebugLoggingEnabled {
             try? FileManager.default.createDirectory(at: ollamaLogsDirectory, withIntermediateDirectories: true)
         }
-        
+
         // Explicitly create models/blobs directory to prevent permission errors
         let modelsDir = modelsDirectory
         let blobsDir = modelsDir.appendingPathComponent("blobs")
@@ -1109,7 +1179,7 @@ final class PythonBridgeService: ObservableObject {
         return env
     }
 
-    // Remove stale Ollama pid directories that cause subsequent starts to exit immediately
+    /// Remove stale Ollama pid directories that cause subsequent starts to exit immediately
     private func pruneStaleOllamaPidFiles() {
         let tmpDir = ollamaHomeURL.appendingPathComponent("tmp", isDirectory: true)
         guard let contents = try? FileManager.default.contentsOfDirectory(
@@ -1120,7 +1190,8 @@ final class PythonBridgeService: ObservableObject {
         for entry in contents where entry.lastPathComponent.hasPrefix("ollama") {
             let pidFile = entry.appendingPathComponent("ollama.pid")
             guard let pidString = try? String(contentsOf: pidFile).trimmingCharacters(in: .whitespacesAndNewlines),
-                  let pid = Int32(pidString) else {
+                  let pid = Int32(pidString)
+            else {
                 continue
             }
 
@@ -1128,7 +1199,9 @@ final class PythonBridgeService: ObservableObject {
             errno = 0
             let alive = (kill(pid, 0) == 0)
             let permissionDenied = errno == EPERM
-            if alive || permissionDenied { continue }
+            if alive || permissionDenied {
+                continue
+            }
 
             // Safe to remove the stale dir to unblock future launches
             try? FileManager.default.removeItem(at: entry)
@@ -1186,7 +1259,9 @@ final class PythonBridgeService: ObservableObject {
         bridgeLog("ENV OLLAMA_MODELS=\(env["OLLAMA_MODELS"] ?? "")", component: "ENVIRONMENT_CHECK")
         bridgeLog("ENV OLLAMA_DATA=\(env["OLLAMA_DATA"] ?? "")", component: "ENVIRONMENT_CHECK")
         bridgeLog("ENV OLLAMA_HOST=\(env["OLLAMA_HOST"] ?? "")", component: "ENVIRONMENT_CHECK")
-        if let path = resolveOllamaPath() { bridgeLog("BIN ollama=\(path)", component: "ENVIRONMENT_CHECK") }
+        if let path = resolveOllamaPath() {
+            bridgeLog("BIN ollama=\(path)", component: "ENVIRONMENT_CHECK")
+        }
     }
 
     func refreshEnvironment() async {
@@ -1203,7 +1278,7 @@ final class PythonBridgeService: ObservableObject {
             }
             self.prefetchedFromDisk = true
         }
-        if autoStartOllama && allowOllamaService {
+        if autoStartOllama, allowOllamaService {
             _ = await ensureOllamaRunning()
         }
         await promoteAllExistingModels()
@@ -1285,7 +1360,7 @@ final class PythonBridgeService: ObservableObject {
         }
     }
 
-      private func probeExistingOllamaInstance() async -> Bool {
+    private func probeExistingOllamaInstance() async -> Bool {
         // Check if any processes are using the Ollama port
         let existingPids = await pidsUsingOllamaPort()
         let hasExistingProcesses = !existingPids.isEmpty
@@ -1306,16 +1381,15 @@ final class PythonBridgeService: ObservableObject {
     // MARK: - Ollama Process Management
 
     private var ollamaBackgroundProcess: Process?
-    // Thread-safe logger (lazy initialized)
-    private lazy var logManager: OllamaLogger = {
-        OllamaLogger(logURL: self.ollamaLogFileURL)
-    }()
+    /// Thread-safe logger (lazy initialized)
+    private lazy var logManager: OllamaLogger = .init(logURL: self.ollamaLogFileURL)
+
     private var lastOllamaCheckTime: TimeInterval = 0
-    private let ollamaCheckInterval: TimeInterval = 5.0  // Cache for 5 seconds
+    private let ollamaCheckInterval: TimeInterval = 5.0 // Cache for 5 seconds
     private var prefetchedFromDisk = false
     private var lastOllamaTmpDir: URL?
     private var lastImmediateLaunchFailure = false
-    private var ollamaOutputPipe: Pipe?  // Must be stored to prevent premature deallocation
+    private var ollamaOutputPipe: Pipe? // Must be stored to prevent premature deallocation
 
     private func startBundledOllama() async -> Bool {
         guard let ollamaPath = await prepareOllamaBinary() else {
@@ -1324,7 +1398,10 @@ final class PythonBridgeService: ObservableObject {
         }
 
         if let existingProcess = ollamaBackgroundProcess, existingProcess.isRunning {
-            bridgeLog("Reusing existing Ollama background process (PID \(existingProcess.processIdentifier)).", component: "Ollama")
+            bridgeLog(
+                "Reusing existing Ollama background process (PID \(existingProcess.processIdentifier)).",
+                component: "Ollama"
+            )
             writeOllamaLogEntry("Reusing existing process (PID \(existingProcess.processIdentifier))")
             ollamaLaunchError = nil
             return true
@@ -1344,16 +1421,19 @@ final class PythonBridgeService: ObservableObject {
         }
         process.environment = env
         lastOllamaTmpDir = URL(fileURLWithPath: env["OLLAMA_TMPDIR"] ?? "")
-        bridgeLog("Launching Ollama: TMPDIR=\(env["TMPDIR"] ?? "nil") OLLAMA_TMPDIR=\(env["OLLAMA_TMPDIR"] ?? "nil") OLLAMA_HOST=\(env["OLLAMA_HOST"] ?? "nil")", component: "Ollama")
+        bridgeLog(
+            "Launching Ollama: TMPDIR=\(env["TMPDIR"] ?? "nil") OLLAMA_TMPDIR=\(env["OLLAMA_TMPDIR"] ?? "nil") OLLAMA_HOST=\(env["OLLAMA_HOST"] ?? "nil")",
+            component: "Ollama"
+        )
 
         let logURL = ollamaLogURL
-        
+
         // Ensure log file exists and is writable
         let fm = FileManager.default
         if !fm.fileExists(atPath: logURL.path) {
             fm.createFile(atPath: logURL.path, contents: nil)
         }
-        
+
         // Ensure file has write permissions
         try? fm.setAttributes([.posixPermissions: NSNumber(value: Int16(0o600))], ofItemAtPath: logURL.path)
 
@@ -1371,10 +1451,10 @@ final class PythonBridgeService: ObservableObject {
         // If stored as local variable, it can be released when this function returns,
         // which kills the readabilityHandler before any data is received.
         let pipe = Pipe()
-        self.ollamaOutputPipe = pipe  // Retain for lifetime of process
+        self.ollamaOutputPipe = pipe // Retain for lifetime of process
         process.standardOutput = pipe
         process.standardError = pipe
-        
+
         // Read data in background to prevent buffer filling
         let outputHandle = pipe.fileHandleForReading
         final class OutputAccumulator: @unchecked Sendable {
@@ -1383,38 +1463,37 @@ final class PythonBridgeService: ObservableObject {
         let outputAccumulator = OutputAccumulator()
         // Use a dedicated serial queue for processing logic and file I/O
         let processingQueue = DispatchQueue(label: "com.marclaw.marcut.ollamaOutputProcessing")
-        
+
         // Capture logger reference for safe background use
         let logger = self.logManager
-        
+
         outputHandle.readabilityHandler = { handle in
             // Read data immediately, limiting the scope of work on this IO callback
             let data = handle.availableData
             guard !data.isEmpty else { return }
-            
+
             // Dispatch completely asynchronously to avoid blocking this IO callback
             processingQueue.async { [logger, outputAccumulator] in
                 // Write to log file safely on background thread via thread-safe logger
                 logger.write(data)
-                
+
                 // Keep buffer size reasonable for internal accumulation
                 if outputAccumulator.data.count > 1_000_000 {
                     outputAccumulator.data = Data()
                 }
                 outputAccumulator.data.append(data)
-                
+
                 // Parse for server ready signal
                 if let outputStr = String(data: data, encoding: .utf8) {
                     // Check for listening address (standard Ollama startup msg)
                     if outputStr.contains("Listening on") || outputStr.contains("127.0.0.1:11434") {
-                        // We can't easily signal the outer async function from here without a continuation or checking a shared state externally,
+                        // We can't easily signal the outer async function from here without a continuation or checking
+                        // a shared state externally,
                         // but we can log it. The outer loop checks the port via HTTP anyway.
                     }
                 }
             }
         }
-
-
 
         let launchStart = Date()
         do {
@@ -1425,11 +1504,18 @@ final class PythonBridgeService: ObservableObject {
                 outputHandle.readabilityHandler = nil
                 let data = pipe.fileHandleForReading.readDataToEndOfFile()
                 let output = String(data: data, encoding: .utf8) ?? ""
-                bridgeLog("❌ Ollama process exited immediately after launch. status=\(process.terminationStatus) stdout/stderr=\(output)", component: "Ollama")
-                bridgeLog("❌ Ollama env TMPDIR=\(env["TMPDIR"] ?? "nil") OLLAMA_TMPDIR=\(env["OLLAMA_TMPDIR"] ?? "nil") OLLAMA_HOME=\(env["OLLAMA_HOME"] ?? "nil")", component: "Ollama")
+                bridgeLog(
+                    "❌ Ollama process exited immediately after launch. status=\(process.terminationStatus) stdout/stderr=\(output)",
+                    component: "Ollama"
+                )
+                bridgeLog(
+                    "❌ Ollama env TMPDIR=\(env["TMPDIR"] ?? "nil") OLLAMA_TMPDIR=\(env["OLLAMA_TMPDIR"] ?? "nil") OLLAMA_HOME=\(env["OLLAMA_HOME"] ?? "nil")",
+                    component: "Ollama"
+                )
                 // Detect port-in-use vs exec/noexec failures
                 let lower = output.lowercased()
-                let portInUse = lower.contains("address already in use") || lower.contains("bind: address already in use")
+                let portInUse = lower.contains("address already in use") || lower
+                    .contains("bind: address already in use")
                 if !portInUse {
                     let logPath = ollamaLogURL.path
                     ollamaLaunchError = "Ollama failed to start. See \(logPath) for runner details."
@@ -1442,7 +1528,11 @@ final class PythonBridgeService: ObservableObject {
             ollamaBackgroundProcess = process
             let elapsed = Date().timeIntervalSince(launchStart)
             bridgeLog(
-                String(format: "✅ Ollama process started directly (PID: %d) in %.2fs", process.processIdentifier, elapsed),
+                String(
+                    format: "✅ Ollama process started directly (PID: %d) in %.2fs",
+                    process.processIdentifier,
+                    elapsed
+                ),
                 component: "Ollama"
             )
 
@@ -1451,7 +1541,7 @@ final class PythonBridgeService: ObservableObject {
                 // Stop reading
                 outputHandle.readabilityHandler = nil
 
-                guard let self = self else { return }
+                guard let self else { return }
 
                 Task { @MainActor in
                     bridgeLog(
@@ -1462,8 +1552,9 @@ final class PythonBridgeService: ObservableObject {
                     self.launchedOllamaPID = nil
                     self.launchedOllamaPort = nil
                     self.ollamaBackgroundProcess = nil
-                    self.ollamaOutputPipe = nil  // Release pipe now that process is done
-                    // self?.closeOllamaLogHandle() // Cleanup old handle if any - DISABLED to avoid race with readabilityHandler
+                    self.ollamaOutputPipe = nil // Release pipe now that process is done
+                    // self?.closeOllamaLogHandle() // Cleanup old handle if any - DISABLED to avoid race with
+                    // readabilityHandler
 
                     // Log captured output
                     // Log captured output
@@ -1480,7 +1571,10 @@ final class PythonBridgeService: ObservableObject {
                         bridgeLog("🔍 Last 20 lines of Ollama output:\n\(lastLines)", component: "Ollama")
 
                         // Do not overwrite the log file here; readabilityHandler streams it.
-                        bridgeLog("📝 Ollama process finished. Log saved to \(self.ollamaLogURL.path)", component: "Ollama")
+                        bridgeLog(
+                            "📝 Ollama process finished. Log saved to \(self.ollamaLogURL.path)",
+                            component: "Ollama"
+                        )
                     } else {
                         bridgeLog("⚠️ No output captured from Ollama process", component: "Ollama")
                     }
@@ -1497,10 +1591,10 @@ final class PythonBridgeService: ObservableObject {
     }
 
     private func waitForOllamaHTTP() async -> Bool {
-        let maxAttempts = 15  // Increased from 8 for robust startup
-        let baseInterval: TimeInterval = 0.5  // More reasonable base interval
+        let maxAttempts = 15 // Increased from 8 for robust startup
+        let baseInterval: TimeInterval = 0.5 // More reasonable base interval
 
-        for attempt in 1...maxAttempts {
+        for attempt in 1 ... maxAttempts {
             bridgeLog("Ollama HTTP probe attempt \(attempt)/\(maxAttempts)", component: "Ollama")
 
             // Bail out early if the process died during startup instead of sleeping the full backoff window
@@ -1527,7 +1621,7 @@ final class PythonBridgeService: ObservableObject {
     @discardableResult
     private func ensureOllamaRunning(forceProbe: Bool = false) async -> Bool {
         // XPC removed - use direct CLI subprocess only
-        return await ensureOllamaRunningDirect(forceProbe: forceProbe)
+        await ensureOllamaRunningDirect(forceProbe: forceProbe)
     }
 
     // XPC functionality removed - now using direct CLI subprocess approach only
@@ -1535,15 +1629,17 @@ final class PythonBridgeService: ObservableObject {
     private func probeHTTPWithBackoff() async -> Bool {
         let attempts = 10
         let base: TimeInterval = 0.2
-        for i in 0..<attempts {
-            if await probeOllamaHTTP() { return true }
+        for i in 0 ..< attempts {
+            if await probeOllamaHTTP() {
+                return true
+            }
             let interval = min(base * pow(2.0, Double(i)), 2.0)
             try? await Task.sleep(nanoseconds: UInt64(interval * 1_000_000_000))
         }
         return false
     }
 
-    // Existing direct logic preserved here
+    /// Existing direct logic preserved here
     private func ensureOllamaRunningDirect(forceProbe: Bool = false) async -> Bool {
         guard allowOllamaService else {
             bridgeLog("Ollama service disabled; skipping ensureOllamaRunning()", component: "Ollama")
@@ -1557,35 +1653,42 @@ final class PythonBridgeService: ObservableObject {
         let currentTime = Date().timeIntervalSince1970
 
         // Performance optimization: Skip redundant checks if we recently verified Ollama is running
-        if !forceProbe && isOllamaRunning && (currentTime - lastOllamaCheckTime) < ollamaCheckInterval {
+        if !forceProbe, isOllamaRunning, (currentTime - lastOllamaCheckTime) < ollamaCheckInterval {
             bridgeLog("Ollama status cached - skipping check", component: "Ollama")
             return true
         }
 
         // If we already have a running bundled process, reuse it and avoid changing ports
-            if let process = ollamaBackgroundProcess,
-               process.isRunning,
-               let launchedPort = launchedOllamaPort {
-                // If the temp dir used by the running process differs from the desired exec-capable tmp, restart.
-                let currentTmp = prepareOllamaTmpDir()
-                if let currentTmp, lastOllamaTmpDir == nil || lastOllamaTmpDir?.path != currentTmp.path {
-                    bridgeLog("Ollama temp dir missing/mismatched; restarting to apply exec-capable TMPDIR", component: "Ollama")
-                    process.terminate()
-                    ollamaBackgroundProcess = nil
-                    launchedOllamaPID = nil
-                    launchedOllamaPort = nil
+        if let process = ollamaBackgroundProcess,
+           process.isRunning,
+           let launchedPort = launchedOllamaPort
+        {
+            // If the temp dir used by the running process differs from the desired exec-capable tmp, restart.
+            let currentTmp = prepareOllamaTmpDir()
+            if let currentTmp, lastOllamaTmpDir == nil || lastOllamaTmpDir?.path != currentTmp.path {
+                bridgeLog(
+                    "Ollama temp dir missing/mismatched; restarting to apply exec-capable TMPDIR",
+                    component: "Ollama"
+                )
+                process.terminate()
+                ollamaBackgroundProcess = nil
+                launchedOllamaPID = nil
+                launchedOllamaPort = nil
+            } else {
+                ollamaPort = launchedPort
+                updateOllamaPortEnvironment()
+                if await probeOllamaHTTP() {
+                    bridgeLog(
+                        "Reusing existing bundled Ollama (PID \(process.processIdentifier)) on port \(launchedPort)",
+                        component: "Ollama"
+                    )
+                    await MainActor.run {
+                        self.isOllamaRunning = true
+                    }
+                    lastOllamaCheckTime = currentTime
+                    ollamaLaunchError = nil
+                    return true
                 } else {
-                    ollamaPort = launchedPort
-                    updateOllamaPortEnvironment()
-                    if await probeOllamaHTTP() {
-                        bridgeLog("Reusing existing bundled Ollama (PID \(process.processIdentifier)) on port \(launchedPort)", component: "Ollama")
-                        await MainActor.run {
-                            self.isOllamaRunning = true
-                        }
-                        lastOllamaCheckTime = currentTime
-                        ollamaLaunchError = nil
-                        return true
-                    } else {
                     bridgeLog("Cached Ollama process unresponsive; clearing reference", component: "Ollama")
                     ollamaBackgroundProcess = nil
                     launchedOllamaPID = nil
@@ -1617,7 +1720,7 @@ final class PythonBridgeService: ObservableObject {
         bridgeLog("Starting Ollama with host=\(ollamaHost) tmp=\(tmpPath)", component: "Ollama")
 
         // Try up to 20 ports starting at 11434; reuse our own instance if healthy
-        for offset in 0..<20 {
+        for offset in 0 ..< 20 {
             let candidatePort = 11434 + Int32(offset)
             let pidsOnPort = await pids(using: candidatePort)
 
@@ -1627,24 +1730,34 @@ final class PythonBridgeService: ObservableObject {
                    let launchedPID = launchedOllamaPID,
                    launchedPort == candidatePort,
                    pidsOnPort.contains(launchedPID),
-                   await probeOllamaHTTP() {
+                   await probeOllamaHTTP()
+                {
                     ollamaPort = launchedPort
                     updateOllamaPortEnvironment()
-                    bridgeLog("Reusing bundled Ollama instance (PID \(launchedPID)) on port \(launchedPort)", component: "Ollama")
+                    bridgeLog(
+                        "Reusing bundled Ollama instance (PID \(launchedPID)) on port \(launchedPort)",
+                        component: "Ollama"
+                    )
                     isOllamaRunning = true
                     lastOllamaCheckTime = currentTime
                     return true
                 }
                 // Foreign process present; do not attempt to bind this port
-                bridgeLog("Skipping port \(candidatePort) - already in use by external process(es): \(pidsOnPort)", component: "Ollama")
+                bridgeLog(
+                    "Skipping port \(candidatePort) - already in use by external process(es): \(pidsOnPort)",
+                    component: "Ollama"
+                )
                 // Occupied by non-app process; move to next port
                 continue
             }
-            
+
             // SANDBOX FIX: lsof often fails to see other processes in sandbox.
             // Explicitly check if we can connect to this port. If we can, it's occupied.
             if await isPortOccupied(port: candidatePort) {
-                bridgeLog("Skipping port \(candidatePort) - TCP connection accepted (ghost/zombie process)", component: "Ollama")
+                bridgeLog(
+                    "Skipping port \(candidatePort) - TCP connection accepted (ghost/zombie process)",
+                    component: "Ollama"
+                )
                 continue
             }
 
@@ -1654,7 +1767,10 @@ final class PythonBridgeService: ObservableObject {
             bridgeLog("🚀 Starting new Ollama instance on port \(candidatePort)", component: "Ollama")
             let started = await startBundledOllama()
             if !started {
-                bridgeLog("❌ OLLAMA_PROCESS_START_FAILED: Unable to start Ollama process on port \(candidatePort)", component: "Ollama")
+                bridgeLog(
+                    "❌ OLLAMA_PROCESS_START_FAILED: Unable to start Ollama process on port \(candidatePort)",
+                    component: "Ollama"
+                )
                 dumpOllamaLogs()
                 // If launch failed immediately (likely exec/noexec), abort further port attempts
                 // BUT: If it failed because of "address already in use", we MUST retry!
@@ -1662,11 +1778,17 @@ final class PythonBridgeService: ObservableObject {
                     // Check if it was a bind error
                     let logContent = (try? String(contentsOf: ollamaLogFileURL)) ?? ""
                     if logContent.contains("address already in use") {
-                        bridgeLog("⚠️ Port \(candidatePort) was actually in use (bind failed). Retrying next port...", component: "Ollama")
+                        bridgeLog(
+                            "⚠️ Port \(candidatePort) was actually in use (bind failed). Retrying next port...",
+                            component: "Ollama"
+                        )
                         continue
                     }
-                    
-                    bridgeLog("❌ OLLAMA_LAUNCH_ABORT: Immediate failure (exec/noexec). Not retrying other ports.", component: "Ollama")
+
+                    bridgeLog(
+                        "❌ OLLAMA_LAUNCH_ABORT: Immediate failure (exec/noexec). Not retrying other ports.",
+                        component: "Ollama"
+                    )
                     break
                 }
                 continue
@@ -1689,8 +1811,14 @@ final class PythonBridgeService: ObservableObject {
                     listeningPIDs: listeningPIDs,
                     ownPID: launchedOllamaPID
                 ) {
-                    let message = PythonBridgeService.ollamaPortConflictMessage(port: candidatePort, foreignPID: foreignPID)
-                    bridgeLog("❌ OLLAMA_PORT_IDENTITY_MISMATCH on port \(candidatePort): \(message)", component: "Ollama")
+                    let message = PythonBridgeService.ollamaPortConflictMessage(
+                        port: candidatePort,
+                        foreignPID: foreignPID
+                    )
+                    bridgeLog(
+                        "❌ OLLAMA_PORT_IDENTITY_MISMATCH on port \(candidatePort): \(message)",
+                        component: "Ollama"
+                    )
                     ollamaLaunchError = message
                     dumpOllamaLogs()
                     if let process = ollamaBackgroundProcess {
@@ -1709,7 +1837,10 @@ final class PythonBridgeService: ObservableObject {
                 return true
             }
 
-            bridgeLog("❌ OLLAMA_HTTP_TIMEOUT on port \(candidatePort): Process started but HTTP endpoint not responding", component: "Ollama")
+            bridgeLog(
+                "❌ OLLAMA_HTTP_TIMEOUT on port \(candidatePort): Process started but HTTP endpoint not responding",
+                component: "Ollama"
+            )
             dumpOllamaLogs()
 
             // Clean up the failed process immediately
@@ -1737,9 +1868,8 @@ final class PythonBridgeService: ObservableObject {
             return false
         }
 
-
         let baseInterval: TimeInterval = 0.3
-        for attempt in 1...maxAttempts {
+        for attempt in 1 ... maxAttempts {
             bridgeLog("Probing model readiness \(modelName) attempt \(attempt)/\(maxAttempts)", component: "Ollama")
             if await probeModelReady(modelName: modelName) {
                 bridgeLog("Model \(modelName) is ready for generation", component: "Ollama")
@@ -1758,7 +1888,12 @@ final class PythonBridgeService: ObservableObject {
             // This allows Ollama sufficient time to respond during startup
             if let (code, data) = try await ollamaHTTP(path: "/api/version", timeout: 3.0) {
                 if code == 200 {
-                    if let data = data { bridgeLog("✅ HTTP /api/version status=200 body=\(stringSnippet(data))", component: "HTTP") }
+                    if let data {
+                        bridgeLog(
+                            "✅ HTTP /api/version status=200 body=\(stringSnippet(data))",
+                            component: "HTTP"
+                        )
+                    }
                     return true
                 } else if code == -1004 {
                     // Connection refused - Ollama not running
@@ -1769,7 +1904,12 @@ final class PythonBridgeService: ObservableObject {
                     bridgeLog("⏰ HTTP request timeout - Ollama unresponsive", component: "HTTP")
                     return false
                 } else {
-                    if let data = data { bridgeLog("⚠️ HTTP /api/version status=\(code) body=\(stringSnippet(data))", component: "HTTP") }
+                    if let data {
+                        bridgeLog(
+                            "⚠️ HTTP /api/version status=\(code) body=\(stringSnippet(data))",
+                            component: "HTTP"
+                        )
+                    }
                     return false
                 }
             }
@@ -1790,37 +1930,41 @@ final class PythonBridgeService: ObservableObject {
         // We use the existing ollamaHTTP probe logic but strictly for connection checking
         // If we get ANY response (even 404, 500, or just a connection), the port is taken.
         // We only consider it free if the connection is REFUSED.
-        
+
         guard let url = URL(string: "http://127.0.0.1:\(port)/") else { return false }
         var req = URLRequest(url: url)
         req.httpMethod = "GET" // Use GET as HEAD might be rejected
         req.timeoutInterval = 1.0 // Increase timeout slightly
-        
+
         let config = URLSessionConfiguration.ephemeral
         config.timeoutIntervalForRequest = 1.0
         config.timeoutIntervalForResource = 1.0
         config.requestCachePolicy = .reloadIgnoringLocalCacheData
-        
+
         let session = URLSession(configuration: config)
         defer { session.invalidateAndCancel() }
-        
+
         do {
-            let (_, _) = try await session.data(for: req)
+            let _ = try await session.data(for: req)
             // If we get here, we connected. Port is busy.
             bridgeLog("isPortOccupied: Port \(port) is BUSY (connection accepted)", component: "Ollama")
             return true
         } catch {
             let nsError = error as NSError
             // If connection refused (code -1004), port is likely free.
-            if nsError.domain == NSURLErrorDomain && nsError.code == -1004 {
+            if nsError.domain == NSURLErrorDomain, nsError.code == -1004 {
                 // bridgeLog("isPortOccupied: Port \(port) is FREE (connection refused)", component: "Ollama")
                 return false
             }
             // Any other error (timeout, etc) implies something might be there or network is weird.
-            bridgeLog("isPortOccupied: Port \(port) check failed with error: \(error). Assuming BUSY.", component: "Ollama")
-            return true 
+            bridgeLog(
+                "isPortOccupied: Port \(port) check failed with error: \(error). Assuming BUSY.",
+                component: "Ollama"
+            )
+            return true
         }
     }
+
     private func ollamaHTTP(path: String, timeout: TimeInterval) async throws -> (Int, Data?)? {
         // Build URL from OLLAMA_HOST (host:port)
         guard let url = URL(string: "http://\(ollamaHost)\(path)") else { return nil }
@@ -1836,7 +1980,9 @@ final class PythonBridgeService: ObservableObject {
         defer { session.invalidateAndCancel() }
         do {
             let (data, resp) = try await session.data(for: req)
-            if let http = resp as? HTTPURLResponse { return (http.statusCode, data) }
+            if let http = resp as? HTTPURLResponse {
+                return (http.statusCode, data)
+            }
         } catch {
             bridgeLog("HTTP request failed path=\(path) error=\(error)", component: "HTTP")
             throw error
@@ -1844,7 +1990,9 @@ final class PythonBridgeService: ObservableObject {
         return nil
     }
 
-    private func ollamaHTTPPostJSON(path: String, payload: [String: Any], timeout: TimeInterval) async throws -> (Int, Data?)? {
+    private func ollamaHTTPPostJSON(path: String, payload: [String: Any],
+                                    timeout: TimeInterval) async throws -> (Int, Data?)?
+    {
         guard let url = URL(string: "http://\(ollamaHost)\(path)") else { return nil }
         var req = URLRequest(url: url)
         req.httpMethod = "POST"
@@ -1862,7 +2010,9 @@ final class PythonBridgeService: ObservableObject {
         defer { session.invalidateAndCancel() }
         do {
             let (data, resp) = try await session.data(for: req)
-            if let http = resp as? HTTPURLResponse { return (http.statusCode, data) }
+            if let http = resp as? HTTPURLResponse {
+                return (http.statusCode, data)
+            }
         } catch {
             bridgeLog("HTTP POST failed path=\(path) error=\(error)", component: "HTTP")
             throw error
@@ -1872,12 +2022,26 @@ final class PythonBridgeService: ObservableObject {
 
     private func probeModelReady(modelName: String) async -> Bool {
         do {
-            if let (code, data) = try await ollamaHTTPPostJSON(path: "/api/show", payload: ["name": modelName], timeout: 5.0) {
+            if let (code, data) = try await ollamaHTTPPostJSON(
+                path: "/api/show",
+                payload: ["name": modelName],
+                timeout: 5.0
+            ) {
                 if code == 200 {
-                    if let data = data { bridgeLog("✅ /api/show \(modelName) status=200 body=\(stringSnippet(data))", component: "HTTP") }
+                    if let data {
+                        bridgeLog(
+                            "✅ /api/show \(modelName) status=200 body=\(stringSnippet(data))",
+                            component: "HTTP"
+                        )
+                    }
                     return true
                 } else {
-                    if let data = data { bridgeLog("⚠️ /api/show \(modelName) status=\(code) body=\(stringSnippet(data))", component: "HTTP") }
+                    if let data {
+                        bridgeLog(
+                            "⚠️ /api/show \(modelName) status=\(code) body=\(stringSnippet(data))",
+                            component: "HTTP"
+                        )
+                    }
                     return false
                 }
             }
@@ -1888,7 +2052,8 @@ final class PythonBridgeService: ObservableObject {
         return false
     }
 
-    private struct OllamaTags: Decodable { let models: [OllamaTags.Model]; struct Model: Decodable { let name: String } }
+    private struct OllamaTags: Decodable { let models: [OllamaTags.Model]; struct Model: Decodable { let name: String }
+    }
 
     private func stringSnippet(_ data: Data, limit: Int = 512) -> String {
         if let s = String(data: data.prefix(limit), encoding: .utf8) {
@@ -1952,7 +2117,7 @@ final class PythonBridgeService: ObservableObject {
     }
 
     private func isPortInUse(_ port: Int32) async -> Bool {
-        !(await pids(using: port)).isEmpty
+        await !pids(using: port).isEmpty
     }
 
     /// Decides whether the PIDs holding a *listening* socket on our chosen port
@@ -1973,12 +2138,12 @@ final class PythonBridgeService: ObservableObject {
     /// state rather than the generic "Ollama did not respond" timeout message (B3).
     static func ollamaPortConflictMessage(port: Int32, foreignPID: Int32) -> String {
         "Another Ollama (or other) instance is running on port \(port) (PID \(foreignPID))." +
-        " Marcut could not verify its own embedded service on this port and will try another."
+            " Marcut could not verify its own embedded service on this port and will try another."
     }
 
     private func selectBundledOllamaPort(base: Int32 = 11434, attempts: Int = 20) async -> Int32? {
         var candidate = base
-        for _ in 0..<attempts {
+        for _ in 0 ..< attempts {
             let pidsOnPort = await pids(using: candidate)
 
             // If this port is occupied by processes other than the bundled one, skip
@@ -1987,7 +2152,8 @@ final class PythonBridgeService: ObservableObject {
                    let launchedPID = launchedOllamaPID,
                    launchedPort == candidate,
                    pidsOnPort.count == 1,
-                   pidsOnPort.contains(launchedPID) {
+                   pidsOnPort.contains(launchedPID)
+                {
                     return candidate // Our own instance is already bound here
                 }
                 candidate += 1
@@ -2001,8 +2167,8 @@ final class PythonBridgeService: ObservableObject {
 
     private func findAvailablePort(startingAt start: Int32 = 11435, attempts: Int = 10) async -> Int32? {
         var port = start
-        for _ in 0..<attempts {
-            if !(await isPortInUse(port)) {
+        for _ in 0 ..< attempts {
+            if await !isPortInUse(port) {
                 return port
             }
             port += 1
@@ -2036,7 +2202,10 @@ final class PythonBridgeService: ObservableObject {
         }
 
         // Check for data transfer progress (e.g., "2.1 GB/4.9 GB")
-        if let match = cleanOutput.range(of: #"(\d+\.?\d*)\s*[KMGT]B/(\d+\.?\d*)\s*[KMGT]B"#, options: .regularExpression) {
+        if let match = cleanOutput.range(
+            of: #"(\d+\.?\d*)\s*[KMGT]B/(\d+\.?\d*)\s*[KMGT]B"#,
+            options: .regularExpression
+        ) {
             let progressText = String(cleanOutput[match])
             let components = progressText.components(separatedBy: "/")
             if components.count == 2 {
@@ -2055,7 +2224,10 @@ final class PythonBridgeService: ObservableObject {
             // Model layer is downloading, check for size info
             if cleanOutput.contains("MB/4.9 GB") || cleanOutput.contains("GB/4.9 GB") {
                 // Extract current size
-                if let sizeMatch = cleanOutput.range(of: #"(\d+\.?\d*)\s*[MG]B/4\.9\s*GB"#, options: .regularExpression) {
+                if let sizeMatch = cleanOutput.range(
+                    of: #"(\d+\.?\d*)\s*[MG]B/4\.9\s*GB"#,
+                    options: .regularExpression
+                ) {
                     let sizeText = String(cleanOutput[sizeMatch])
                     let parts = sizeText.components(separatedBy: "/")
                     if let first = parts.first {
@@ -2082,9 +2254,14 @@ final class PythonBridgeService: ObservableObject {
         let pattern = #"(\d+\.?\d*)\s*([KMGT]B)"#
 
         guard let regex = try? NSRegularExpression(pattern: pattern, options: []),
-              let match = regex.firstMatch(in: cleanedString, options: [], range: NSRange(cleanedString.startIndex..., in: cleanedString)),
+              let match = regex.firstMatch(
+                  in: cleanedString,
+                  options: [],
+                  range: NSRange(cleanedString.startIndex..., in: cleanedString)
+              ),
               let valueRange = Range(match.range(at: 1), in: cleanedString),
-              let unitRange = Range(match.range(at: 2), in: cleanedString) else {
+              let unitRange = Range(match.range(at: 2), in: cleanedString)
+        else {
             return 0
         }
 
@@ -2104,14 +2281,14 @@ final class PythonBridgeService: ObservableObject {
         logManager.close()
         bridgeLog("Closed ollama.log handle", component: "Ollama")
     }
-    
+
     // Removed ensureOllamaLogHandle as it's replaced by logManager internals
-    
+
     /// Force flush any pending ollama log data to disk
     func flushOllamaLog() {
         logManager.flush()
     }
-    
+
     /// Write a timestamped entry to the ollama log (for debugging/status messages)
     func writeOllamaLogEntry(_ message: String) {
         let entry = "[Ollama] [\(ISO8601DateFormatter().string(from: Date()))] \(message)\n"
@@ -2141,7 +2318,6 @@ final class PythonBridgeService: ObservableObject {
             return false
         }
 
-
         // Build Python script based on mode. Values are passed as base64 JSON so
         // model/mode/path strings are data, never executable Python source.
         guard let pythonSitePath = Bundle.main.resourcePath.map({ "\($0)/python_site" }) else {
@@ -2159,7 +2335,7 @@ final class PythonBridgeService: ObservableObject {
             "model": model,
             "debug": debug,
             "llm_skip_confidence": llmSkipConfidence,
-            "llm_concurrency": llmConcurrency
+            "llm_concurrency": llmConcurrency,
         ]
         guard
             let payloadData = try? JSONSerialization.data(withJSONObject: payload, options: []),
@@ -2170,9 +2346,8 @@ final class PythonBridgeService: ObservableObject {
         }
         let payloadB64 = payloadData.base64EncodedString()
 
-        let pythonScript: String
-        if requestedMode != "rules" && model != "mock" {
-            pythonScript = """
+        let pythonScript = if requestedMode != "rules", model != "mock" {
+            """
             import base64, json, sys;
             payload = json.loads(base64.b64decode('\(payloadB64)').decode('utf-8'));
             sys.path.insert(0, payload['python_site']);
@@ -2182,7 +2357,7 @@ final class PythonBridgeService: ObservableObject {
             sys.exit(exit_code)
             """
         } else {
-            pythonScript = """
+            """
             import base64, json, sys;
             import traceback;
 
@@ -2203,7 +2378,6 @@ final class PythonBridgeService: ObservableObject {
 
         let cliArguments = ["-c", pythonScript]
 
-        
         // Get environment for subprocess execution
         var cliEnvironment = getOllamaEnvironment()
 
@@ -2214,13 +2388,13 @@ final class PythonBridgeService: ObservableObject {
 
         // Create process for execution
         let process = Process()
-        
+
         // Track the process for cancellation
         activeProcesses[documentId] = process
         defer {
             activeProcesses.removeValue(forKey: documentId)
         }
-        
+
         process.executableURL = URL(fileURLWithPath: launcherPath)
         process.arguments = cliArguments
         process.environment = cliEnvironment
@@ -2275,21 +2449,21 @@ final class PythonBridgeService: ObservableObject {
 
         do {
             try process.run()
-            
+
             // Wait for completion non-blockingly using a continuation
             let exitCode = await withCheckedContinuation { continuation in
                 process.terminationHandler = { terminatedProcess in
                     continuation.resume(returning: terminatedProcess.terminationStatus)
                 }
             }
-            
+
             // Clean up handlers
             stdoutPipe.fileHandleForReading.readabilityHandler = nil
             stderrPipe.fileHandleForReading.readabilityHandler = nil
-            
+
             // Wait for queue to drain
-            outputQueue.sync { }
-            
+            outputQueue.sync {}
+
             if !outputState.buffer.isEmpty {
                 let finalLine = outputState.buffer.trimmingCharacters(in: .whitespacesAndNewlines)
                 if !finalLine.isEmpty {
@@ -2303,12 +2477,15 @@ final class PythonBridgeService: ObservableObject {
             let success = exitCode == 0
 
             bridgeLog("UNIFIED: Process completed with exit code \(exitCode)", component: "UNIFIED_EXECUTION")
-            
+
             // If success, log the final output for debugging
             if !success {
-                bridgeLog("UNIFIED: Error output: \nSTDOUT: \(output)\nSTDERR:\n\(errorOutput)", component: "UNIFIED_EXECUTION")
+                bridgeLog(
+                    "UNIFIED: Error output: \nSTDOUT: \(output)\nSTDERR:\n\(errorOutput)",
+                    component: "UNIFIED_EXECUTION"
+                )
             } else {
-                 bridgeLog("UNIFIED: Successfully completed redaction", component: "UNIFIED_EXECUTION")
+                bridgeLog("UNIFIED: Successfully completed redaction", component: "UNIFIED_EXECUTION")
             }
 
             return success
@@ -2327,7 +2504,7 @@ final class PythonBridgeService: ObservableObject {
         _ item: DocumentItem,
         settings: RedactionSettings,
         outputDirectory: URL,
-        heartbeat: ((Int, Int, String?) -> Void)? = nil,
+        heartbeat _: ((Int, Int, String?) -> Void)? = nil,
         cliMode: Bool = false
     ) async -> Bool {
         applyRuleFilter(settings.enabledRules)
@@ -2427,8 +2604,12 @@ final class PythonBridgeService: ObservableObject {
                 let displayRoot = displayPath(allowedRoot)
                 let displayInput = displayPath(inputPath)
                 let errorMessage = """
-CLI Error: Input file '\(displayInput)' is outside the sandboxed Application Support container. Place CLI inputs under \(displayRoot) (e.g. \(displayRoot)/Input or \(displayRoot)/Work) before running.
-"""
+                CLI Error: Input file '\(
+                    displayInput
+                )' is outside the sandboxed Application Support container. Place CLI inputs under \(displayRoot) (e.g. \(
+                    displayRoot
+                )/Input or \(displayRoot)/Work) before running.
+                """
                 logToFile(logPath, "❌ \(errorMessage)")
                 item.status = .failed
                 item.errorMessage = errorMessage
@@ -2556,7 +2737,7 @@ CLI Error: Input file '\(displayInput)' is outside the sandboxed Application Sup
 
             if cliSuccess {
                 // Continue with file moving logic
-                if !usingMockBackend && settings.mode.usesLLM {
+                if !usingMockBackend, settings.mode.usesLLM {
                     item.concludeCurrentStage()
                     item.beginStage(.merging)
                 }
@@ -2641,7 +2822,7 @@ CLI Error: Input file '\(displayInput)' is outside the sandboxed Application Sup
         )
 
         if success {
-            if !usingMockBackend && settings.mode.usesLLM {
+            if !usingMockBackend, settings.mode.usesLLM {
                 item.concludeCurrentStage()
                 item.beginStage(.merging)
             }
@@ -2683,7 +2864,6 @@ CLI Error: Input file '\(displayInput)' is outside the sandboxed Application Sup
         } else {
             logToFile(logPath, "[SUB] Subprocess execution failed")
 
-
             // Original failure handling for non-fallback cases
             if item.status != .cancelled {
                 item.status = .failed
@@ -2692,9 +2872,7 @@ CLI Error: Input file '\(displayInput)' is outside the sandboxed Application Sup
             logToFile(logPath, "=== MARCUT PROCESSING END (FAILED) ===")
             return false
         }
-
     }
-
 
     // MARK: - Command Execution
 
@@ -2702,13 +2880,13 @@ CLI Error: Input file '\(displayInput)' is outside the sandboxed Application Sup
         _ command: String,
         arguments: [String],
         environment: [String: String]? = nil,
-        background: Bool = false
+        background _: Bool = false
     ) async -> (success: Bool, output: String) {
         let env = environment ?? getOllamaEnvironment()
         return await legacyRunCommand(command, arguments: arguments, environment: env)
     }
 
-    // Fallback to direct process execution for non-Ollama commands
+    /// Fallback to direct process execution for non-Ollama commands
     private func legacyRunCommand(
         _ command: String,
         arguments: [String],
@@ -2717,7 +2895,7 @@ CLI Error: Input file '\(displayInput)' is outside the sandboxed Application Sup
     ) async -> (success: Bool, output: String) {
         bridgeLog("CLI: Executing command: \(command)", component: "CLI_SUBPROCESS")
         bridgeLog("CLI: Arguments: \(arguments)", component: "CLI_SUBPROCESS")
-        
+
         return await Task.detached(priority: .userInitiated) { () async -> (success: Bool, output: String) in
             let process = Process()
             process.executableURL = URL(fileURLWithPath: command)
@@ -2732,15 +2910,18 @@ CLI Error: Input file '\(displayInput)' is outside the sandboxed Application Sup
                 try process.run()
                 var didTimeout = false
                 let deadline = Date().addingTimeInterval(timeoutSeconds)
-                while process.isRunning && Date() < deadline {
+                while process.isRunning, Date() < deadline {
                     try? await Task.sleep(nanoseconds: 100_000_000)
                 }
                 if process.isRunning {
                     didTimeout = true
-                    bridgeLog("CLI: Process timed out after \(timeoutSeconds)s, terminating...", component: "CLI_SUBPROCESS")
+                    bridgeLog(
+                        "CLI: Process timed out after \(timeoutSeconds)s, terminating...",
+                        component: "CLI_SUBPROCESS"
+                    )
                     process.terminate()
                     let terminateDeadline = Date().addingTimeInterval(5)
-                    while process.isRunning && Date() < terminateDeadline {
+                    while process.isRunning, Date() < terminateDeadline {
                         try? await Task.sleep(nanoseconds: 100_000_000)
                     }
                     if process.isRunning {
@@ -2749,7 +2930,7 @@ CLI Error: Input file '\(displayInput)' is outside the sandboxed Application Sup
                             _ = kill(pid, SIGKILL)
                         }
                         let killDeadline = Date().addingTimeInterval(2)
-                        while process.isRunning && Date() < killDeadline {
+                        while process.isRunning, Date() < killDeadline {
                             try? await Task.sleep(nanoseconds: 100_000_000)
                         }
                     }
@@ -2758,18 +2939,21 @@ CLI Error: Input file '\(displayInput)' is outside the sandboxed Application Sup
                     bridgeLog("CLI: Process still running after kill attempts", component: "CLI_SUBPROCESS")
                     return (false, "Process timed out.")
                 }
-                bridgeLog("CLI: Process finished with exit code: \(process.terminationStatus)", component: "CLI_SUBPROCESS")
+                bridgeLog(
+                    "CLI: Process finished with exit code: \(process.terminationStatus)",
+                    component: "CLI_SUBPROCESS"
+                )
 
                 let data = pipe.fileHandleForReading.readDataToEndOfFile()
                 let output = String(data: data, encoding: .utf8) ?? ""
                 let success = !didTimeout && process.terminationStatus == 0
-                
+
                 if didTimeout {
                     bridgeLog("CLI: Process timed out. Output:\n\(output)", component: "CLI_SUBPROCESS")
                 } else if !success {
                     bridgeLog("CLI: Process failed. Output:\n\(output)", component: "CLI_SUBPROCESS")
                 }
-                
+
                 return (success, output)
             } catch {
                 bridgeLog("CLI: Failed to run command: \(error)", component: "CLI_SUBPROCESS")
@@ -2789,10 +2973,10 @@ CLI Error: Input file '\(displayInput)' is outside the sandboxed Application Sup
         return result
     }
 
-    // Pure error-classification helpers for the model-download retry/fallback state
-    // machine -- static (same pattern as modelDownloadCLIIdleTimeout/modelDownloadSpaceShortfall
-    // above) so `swift test` can exercise the decision logic directly without a live
-    // Ollama download in flight (issue #50 / B8).
+    /// Pure error-classification helpers for the model-download retry/fallback state
+    /// machine -- static (same pattern as modelDownloadCLIIdleTimeout/modelDownloadSpaceShortfall
+    /// above) so `swift test` can exercise the decision logic directly without a live
+    /// Ollama download in flight (issue #50 / B8).
     static func normalizeModelDownloadErrorMessage(_ message: String) -> String {
         let cleaned = removeANSIEscapeCodes(message)
         let lines = cleaned
@@ -2841,7 +3025,7 @@ CLI Error: Input file '\(displayInput)' is outside the sandboxed Application Sup
             "disk full",
             "permission denied",
             "forbidden",
-            "unauthorized"
+            "unauthorized",
         ]
         if nonRetryable.contains(where: { lowered.contains($0) }) {
             return false
@@ -2857,7 +3041,7 @@ CLI Error: Input file '\(displayInput)' is outside the sandboxed Application Sup
             "network",
             "unreachable",
             "temporarily",
-            "stream ended"
+            "stream ended",
         ]
         return retryable.contains(where: { lowered.contains($0) })
     }
@@ -2870,7 +3054,7 @@ CLI Error: Input file '\(displayInput)' is outside the sandboxed Application Sup
             "disk full",
             "permission denied",
             "forbidden",
-            "unauthorized"
+            "unauthorized",
         ]
         if disallow.contains(where: { lowered.contains($0) }) {
             return false
@@ -2885,15 +3069,18 @@ CLI Error: Input file '\(displayInput)' is outside the sandboxed Application Sup
             "timeout",
             "temporarily",
             "network",
-            "unreachable"
+            "unreachable",
         ]
         return fallbackTriggers.contains(where: { lowered.contains($0) })
     }
 
-    static func modelDownloadCLIIdleTimeout(from environment: [String: String] = ProcessInfo.processInfo.environment) -> TimeInterval {
+    static func modelDownloadCLIIdleTimeout(from environment: [String: String] = ProcessInfo.processInfo
+        .environment) -> TimeInterval
+    {
         guard let raw = environment["MARCUT_MODEL_DOWNLOAD_CLI_IDLE_TIMEOUT"],
               let value = Double(raw),
-              value > 0 else {
+              value > 0
+        else {
             return 120.0
         }
         return max(0.1, value)
@@ -2978,25 +3165,31 @@ CLI Error: Input file '\(displayInput)' is outside the sandboxed Application Sup
 
         let maxAttempts = 3
         var lastErrorMessage: String?
-        for attempt in 1...maxAttempts {
+        for attempt in 1 ... maxAttempts {
             do {
                 updateProgress(5.0) // Confirmed server responsiveness
-                bridgeLog("Starting download for \(modelName) via HTTP (attempt \(attempt)/\(maxAttempts))", component: "MODEL_DOWNLOAD")
+                bridgeLog(
+                    "Starting download for \(modelName) via HTTP (attempt \(attempt)/\(maxAttempts))",
+                    component: "MODEL_DOWNLOAD"
+                )
                 if modelDownloadCancelled {
                     lastErrorMessage = "Model download cancelled."
                     break
                 }
                 let ok = try await pullModelViaHTTP(modelName: modelName, progress: updateProgress)
-                
+
                 if ok {
                     updateProgress(99.0)
                     bridgeLog("Download reported success, refreshing model list...", component: "MODEL_DOWNLOAD")
                     await loadInstalledModels()
-                    
+
                     // VERIFICATION: Check if the model is actually in the list
                     // We check for partial match because "llama3.2" might become "llama3.2:latest"
                     if isModelAvailable(modelName) {
-                        bridgeLog("✅ Model \(modelName) verified on disk; waiting for readiness.", component: "MODEL_DOWNLOAD")
+                        bridgeLog(
+                            "✅ Model \(modelName) verified on disk; waiting for readiness.",
+                            component: "MODEL_DOWNLOAD"
+                        )
                         if await waitForModelReadiness(modelName: modelName, maxAttempts: 12) {
                             updateProgress(100.0)
                             modelDownloadCompletionNotifier(modelName)
@@ -3026,7 +3219,7 @@ CLI Error: Input file '\(displayInput)' is outside the sandboxed Application Sup
                     break
                 }
                 bridgeLog("MODEL_DOWNLOAD attempt \(attempt) failed: \(message)", component: "MODEL_DOWNLOAD")
-                if attempt < maxAttempts && Self.shouldRetryModelDownload(message: message) {
+                if attempt < maxAttempts, Self.shouldRetryModelDownload(message: message) {
                     bridgeLog("MODEL_DOWNLOAD: Retrying after error...", component: "MODEL_DOWNLOAD")
                     // Do not force probe (which restarts Ollama) during retry; just ensure it's still running
                     _ = await ensureOllamaRunning(forceProbe: false)
@@ -3043,7 +3236,10 @@ CLI Error: Input file '\(displayInput)' is outside the sandboxed Application Sup
                 lastModelDownloadError = "Model download cancelled."
                 return false
             }
-            bridgeLog("MODEL_DOWNLOAD: Falling back to CLI pull after HTTP error: \(message)", component: "MODEL_DOWNLOAD")
+            bridgeLog(
+                "MODEL_DOWNLOAD: Falling back to CLI pull after HTTP error: \(message)",
+                component: "MODEL_DOWNLOAD"
+            )
             do {
                 updateProgress(max(lastProgress, 8.0))
                 let ok = try await pullModelViaCLI(modelName: modelName, progress: updateProgress)
@@ -3119,14 +3315,26 @@ CLI Error: Input file '\(displayInput)' is outside the sandboxed Application Sup
         var completedByDigest: [String: Int64] = [:]
 
         if modelDownloadCancelled {
-            throw NSError(domain: "Ollama", code: NSURLErrorCancelled, userInfo: [NSLocalizedDescriptionKey: "Model download cancelled."])
+            throw NSError(
+                domain: "Ollama",
+                code: NSURLErrorCancelled,
+                userInfo: [NSLocalizedDescriptionKey: "Model download cancelled."]
+            )
         }
         let (stream, response) = try await session.bytes(for: request)
         guard let httpResponse = response as? HTTPURLResponse else {
-            throw NSError(domain: "Ollama", code: -1, userInfo: [NSLocalizedDescriptionKey: "Unexpected response from Ollama pull"])
+            throw NSError(
+                domain: "Ollama",
+                code: -1,
+                userInfo: [NSLocalizedDescriptionKey: "Unexpected response from Ollama pull"]
+            )
         }
         guard httpResponse.statusCode == 200 else {
-            throw NSError(domain: "Ollama", code: httpResponse.statusCode, userInfo: [NSLocalizedDescriptionKey: "Ollama pull failed (HTTP \(httpResponse.statusCode))"])
+            throw NSError(
+                domain: "Ollama",
+                code: httpResponse.statusCode,
+                userInfo: [NSLocalizedDescriptionKey: "Ollama pull failed (HTTP \(httpResponse.statusCode))"]
+            )
         }
 
         // Show that the HTTP stream is open even before size-based progress is available
@@ -3134,7 +3342,11 @@ CLI Error: Input file '\(displayInput)' is outside the sandboxed Application Sup
 
         for try await line in stream.lines {
             if modelDownloadCancelled {
-                throw NSError(domain: "Ollama", code: NSURLErrorCancelled, userInfo: [NSLocalizedDescriptionKey: "Model download cancelled."])
+                throw NSError(
+                    domain: "Ollama",
+                    code: NSURLErrorCancelled,
+                    userInfo: [NSLocalizedDescriptionKey: "Model download cancelled."]
+                )
             }
             let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !trimmed.isEmpty else { continue }
@@ -3149,15 +3361,19 @@ CLI Error: Input file '\(displayInput)' is outside the sandboxed Application Sup
                 throw NSError(domain: "Ollama", code: -2, userInfo: [NSLocalizedDescriptionKey: errorMessage])
             }
             if event.status?.lowercased() == "error" {
-                throw NSError(domain: "Ollama", code: -2, userInfo: [NSLocalizedDescriptionKey: "Ollama reported an error while downloading the model."])
+                throw NSError(
+                    domain: "Ollama",
+                    code: -2,
+                    userInfo: [NSLocalizedDescriptionKey: "Ollama reported an error while downloading the model."]
+                )
             }
 
             if let status = event.status {
                 // Log status changes for debugging
                 if !status.hasPrefix("pulling") && !status.hasPrefix("downloading") {
-                     bridgeLog("MODEL_DOWNLOAD: Status update: \(status)", component: "MODEL_DOWNLOAD")
+                    bridgeLog("MODEL_DOWNLOAD: Status update: \(status)", component: "MODEL_DOWNLOAD")
                 }
-                
+
                 let lowered = status.lowercased()
 
                 if lowered.contains("pulling manifest") || lowered.contains("resolving") {
@@ -3195,16 +3411,27 @@ CLI Error: Input file '\(displayInput)' is outside the sandboxed Application Sup
         bridgeLog("❌ MODEL_DOWNLOAD: Stream ended without 'success' status", component: "MODEL_DOWNLOAD")
         await loadInstalledModels()
         if isModelAvailable(modelName) {
-            bridgeLog("MODEL_DOWNLOAD: Model available after stream ended; treating as success", component: "MODEL_DOWNLOAD")
+            bridgeLog(
+                "MODEL_DOWNLOAD: Model available after stream ended; treating as success",
+                component: "MODEL_DOWNLOAD"
+            )
             progress(100.0)
             return true
         }
-        throw NSError(domain: "Ollama", code: -3, userInfo: [NSLocalizedDescriptionKey: "Download stream ended unexpectedly. Please retry."])
+        throw NSError(
+            domain: "Ollama",
+            code: -3,
+            userInfo: [NSLocalizedDescriptionKey: "Download stream ended unexpectedly. Please retry."]
+        )
     }
 
     private func pullModelViaCLI(modelName: String, progress: @escaping (Double) -> Void) async throws -> Bool {
         guard let ollamaPath = await prepareOllamaBinary() else {
-            throw NSError(domain: "Ollama", code: -1, userInfo: [NSLocalizedDescriptionKey: "Ollama binary not found for CLI download."])
+            throw NSError(
+                domain: "Ollama",
+                code: -1,
+                userInfo: [NSLocalizedDescriptionKey: "Ollama binary not found for CLI download."]
+            )
         }
 
         let environment = getOllamaEnvironment()
@@ -3276,11 +3503,15 @@ CLI Error: Input file '\(displayInput)' is outside the sandboxed Application Sup
                     outputState.buffer.append(chunk)
 
                     let endsWithNewline = outputState.buffer.last?.isNewline == true
-                    let parts = outputState.buffer.split(omittingEmptySubsequences: false, whereSeparator: { $0.isNewline })
+                    let parts = outputState.buffer.split(
+                        omittingEmptySubsequences: false,
+                        whereSeparator: { $0.isNewline }
+                    )
                     let completeLines = endsWithNewline ? parts : parts.dropLast()
 
                     for line in completeLines {
-                        let cleaned = removeANSIEscapeCodes(String(line)).trimmingCharacters(in: .whitespacesAndNewlines)
+                        let cleaned = removeANSIEscapeCodes(String(line))
+                            .trimmingCharacters(in: .whitespacesAndNewlines)
                         guard !cleaned.isEmpty else { continue }
                         bridgeLog("MODEL_DOWNLOAD CLI: \(cleaned)", component: "MODEL_DOWNLOAD")
                         if let value = parseOllamaPullProgressLine(cleaned) {
@@ -3301,7 +3532,10 @@ CLI Error: Input file '\(displayInput)' is outside the sandboxed Application Sup
                 guard idleFor >= idleTimeout else { return }
                 let message = "Ollama pull stalled with no output for \(Int(idleFor)) seconds. Please try again."
                 outputState.setStallMessage(message)
-                bridgeLog("MODEL_DOWNLOAD CLI stalled; terminating process PID \(process.processIdentifier): \(message)", component: "MODEL_DOWNLOAD")
+                bridgeLog(
+                    "MODEL_DOWNLOAD CLI stalled; terminating process PID \(process.processIdentifier): \(message)",
+                    component: "MODEL_DOWNLOAD"
+                )
                 process.terminate()
             }
             idleTimer.resume()
@@ -3315,10 +3549,11 @@ CLI Error: Input file '\(displayInput)' is outside the sandboxed Application Sup
                     }
                 }
 
-                outputQueue.sync { }
+                outputQueue.sync {}
 
                 if !outputState.buffer.isEmpty {
-                    let finalLine = removeANSIEscapeCodes(outputState.buffer).trimmingCharacters(in: .whitespacesAndNewlines)
+                    let finalLine = removeANSIEscapeCodes(outputState.buffer)
+                        .trimmingCharacters(in: .whitespacesAndNewlines)
                     if !finalLine.isEmpty {
                         bridgeLog("MODEL_DOWNLOAD CLI: \(finalLine)", component: "MODEL_DOWNLOAD")
                         if let value = parseOllamaPullProgressLine(finalLine) {
@@ -3334,14 +3569,22 @@ CLI Error: Input file '\(displayInput)' is outside the sandboxed Application Sup
                     return
                 }
                 if let stallMessage = outputState.takeStallMessage() {
-                    continuation.resume(throwing: NSError(domain: "Ollama", code: -4, userInfo: [NSLocalizedDescriptionKey: stallMessage]))
+                    continuation.resume(throwing: NSError(
+                        domain: "Ollama",
+                        code: -4,
+                        userInfo: [NSLocalizedDescriptionKey: stallMessage]
+                    ))
                 } else if process.terminationStatus == 0 {
                     continuation.resume(returning: true)
                 } else {
                     let message = sanitizedOutput.isEmpty
                         ? "Ollama pull failed with exit code \(process.terminationStatus)."
                         : sanitizedOutput
-                    continuation.resume(throwing: NSError(domain: "Ollama", code: Int(process.terminationStatus), userInfo: [NSLocalizedDescriptionKey: message]))
+                    continuation.resume(throwing: NSError(
+                        domain: "Ollama",
+                        code: Int(process.terminationStatus),
+                        userInfo: [NSLocalizedDescriptionKey: message]
+                    ))
                 }
             }
 
@@ -3364,8 +3607,9 @@ CLI Error: Input file '\(displayInput)' is outside the sandboxed Application Sup
     private func loadInstalledModels() async {
         if let (code, data) = try? await ollamaHTTP(path: "/api/tags", timeout: 2.0),
            code == 200,
-           let data = data,
-           let names = parseModelList(from: data) {
+           let data,
+           let names = parseModelList(from: data)
+        {
             await MainActor.run {
                 self.installedModels = names
             }
@@ -3408,7 +3652,8 @@ CLI Error: Input file '\(displayInput)' is outside the sandboxed Application Sup
 
     private func parseModelList(from data: Data) -> [String]? {
         guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let models = object["models"] as? [[String: Any]] else {
+              let models = object["models"] as? [[String: Any]]
+        else {
             return nil
         }
         return models.compactMap { $0["name"] as? String }
@@ -3418,8 +3663,12 @@ CLI Error: Input file '\(displayInput)' is outside the sandboxed Application Sup
         var models: [String] = []
         for line in output.split(whereSeparator: { $0.isNewline }) {
             let trimmed = line.trimmingCharacters(in: .whitespaces)
-            if trimmed.isEmpty { continue }
-            if trimmed.lowercased().hasPrefix("name") { continue }
+            if trimmed.isEmpty {
+                continue
+            }
+            if trimmed.lowercased().hasPrefix("name") {
+                continue
+            }
             let components = trimmed.split(separator: " ", omittingEmptySubsequences: true)
             if let first = components.first {
                 models.append(String(first))
@@ -3439,10 +3688,12 @@ CLI Error: Input file '\(displayInput)' is outside the sandboxed Application Sup
         activeModelDownloadProcess = nil
     }
 
-
     func cancelProcess(for documentId: UUID) {
         if let process = activeProcesses[documentId] {
-            bridgeLog("Cancelling active process for document ID: \(documentId) (PID: \(process.processIdentifier))", component: "Cancellation")
+            bridgeLog(
+                "Cancelling active process for document ID: \(documentId) (PID: \(process.processIdentifier))",
+                component: "Cancellation"
+            )
             process.terminate()
             activeProcesses.removeValue(forKey: documentId)
         } else {
@@ -3498,7 +3749,7 @@ CLI Error: Input file '\(displayInput)' is outside the sandboxed Application Sup
         let discovered = await Task.detached {
             ModelPromotion.discoverModels(in: modelsDir)
         }.value
-        
+
         if !discovered.isEmpty {
             installedModels = Array(discovered).sorted()
             prefetchedFromDisk = true
@@ -3514,7 +3765,8 @@ CLI Error: Input file '\(displayInput)' is outside the sandboxed Application Sup
         if let attributes = try? fm.attributesOfItem(atPath: url.path),
            let fileSize = attributes[.size] as? Int64,
            fileSize > 0,
-           let handle = try? FileHandle(forWritingTo: url) {
+           let handle = try? FileHandle(forWritingTo: url)
+        {
             do {
                 try handle.seek(toOffset: 0)
                 let chunkSize = 1_048_576
@@ -3542,7 +3794,12 @@ CLI Error: Input file '\(displayInput)' is outside the sandboxed Application Sup
         let fm = FileManager.default
         let dir = workDirectory
         if fm.fileExists(atPath: dir.path) {
-            if let enumerator = fm.enumerator(at: dir, includingPropertiesForKeys: [.isDirectoryKey], options: [], errorHandler: nil) {
+            if let enumerator = fm.enumerator(
+                at: dir,
+                includingPropertiesForKeys: [.isDirectoryKey],
+                options: [],
+                errorHandler: nil
+            ) {
                 for case let fileURL as URL in enumerator {
                     var isDirectory: ObjCBool = false
                     if fm.fileExists(atPath: fileURL.path, isDirectory: &isDirectory) {
@@ -3568,7 +3825,7 @@ CLI Error: Input file '\(displayInput)' is outside the sandboxed Application Sup
         let candidates = [
             workDirectory.appendingPathComponent("\(baseName)_input.docx"),
             workDirectory.appendingPathComponent("\(baseName)_redacted.docx"),
-            workDirectory.appendingPathComponent("\(baseName)_report.json")
+            workDirectory.appendingPathComponent("\(baseName)_report.json"),
         ]
         for url in candidates {
             secureRemoveFile(at: url)
@@ -3579,7 +3836,6 @@ CLI Error: Input file '\(displayInput)' is outside the sandboxed Application Sup
 // MARK: - CLI Subprocess Implementation (Hybrid Approach)
 
 extension PythonBridgeService {
-
     /// Run redaction using CLI subprocess with MARCUT_PROGRESS protocol for non-blocking execution
     /// This provides true non-blocking behavior while using the same pipeline as CLI
     func runRedactionWithCLI(
@@ -3607,7 +3863,7 @@ extension PythonBridgeService {
             let possiblePaths = [
                 "\(bundlePath)/Contents/Resources/marcut_cli_launcher.sh",
                 "\(bundlePath)/../MarcutApp/Contents/Resources/marcut_cli_launcher.sh",
-                "\(bundlePath)/../../MarcutApp/Contents/Resources/marcut_cli_launcher.sh"
+                "\(bundlePath)/../../MarcutApp/Contents/Resources/marcut_cli_launcher.sh",
             ]
 
             scriptPath = possiblePaths.first { FileManager.default.fileExists(atPath: $0) } ?? possiblePaths[0]
@@ -3657,12 +3913,18 @@ extension PythonBridgeService {
                 } else {
                     environment["TMPDIR"] = robustTmpDir.path
                     environment["OLLAMA_TMPDIR"] = robustTmpDir.path
-                    bridgeLog("CLI: ⚠️ CLI temp dir not exec-capable, using base: \(robustTmpDir.path)", component: "CLI_SUBPROCESS")
+                    bridgeLog(
+                        "CLI: ⚠️ CLI temp dir not exec-capable, using base: \(robustTmpDir.path)",
+                        component: "CLI_SUBPROCESS"
+                    )
                 }
             } catch {
                 environment["TMPDIR"] = robustTmpDir.path
                 environment["OLLAMA_TMPDIR"] = robustTmpDir.path
-                bridgeLog("CLI: ⚠️ Failed to prepare CLI temp dir (\(runTmpDir.path)): \(error)", component: "CLI_SUBPROCESS")
+                bridgeLog(
+                    "CLI: ⚠️ Failed to prepare CLI temp dir (\(runTmpDir.path)): \(error)",
+                    component: "CLI_SUBPROCESS"
+                )
             }
         } else {
             bridgeLog("CLI: ⚠️ Failed to prepare robust TMPDIR, fallback to inherited", component: "CLI_SUBPROCESS")
@@ -3684,7 +3946,7 @@ extension PythonBridgeService {
             "--backend", resolvedBackend,
             "--model", resolvedModel,
             "--llm-skip-confidence", String(llmSkipConfidence),
-            "--llm-concurrency", String(llmConcurrency)
+            "--llm-concurrency", String(llmConcurrency),
         ]
 
         if debug {
@@ -3701,7 +3963,10 @@ extension PythonBridgeService {
         process.standardError = stderrPipe
 
         // Log subprocess details for debugging
-        bridgeLog("CLI subprocess command: \(process.executableURL!.path) \(process.arguments!.joined(separator: " "))", component: "CLI_SUBPROCESS")
+        bridgeLog(
+            "CLI subprocess command: \(process.executableURL!.path) \(process.arguments!.joined(separator: " "))",
+            component: "CLI_SUBPROCESS"
+        )
         bridgeLog("Working directory: \(process.currentDirectoryURL!.path)", component: "CLI_SUBPROCESS")
 
         let cleanupTempDir = cliTempDir
@@ -3736,7 +4001,10 @@ extension PythonBridgeService {
                     stdoutState.buffer.append(chunk)
 
                     let endsWithNewline = stdoutState.buffer.last?.isNewline == true
-                    let parts = stdoutState.buffer.split(omittingEmptySubsequences: false, whereSeparator: { $0.isNewline })
+                    let parts = stdoutState.buffer.split(
+                        omittingEmptySubsequences: false,
+                        whereSeparator: { $0.isNewline }
+                    )
                     let completeLines = endsWithNewline ? parts : parts.dropLast()
 
                     for line in completeLines {
@@ -3771,8 +4039,8 @@ extension PythonBridgeService {
                 stdoutPipe.fileHandleForReading.readabilityHandler = nil
                 stderrPipe.fileHandleForReading.readabilityHandler = nil
 
-                outputQueue.sync { }
-                stderrQueue.sync { }
+                outputQueue.sync {}
+                stderrQueue.sync {}
 
                 let remainingData = stdoutPipe.fileHandleForReading.readDataToEndOfFile()
                 if !remainingData.isEmpty, let remainingString = String(data: remainingData, encoding: .utf8) {
@@ -3800,7 +4068,10 @@ extension PythonBridgeService {
                 }
 
                 let success = process.terminationStatus == 0
-                bridgeLog("CLI subprocess completed with status: \(process.terminationStatus)", component: "CLI_SUBPROCESS")
+                bridgeLog(
+                    "CLI subprocess completed with status: \(process.terminationStatus)",
+                    component: "CLI_SUBPROCESS"
+                )
 
                 if let cleanupTempDir {
                     Self.secureEraseDirectory(cleanupTempDir)
@@ -3834,7 +4105,8 @@ extension PythonBridgeService {
         }
 
         if cleanLine.hasPrefix("MARCUT_STATUS:") {
-            let message = cleanLine.replacingOccurrences(of: "MARCUT_STATUS:", with: "").trimmingCharacters(in: .whitespacesAndNewlines)
+            let message = cleanLine.replacingOccurrences(of: "MARCUT_STATUS:", with: "")
+                .trimmingCharacters(in: .whitespacesAndNewlines)
             guard !message.isEmpty else { return }
 
             var chunkValue: Int?
@@ -3842,7 +4114,8 @@ extension PythonBridgeService {
 
             if let match = message.range(of: #"Processing chunk\s+(\d+)/(\d+)"#, options: .regularExpression) {
                 let matched = String(message[match])
-                let numbers = matched.replacingOccurrences(of: "Processing chunk", with: "").trimmingCharacters(in: .whitespaces)
+                let numbers = matched.replacingOccurrences(of: "Processing chunk", with: "")
+                    .trimmingCharacters(in: .whitespaces)
                 let parts = numbers.split(separator: "/").map { String($0).trimmingCharacters(in: .whitespaces) }
                 if parts.count == 2, let c = Int(parts[0]), let t = Int(parts[1]), t > 0 {
                     chunkValue = c
@@ -3858,7 +4131,8 @@ extension PythonBridgeService {
                 )
             )
         } else if cleanLine.hasPrefix("MARCUT_PROGRESS:") {
-            let progressLine = cleanLine.replacingOccurrences(of: "MARCUT_PROGRESS:", with: "").trimmingCharacters(in: .whitespacesAndNewlines)
+            let progressLine = cleanLine.replacingOccurrences(of: "MARCUT_PROGRESS:", with: "")
+                .trimmingCharacters(in: .whitespacesAndNewlines)
             let components = progressLine.components(separatedBy: "|")
 
             let phaseName = components.first?.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -3903,6 +4177,7 @@ extension PythonBridgeService {
 }
 
 // MARK: - Placeholder implementations for demo
+
 // These would be replaced with actual processing logic
 
 extension PythonBridgeService {
@@ -3915,7 +4190,6 @@ extension PythonBridgeService {
             }
         }
     }
-
 }
 
 // MARK: - Helper Classes
@@ -3926,37 +4200,37 @@ private class OllamaLogger: @unchecked Sendable {
     private let logURL: URL
     private var fileHandle: FileHandle?
     private let lock = NSLock()
-    
+
     init(logURL: URL) {
         self.logURL = logURL
     }
-    
+
     func write(_ data: Data) {
         lock.lock()
         defer { lock.unlock() }
-        
+
         ensureHandleOpen()
-        
+
         if let handle = fileHandle {
             try? handle.write(contentsOf: data)
         }
     }
-    
+
     func write(_ string: String) {
         guard let data = string.data(using: .utf8) else { return }
         write(data)
     }
-    
+
     func flush() {
         lock.lock()
         defer { lock.unlock() }
         try? fileHandle?.synchronize()
     }
-    
+
     func close() {
         lock.lock()
         defer { lock.unlock() }
-        
+
         if let handle = fileHandle {
             try? handle.synchronize()
             if #available(macOS 10.15.4, *) {
@@ -3967,22 +4241,24 @@ private class OllamaLogger: @unchecked Sendable {
             fileHandle = nil
         }
     }
-    
+
     deinit {
         // Ensure file handle is closed when logger is deallocated
         close()
     }
-    
-    // Note: Caller usually ensures directory exists, but we double check file existence
+
+    /// Note: Caller usually ensures directory exists, but we double check file existence
     private func ensureHandleOpen() {
-        if fileHandle != nil { return }
-        
+        if fileHandle != nil {
+            return
+        }
+
         let fm = FileManager.default
         if !fm.fileExists(atPath: logURL.path) {
             fm.createFile(atPath: logURL.path, contents: nil)
         }
         try? fm.setAttributes([.posixPermissions: NSNumber(value: Int16(0o600))], ofItemAtPath: logURL.path)
-        
+
         do {
             let handle = try FileHandle(forWritingTo: logURL)
             handle.seekToEndOfFile()
@@ -3991,8 +4267,8 @@ private class OllamaLogger: @unchecked Sendable {
             print("[OllamaLogger] Failed to open log handle: \(error)")
         }
     }
-    
-    // Explicitly open/reopen (useful for startup sequence)
+
+    /// Explicitly open/reopen (useful for startup sequence)
     func forceOpen() -> Bool {
         lock.lock()
         defer { lock.unlock() }

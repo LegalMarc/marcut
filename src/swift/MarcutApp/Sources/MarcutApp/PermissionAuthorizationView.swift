@@ -98,7 +98,7 @@ struct PermissionAuthorizationView: View {
             }
 
             // Action Buttons
-            if !isAuthorizing && authorizationError == nil {
+            if !isAuthorizing, authorizationError == nil {
                 VStack(spacing: 16) {
                     Button(action: {
                         authorizePermissions()
@@ -261,7 +261,7 @@ struct PermissionExplanationView: View {
                             "Read Microsoft Word documents that you select",
                             "Create new redacted documents with track changes",
                             "Generate audit reports in JSON format",
-                            "Access files in your Downloads, Documents, and Desktop folders"
+                            "Access files in your Downloads, Documents, and Desktop folders",
                         ]
                     )
 
@@ -274,7 +274,7 @@ struct PermissionExplanationView: View {
                             "Run AI models like Llama 3.1 8B locally",
                             "No internet connection required for processing",
                             "All AI computation happens on your Mac",
-                            "Complete privacy - no data sent to external servers"
+                            "Complete privacy - no data sent to external servers",
                         ]
                     )
 
@@ -287,7 +287,7 @@ struct PermissionExplanationView: View {
                             "One-time access to your Documents folder",
                             "Access only to files you explicitly select",
                             "Maintains security through sandboxing",
-                            "You can revoke this permission at any time in System Preferences"
+                            "You can revoke this permission at any time in System Preferences",
                         ]
                     )
                 }

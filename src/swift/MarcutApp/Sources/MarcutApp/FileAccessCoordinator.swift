@@ -11,6 +11,7 @@ class FileAccessCoordinator: ObservableObject {
     private let desktopBookmarkKey = "MarcutApp_DesktopBookmark"
 
     // MARK: - Permission State Management
+
     private let permissionVersionKey = "MarcutApp_PermissionVersion"
     private let onboardingCompletedKey = "MarcutApp_OnboardingCompleted"
     private let comprehensivePermissionKey = "MarcutApp_ComprehensivePermission"
@@ -27,6 +28,7 @@ class FileAccessCoordinator: ObservableObject {
     private var activeScopedURLs: Set<URL> = []
 
     // MARK: - Session Permission Management
+
     private var hasRequestedPermissionsThisSession = false
     private var sessionPermissionsEstablished = false
     private let permissionSessionKey = "MarcutApp_PermissionSessionUUID"
@@ -35,8 +37,8 @@ class FileAccessCoordinator: ObservableObject {
     private var downloadsPromptInProgress = false
 
     private init() {
-        initializePermissionState()     // Initialize state first
-        initializeSessionTracking()     // Track new app session
+        initializePermissionState() // Initialize state first
+        initializeSessionTracking() // Track new app session
         // DEFERRED: restoreAuthorizedDirectories() // Then restore bookmarks (may update state)
     }
 
@@ -46,7 +48,10 @@ class FileAccessCoordinator: ObservableObject {
     private func initializePermissionState() {
         isOnboardingCompleted = userDefaults.bool(forKey: onboardingCompletedKey)
         needsPermissionRequest = shouldRequestPermissions()
-        DebugLogger.shared.log("🔐 Permission state - Onboarding: \(isOnboardingCompleted), Needs Request: \(needsPermissionRequest)", component: "FileAccessCoordinator")
+        DebugLogger.shared.log(
+            "🔐 Permission state - Onboarding: \(isOnboardingCompleted), Needs Request: \(needsPermissionRequest)",
+            component: "FileAccessCoordinator"
+        )
     }
 
     /// Initializes session-based permission tracking to detect new app launches
@@ -59,9 +64,15 @@ class FileAccessCoordinator: ObservableObject {
             hasRequestedPermissionsThisSession = false
             sessionPermissionsEstablished = false
             userDefaults.set(currentSessionUUID, forKey: permissionSessionKey)
-            DebugLogger.shared.log("🆔 New app session detected: \(currentSessionUUID)", component: "FileAccessCoordinator")
+            DebugLogger.shared.log(
+                "🆔 New app session detected: \(currentSessionUUID)",
+                component: "FileAccessCoordinator"
+            )
         } else {
-            DebugLogger.shared.log("🆔 Continuing existing session: \(currentSessionUUID)", component: "FileAccessCoordinator")
+            DebugLogger.shared.log(
+                "🆔 Continuing existing session: \(currentSessionUUID)",
+                component: "FileAccessCoordinator"
+            )
         }
     }
 
@@ -69,7 +80,10 @@ class FileAccessCoordinator: ObservableObject {
     private func shouldRequestPermissions() -> Bool {
         // If onboarding never completed, always request
         guard isOnboardingCompleted else {
-            DebugLogger.shared.log("🔐 Onboarding not completed - permission request needed", component: "FileAccessCoordinator")
+            DebugLogger.shared.log(
+                "🔐 Onboarding not completed - permission request needed",
+                component: "FileAccessCoordinator"
+            )
             return true
         }
 
@@ -78,13 +92,19 @@ class FileAccessCoordinator: ObservableObject {
         let storedVersion = userDefaults.string(forKey: permissionVersionKey)
 
         if currentVersion != storedVersion {
-            DebugLogger.shared.log("🔐 Version mismatch - current: \(currentVersion), stored: \(storedVersion ?? "none")", component: "FileAccessCoordinator")
+            DebugLogger.shared.log(
+                "🔐 Version mismatch - current: \(currentVersion), stored: \(storedVersion ?? "none")",
+                component: "FileAccessCoordinator"
+            )
             return true
         }
 
         // Check if we have valid bookmarks
         guard hasValidBookmarks() else {
-            DebugLogger.shared.log("🔐 Invalid or missing bookmarks - permission request needed", component: "FileAccessCoordinator")
+            DebugLogger.shared.log(
+                "🔐 Invalid or missing bookmarks - permission request needed",
+                component: "FileAccessCoordinator"
+            )
             return true
         }
 
@@ -93,7 +113,7 @@ class FileAccessCoordinator: ObservableObject {
 
     /// Gets the current app version
     private func getCurrentAppVersion() -> String {
-        return Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "unknown"
+        Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "unknown"
     }
 
     /// Establish permissions proactively at app startup (optional, can be called once)
@@ -101,13 +121,19 @@ class FileAccessCoordinator: ObservableObject {
         DebugLogger.shared.log("🚀 Startup permission establishment check", component: "FileAccessCoordinator")
 
         // If permissions are already valid from previous sessions, just mark session as established
-        if !needsPermissionRequest && (hasValidBookmarks() || hasEntitlementAccess()) {
+        if !needsPermissionRequest, hasValidBookmarks() || hasEntitlementAccess() {
             sessionPermissionsEstablished = true
-            DebugLogger.shared.log("✅ Startup: Existing permissions are valid, session established", component: "FileAccessCoordinator")
+            DebugLogger.shared.log(
+                "✅ Startup: Existing permissions are valid, session established",
+                component: "FileAccessCoordinator"
+            )
             return
         }
 
-        DebugLogger.shared.log("⚠️ Startup: No existing permissions found, will request on first file access", component: "FileAccessCoordinator")
+        DebugLogger.shared.log(
+            "⚠️ Startup: No existing permissions found, will request on first file access",
+            component: "FileAccessCoordinator"
+        )
     }
 
     /// Checks if we have valid bookmarks and accessible directories
@@ -119,7 +145,7 @@ class FileAccessCoordinator: ObservableObject {
         let comprehensiveBookmark = userDefaults.data(forKey: comprehensivePermissionKey)
 
         let hasAnyBookmark = documentsBookmark != nil || downloadsBookmark != nil ||
-                           desktopBookmark != nil || comprehensiveBookmark != nil
+            desktopBookmark != nil || comprehensiveBookmark != nil
 
         guard hasAnyBookmark else {
             DebugLogger.shared.log("🔐 No bookmarks found", component: "FileAccessCoordinator")
@@ -143,7 +169,10 @@ class FileAccessCoordinator: ObservableObject {
         }
 
         let isValid = accessibleDirectories > 0
-        DebugLogger.shared.log("🔐 Bookmark validation: \(accessibleDirectories) directories accessible", component: "FileAccessCoordinator")
+        DebugLogger.shared.log(
+            "🔐 Bookmark validation: \(accessibleDirectories) directories accessible",
+            component: "FileAccessCoordinator"
+        )
 
         return isValid
     }
@@ -157,7 +186,10 @@ class FileAccessCoordinator: ObservableObject {
         isOnboardingCompleted = true
         needsPermissionRequest = false
 
-        DebugLogger.shared.log("✅ Onboarding completed for version \(getCurrentAppVersion())", component: "FileAccessCoordinator")
+        DebugLogger.shared.log(
+            "✅ Onboarding completed for version \(getCurrentAppVersion())",
+            component: "FileAccessCoordinator"
+        )
     }
 
     /// Checks if silent entitlement access works
@@ -172,7 +204,10 @@ class FileAccessCoordinator: ObservableObject {
                 // Test read access without file creation
                 let isReadable = fileManager.isReadableFile(atPath: url.path)
                 results[directory] = isReadable
-                DebugLogger.shared.log("🔍 Entitlement test for \(directory): \(isReadable ? "✅ PASS" : "❌ FAIL")", component: "FileAccessCoordinator")
+                DebugLogger.shared.log(
+                    "🔍 Entitlement test for \(directory): \(isReadable ? "✅ PASS" : "❌ FAIL")",
+                    component: "FileAccessCoordinator"
+                )
             }
         }
 
@@ -190,13 +225,19 @@ class FileAccessCoordinator: ObservableObject {
         let hasEntitlementAccess = entitlementResults.values.allSatisfy { $0 }
 
         if hasEntitlementAccess {
-            DebugLogger.shared.log("✅ All directories accessible via enhanced entitlements", component: "FileAccessCoordinator")
+            DebugLogger.shared.log(
+                "✅ All directories accessible via enhanced entitlements",
+                component: "FileAccessCoordinator"
+            )
             await setupFromEntitlements()
             markOnboardingCompleted()
             return true
         }
 
-        DebugLogger.shared.log("⚠️ Entitlements insufficient, requesting comprehensive permission", component: "FileAccessCoordinator")
+        DebugLogger.shared.log(
+            "⚠️ Entitlements insufficient, requesting comprehensive permission",
+            component: "FileAccessCoordinator"
+        )
 
         // Fall back to unified permission request
         let success = await requestComprehensivePermission()
@@ -218,24 +259,33 @@ class FileAccessCoordinator: ObservableObject {
         }
 
         // If permissions are already established for this session, trust them
-        if sessionPermissionsEstablished && (hasValidBookmarks() || hasEntitlementAccess()) {
+        if sessionPermissionsEstablished, hasValidBookmarks() || hasEntitlementAccess() {
             return true
         }
 
         // If we already tried to get permissions this session and failed, don't try again
         if hasRequestedPermissionsThisSession {
-            DebugLogger.shared.log("🔐 Permissions already requested this session - returning cached result", component: "FileAccessCoordinator")
+            DebugLogger.shared.log(
+                "🔐 Permissions already requested this session - returning cached result",
+                component: "FileAccessCoordinator"
+            )
             return hasValidBookmarks() || hasEntitlementAccess()
         }
 
         // If we already have valid permissions from previous sessions, use them immediately
-        if !needsPermissionRequest && (hasValidBookmarks() || hasEntitlementAccess()) {
+        if !needsPermissionRequest, hasValidBookmarks() || hasEntitlementAccess() {
             sessionPermissionsEstablished = true
-            DebugLogger.shared.log("✅ Using existing valid permissions for this session", component: "FileAccessCoordinator")
+            DebugLogger.shared.log(
+                "✅ Using existing valid permissions for this session",
+                component: "FileAccessCoordinator"
+            )
             return true
         }
 
-        DebugLogger.shared.log("🔐 First file access request this session - establishing permissions", component: "FileAccessCoordinator")
+        DebugLogger.shared.log(
+            "🔐 First file access request this session - establishing permissions",
+            component: "FileAccessCoordinator"
+        )
 
         // Mark that we're requesting permissions for this session
         hasRequestedPermissionsThisSession = true
@@ -245,9 +295,15 @@ class FileAccessCoordinator: ObservableObject {
 
         if success {
             sessionPermissionsEstablished = true
-            DebugLogger.shared.log("✅ File access permissions established for this session", component: "FileAccessCoordinator")
+            DebugLogger.shared.log(
+                "✅ File access permissions established for this session",
+                component: "FileAccessCoordinator"
+            )
         } else {
-            DebugLogger.shared.log("❌ File access permissions denied for this session", component: "FileAccessCoordinator")
+            DebugLogger.shared.log(
+                "❌ File access permissions denied for this session",
+                component: "FileAccessCoordinator"
+            )
         }
 
         return success
@@ -346,24 +402,33 @@ class FileAccessCoordinator: ObservableObject {
                 // Try to derive Downloads and Desktop from the base
                 await deriveRelatedDirectories(from: baseURL)
 
-                DebugLogger.shared.log("✅ Created comprehensive bookmark for base directory: \(baseURL.lastPathComponent)", component: "FileAccessCoordinator")
+                DebugLogger.shared.log(
+                    "✅ Created comprehensive bookmark for base directory: \(baseURL.lastPathComponent)",
+                    component: "FileAccessCoordinator"
+                )
             } else {
                 DebugLogger.shared.log("❌ Failed to access comprehensive bookmark", component: "FileAccessCoordinator")
             }
         } catch {
-            DebugLogger.shared.log("❌ Failed to create comprehensive bookmark: \(error)", component: "FileAccessCoordinator")
+            DebugLogger.shared.log(
+                "❌ Failed to create comprehensive bookmark: \(error)",
+                component: "FileAccessCoordinator"
+            )
         }
     }
 
     /// Attempts to derive Downloads and Desktop access from Documents bookmark
-    private func deriveRelatedDirectories(from baseURL: URL) async {
+    private func deriveRelatedDirectories(from _: URL) async {
         let fileManager = FileManager.default
 
         // Try to access Downloads directory
         if let downloadsURL = fileManager.urls(for: .downloadsDirectory, in: .userDomainMask).first {
             if fileManager.isReadableFile(atPath: downloadsURL.path) {
                 authorizedDownloadsURL = downloadsURL
-                DebugLogger.shared.log("✅ Downloads access derived from comprehensive permission", component: "FileAccessCoordinator")
+                DebugLogger.shared.log(
+                    "✅ Downloads access derived from comprehensive permission",
+                    component: "FileAccessCoordinator"
+                )
             }
         }
 
@@ -371,7 +436,10 @@ class FileAccessCoordinator: ObservableObject {
         if let desktopURL = fileManager.urls(for: .desktopDirectory, in: .userDomainMask).first {
             if fileManager.isReadableFile(atPath: desktopURL.path) {
                 authorizedDesktopURL = desktopURL
-                DebugLogger.shared.log("✅ Desktop access derived from comprehensive permission", component: "FileAccessCoordinator")
+                DebugLogger.shared.log(
+                    "✅ Desktop access derived from comprehensive permission",
+                    component: "FileAccessCoordinator"
+                )
             }
         }
     }
@@ -387,12 +455,18 @@ class FileAccessCoordinator: ObservableObject {
         if let docsURL = fileManager.urls(for: .documentDirectory, in: .userDomainMask).first {
             do {
                 try fileManager.createDirectory(at: docsURL.appendingPathComponent(".marcut_test"),
-                                              withIntermediateDirectories: true)
+                                                withIntermediateDirectories: true)
                 try fileManager.removeItem(at: docsURL.appendingPathComponent(".marcut_test"))
                 authorizedDocumentsURL = docsURL
-                DebugLogger.shared.log("✅ Documents directory authorized via entitlement", component: "FileAccessCoordinator")
+                DebugLogger.shared.log(
+                    "✅ Documents directory authorized via entitlement",
+                    component: "FileAccessCoordinator"
+                )
             } catch {
-                DebugLogger.shared.log("⚠️ Documents directory requires explicit authorization", component: "FileAccessCoordinator")
+                DebugLogger.shared.log(
+                    "⚠️ Documents directory requires explicit authorization",
+                    component: "FileAccessCoordinator"
+                )
                 // Fall back to bookmark system
                 await createBookmarkForDirectory(.documentDirectory, key: documentsBookmarkKey)
             }
@@ -403,12 +477,18 @@ class FileAccessCoordinator: ObservableObject {
             if let downloadsURL = fileManager.urls(for: .downloadsDirectory, in: .userDomainMask).first {
                 do {
                     try fileManager.createDirectory(at: downloadsURL.appendingPathComponent(".marcut_test"),
-                                                  withIntermediateDirectories: true)
+                                                    withIntermediateDirectories: true)
                     try fileManager.removeItem(at: downloadsURL.appendingPathComponent(".marcut_test"))
                     authorizedDownloadsURL = downloadsURL
-                    DebugLogger.shared.log("✅ Downloads directory authorized via entitlement", component: "FileAccessCoordinator")
+                    DebugLogger.shared.log(
+                        "✅ Downloads directory authorized via entitlement",
+                        component: "FileAccessCoordinator"
+                    )
                 } catch {
-                    DebugLogger.shared.log("⚠️ Downloads directory requires explicit authorization", component: "FileAccessCoordinator")
+                    DebugLogger.shared.log(
+                        "⚠️ Downloads directory requires explicit authorization",
+                        component: "FileAccessCoordinator"
+                    )
                     await createBookmarkForDirectory(.downloadsDirectory, key: downloadsBookmarkKey)
                 }
             }
@@ -418,12 +498,18 @@ class FileAccessCoordinator: ObservableObject {
         if let desktopURL = fileManager.urls(for: .desktopDirectory, in: .userDomainMask).first {
             do {
                 try fileManager.createDirectory(at: desktopURL.appendingPathComponent(".marcut_test"),
-                                              withIntermediateDirectories: true)
+                                                withIntermediateDirectories: true)
                 try fileManager.removeItem(at: desktopURL.appendingPathComponent(".marcut_test"))
                 authorizedDesktopURL = desktopURL
-                DebugLogger.shared.log("✅ Desktop directory authorized via entitlement", component: "FileAccessCoordinator")
+                DebugLogger.shared.log(
+                    "✅ Desktop directory authorized via entitlement",
+                    component: "FileAccessCoordinator"
+                )
             } catch {
-                DebugLogger.shared.log("⚠️ Desktop directory requires explicit authorization", component: "FileAccessCoordinator")
+                DebugLogger.shared.log(
+                    "⚠️ Desktop directory requires explicit authorization",
+                    component: "FileAccessCoordinator"
+                )
                 await createBookmarkForDirectory(.desktopDirectory, key: desktopBookmarkKey)
             }
         }
@@ -434,7 +520,8 @@ class FileAccessCoordinator: ObservableObject {
     private func createBookmarkForDirectory(_ directory: FileManager.SearchPathDirectory, key: String) async -> Bool {
         guard let url = FileManager.default.urls(for: directory, in: .userDomainMask).first else { return false }
 
-        let directoryName = directory == .documentDirectory ? "Documents" : directory == .downloadsDirectory ? "Downloads" : "Desktop"
+        let directoryName = directory == .documentDirectory ? "Documents" : directory == .downloadsDirectory ?
+            "Downloads" : "Desktop"
         let selectedURL = await promptForDirectoryAccess(
             message: "Authorize access to \(directoryName) folder",
             prompt: "Authorize",
@@ -468,7 +555,10 @@ class FileAccessCoordinator: ObservableObject {
             }
             return success
         } catch {
-            DebugLogger.shared.log("❌ Failed to create bookmark for \(directory): \(error)", component: "FileAccessCoordinator")
+            DebugLogger.shared.log(
+                "❌ Failed to create bookmark for \(directory): \(error)",
+                component: "FileAccessCoordinator"
+            )
             return false
         }
     }
@@ -512,7 +602,10 @@ class FileAccessCoordinator: ObservableObject {
         let newState = shouldRequestPermissions()
         if needsPermissionRequest != newState {
             needsPermissionRequest = newState
-            DebugLogger.shared.log("🔐 Permission state updated after restoration: needsRequest=\(newState)", component: "FileAccessCoordinator")
+            DebugLogger.shared.log(
+                "🔐 Permission state updated after restoration: needsRequest=\(newState)",
+                component: "FileAccessCoordinator"
+            )
         }
     }
 
@@ -521,9 +614,9 @@ class FileAccessCoordinator: ObservableObject {
         do {
             var isStale = false
             let url = try URL(resolvingBookmarkData: bookmark,
-                             options: .withSecurityScope,
-                             relativeTo: nil,
-                             bookmarkDataIsStale: &isStale)
+                              options: .withSecurityScope,
+                              relativeTo: nil,
+                              bookmarkDataIsStale: &isStale)
 
             guard !isStale else {
                 userDefaults.removeObject(forKey: comprehensivePermissionKey)
@@ -540,13 +633,19 @@ class FileAccessCoordinator: ObservableObject {
                     await deriveRelatedDirectories(from: url)
                 }
 
-                DebugLogger.shared.log("✅ Restored comprehensive permission from bookmark: \(url.lastPathComponent)", component: "FileAccessCoordinator")
+                DebugLogger.shared.log(
+                    "✅ Restored comprehensive permission from bookmark: \(url.lastPathComponent)",
+                    component: "FileAccessCoordinator"
+                )
                 return true
             }
             DebugLogger.shared.log("❌ Failed to access comprehensive bookmark", component: "FileAccessCoordinator")
             return false
         } catch {
-            DebugLogger.shared.log("❌ Failed to restore comprehensive bookmark: \(error)", component: "FileAccessCoordinator")
+            DebugLogger.shared.log(
+                "❌ Failed to restore comprehensive bookmark: \(error)",
+                component: "FileAccessCoordinator"
+            )
             // Remove invalid bookmark
             userDefaults.removeObject(forKey: comprehensivePermissionKey)
             return false
@@ -560,9 +659,9 @@ class FileAccessCoordinator: ObservableObject {
         do {
             var isStale = false
             let url = try URL(resolvingBookmarkData: bookmark,
-                             options: .withSecurityScope,
-                             relativeTo: nil,
-                             bookmarkDataIsStale: &isStale)
+                              options: .withSecurityScope,
+                              relativeTo: nil,
+                              bookmarkDataIsStale: &isStale)
 
             guard !isStale else {
                 userDefaults.removeObject(forKey: key)
@@ -572,10 +671,16 @@ class FileAccessCoordinator: ObservableObject {
             let success = startAccessingScopedResource(url)
             if success {
                 completion(url)
-                DebugLogger.shared.log("✅ Restored directory access from bookmark: \(url.lastPathComponent)", component: "FileAccessCoordinator")
+                DebugLogger.shared.log(
+                    "✅ Restored directory access from bookmark: \(url.lastPathComponent)",
+                    component: "FileAccessCoordinator"
+                )
             }
         } catch {
-            DebugLogger.shared.log("❌ Failed to restore directory from bookmark: \(error)", component: "FileAccessCoordinator")
+            DebugLogger.shared.log(
+                "❌ Failed to restore directory from bookmark: \(error)",
+                component: "FileAccessCoordinator"
+            )
         }
     }
 
@@ -606,7 +711,10 @@ class FileAccessCoordinator: ObservableObject {
         do {
             try fm.createDirectory(at: container, withIntermediateDirectories: true)
         } catch {
-            DebugLogger.shared.log("❌ Failed to prepare Application Support container: \(error)", component: "FileAccessCoordinator")
+            DebugLogger.shared.log(
+                "❌ Failed to prepare Application Support container: \(error)",
+                component: "FileAccessCoordinator"
+            )
         }
         return container
     }
@@ -635,7 +743,10 @@ class FileAccessCoordinator: ObservableObject {
         let localCopy = processingDir.appendingPathComponent(uniqueName)
         try FileManager.default.copyItem(at: originalURL, to: localCopy)
 
-        DebugLogger.shared.log("✅ Copied file to app support container: \(originalURL.lastPathComponent)", component: "FileAccessCoordinator")
+        DebugLogger.shared.log(
+            "✅ Copied file to app support container: \(originalURL.lastPathComponent)",
+            component: "FileAccessCoordinator"
+        )
         return localCopy
     }
 
@@ -658,7 +769,10 @@ class FileAccessCoordinator: ObservableObject {
         }
 
         try FileManager.default.copyItem(at: processedURL, to: userURL)
-        DebugLogger.shared.log("✅ Copied processed file to user location: \(userURL.path)", component: "FileAccessCoordinator")
+        DebugLogger.shared.log(
+            "✅ Copied processed file to user location: \(userURL.path)",
+            component: "FileAccessCoordinator"
+        )
     }
 
     /// Cleans up temporary files from the Application Support container
@@ -672,10 +786,16 @@ class FileAccessCoordinator: ObservableObject {
             do {
                 if FileManager.default.fileExists(atPath: url.path) {
                     try FileManager.default.removeItem(at: url)
-                    DebugLogger.shared.log("🧹 Cleaned up directory: \(url.lastPathComponent)", component: "FileAccessCoordinator")
+                    DebugLogger.shared.log(
+                        "🧹 Cleaned up directory: \(url.lastPathComponent)",
+                        component: "FileAccessCoordinator"
+                    )
                 }
             } catch {
-                DebugLogger.shared.log("⚠️ Failed to cleanup directory \(url.lastPathComponent): \(error)", component: "FileAccessCoordinator")
+                DebugLogger.shared.log(
+                    "⚠️ Failed to cleanup directory \(url.lastPathComponent): \(error)",
+                    component: "FileAccessCoordinator"
+                )
             }
         }
 
@@ -696,7 +816,10 @@ class FileAccessCoordinator: ObservableObject {
                 try fm.createDirectory(at: cacheURL, withIntermediateDirectories: true)
                 try? fm.setAttributes([.posixPermissions: NSNumber(value: Int16(0o700))], ofItemAtPath: cacheURL.path)
             } catch {
-                DebugLogger.shared.log("❌ Failed to prepare metadata report cache: \(error)", component: "FileAccessCoordinator")
+                DebugLogger.shared.log(
+                    "❌ Failed to prepare metadata report cache: \(error)",
+                    component: "FileAccessCoordinator"
+                )
                 return nil
             }
         }
@@ -705,7 +828,7 @@ class FileAccessCoordinator: ObservableObject {
 
     /// Location for temporary metadata reports (cleared on app open/close).
     func metadataReportCacheDirectory() -> URL? {
-        return metadataReportCacheURL(createIfMissing: true)
+        metadataReportCacheURL(createIfMissing: true)
     }
 
     /// Clear temporary metadata reports from the app cache.
@@ -715,9 +838,15 @@ class FileAccessCoordinator: ObservableObject {
         guard fm.fileExists(atPath: cacheURL.path) else { return }
         do {
             try fm.removeItem(at: cacheURL)
-            DebugLogger.shared.log("🧹 Cleared metadata report cache: \(cacheURL.path)", component: "FileAccessCoordinator")
+            DebugLogger.shared.log(
+                "🧹 Cleared metadata report cache: \(cacheURL.path)",
+                component: "FileAccessCoordinator"
+            )
         } catch {
-            DebugLogger.shared.log("⚠️ Failed to clear metadata report cache: \(error)", component: "FileAccessCoordinator")
+            DebugLogger.shared.log(
+                "⚠️ Failed to clear metadata report cache: \(error)",
+                component: "FileAccessCoordinator"
+            )
         }
     }
 
@@ -732,8 +861,13 @@ class FileAccessCoordinator: ObservableObject {
         ]
 
         for dir in candidateDirs where fm.fileExists(atPath: dir.path) {
-            if let contents = try? fm.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil, options: [.skipsHiddenFiles]),
-               !contents.isEmpty {
+            if let contents = try? fm.contentsOfDirectory(
+                at: dir,
+                includingPropertiesForKeys: nil,
+                options: [.skipsHiddenFiles]
+            ),
+                !contents.isEmpty
+            {
                 return true
             }
         }
@@ -745,7 +879,8 @@ class FileAccessCoordinator: ObservableObject {
     func downloadsDirectoryForReports() -> URL? {
         restoreDownloadsBookmarkIfNeeded()
         guard let downloadsURL = authorizedDownloadsURL,
-              FileManager.default.isWritableFile(atPath: downloadsURL.path) else {
+              FileManager.default.isWritableFile(atPath: downloadsURL.path)
+        else {
             return nil
         }
         return downloadsURL
@@ -854,7 +989,10 @@ class FileAccessCoordinator: ObservableObject {
         }
 
         try FileManager.default.copyItem(at: source, to: destination)
-        DebugLogger.shared.log("✅ Copied file: \(source.path) -> \(destination.path)", component: "FileAccessCoordinator")
+        DebugLogger.shared.log(
+            "✅ Copied file: \(source.path) -> \(destination.path)",
+            component: "FileAccessCoordinator"
+        )
     }
 
     /// Safe file move within authorized directories
@@ -868,7 +1006,10 @@ class FileAccessCoordinator: ObservableObject {
         }
 
         try FileManager.default.moveItem(at: source, to: destination)
-        DebugLogger.shared.log("✅ Moved file: \(source.path) -> \(destination.path)", component: "FileAccessCoordinator")
+        DebugLogger.shared.log(
+            "✅ Moved file: \(source.path) -> \(destination.path)",
+            component: "FileAccessCoordinator"
+        )
     }
 
     /// Safe file removal within authorized directories
@@ -885,7 +1026,10 @@ class FileAccessCoordinator: ObservableObject {
     func findDocxFiles() async -> [URL] {
         // Ensure we have permissions before searching
         guard await ensurePermissionsForFileAccess() else {
-            DebugLogger.shared.log("❌ Cannot find DOCX files - permissions not available", component: "FileAccessCoordinator")
+            DebugLogger.shared.log(
+                "❌ Cannot find DOCX files - permissions not available",
+                component: "FileAccessCoordinator"
+            )
             return []
         }
 
@@ -905,7 +1049,10 @@ class FileAccessCoordinator: ObservableObject {
             }
         }
 
-        DebugLogger.shared.log("📄 Found \(docxFiles.count) DOCX files in authorized directories", component: "FileAccessCoordinator")
+        DebugLogger.shared.log(
+            "📄 Found \(docxFiles.count) DOCX files in authorized directories",
+            component: "FileAccessCoordinator"
+        )
         return docxFiles
     }
 }
@@ -916,10 +1063,10 @@ enum FileAccessError: LocalizedError {
 
     var errorDescription: String? {
         switch self {
-        case .unauthorizedLocation(let path):
-            return "Access to location not authorized: \(path)"
+        case let .unauthorizedLocation(path):
+            "Access to location not authorized: \(path)"
         case .appSupportContainerUnavailable:
-            return "Application Support container is not available. Please check your app configuration."
+            "Application Support container is not available. Please check your app configuration."
         }
     }
 }
