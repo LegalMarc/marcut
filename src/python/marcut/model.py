@@ -143,6 +143,50 @@ def _repair_unbalanced_json(json_str: str) -> Optional[str]:
     return repaired
 
 
+def _strip_line_comments_outside_strings(json_str: str) -> str:
+    """
+    Strip `//`-style line comments that appear outside JSON string literals.
+
+    A naive `re.sub(r'//.*$', '', ...)` would also truncate legitimate string
+    values that happen to contain `//` -- most commonly a URL entity like
+    `"https://legal.example"` extracted by the LLM -- corrupting otherwise-
+    valid JSON. This walks the string tracking whether we're inside a string
+    literal (respecting `\\"` escapes) and only treats `//` as a comment
+    start when outside one.
+    """
+    out: List[str] = []
+    in_string = False
+    escape = False
+    i = 0
+    n = len(json_str)
+    while i < n:
+        ch = json_str[i]
+        if in_string:
+            out.append(ch)
+            if escape:
+                escape = False
+            elif ch == '\\':
+                escape = True
+            elif ch == '"':
+                in_string = False
+            i += 1
+            continue
+        if ch == '"':
+            in_string = True
+            out.append(ch)
+            i += 1
+            continue
+        if ch == '/' and i + 1 < n and json_str[i + 1] == '/':
+            newline_pos = json_str.find('\n', i)
+            if newline_pos == -1:
+                break
+            i = newline_pos
+            continue
+        out.append(ch)
+        i += 1
+    return ''.join(out)
+
+
 def parse_llm_response(response_text: str) -> Dict[str, Any]:
     """
     Sanitize and parse an LLM response, raising json.JSONDecodeError when invalid.
@@ -166,7 +210,7 @@ def parse_llm_response(response_text: str) -> Dict[str, Any]:
         else:
             json_str = cleaned[start:end]
 
-    json_str = re.sub(r'(?m)//.*$', '', json_str)
+    json_str = _strip_line_comments_outside_strings(json_str)
     json_str = re.sub(r',\s*(\]|\})', r'\1', json_str)
 
     try:
