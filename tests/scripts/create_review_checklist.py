@@ -153,7 +153,7 @@ def generate_review_checklist(results: dict) -> str:
 |----------|------------------|-------------------|-------------------|------------|
 """
 
-    for i, result in enumerate(results['results'], 1):
+    for result in results['results']:
         doc_name = Path(result['source_file']).name
         template_content += f"| {doc_name} | [Score/10] | [Score/10] | [Preferred] | [Issues] |\n"
 

@@ -2,10 +2,9 @@
 Tests for the progress.py module - progress tracking and time estimation.
 """
 
-import pytest
 import time
 from marcut.progress import (
-    ProcessingPhase, PhaseInfo, PHASE_INFO,
+    ProcessingPhase, PHASE_INFO,
     TimeEstimator, ProgressUpdate, ProgressTracker,
     create_progress_callback
 )
@@ -42,7 +41,7 @@ class TestPhaseInfo:
     
     def test_phase_info_structure(self):
         """Test that PhaseInfo has correct structure."""
-        for phase, info in PHASE_INFO.items():
+        for _phase, info in PHASE_INFO.items():
             assert isinstance(info.name, str)
             assert isinstance(info.display_name, str)
             assert isinstance(info.base_duration, (int, float))
@@ -195,7 +194,7 @@ class TestProgressTracker:
             pass
         
         tracker = ProgressTracker(simple_cb, "test", 10)
-        assert tracker.is_simple_callback == True
+        assert tracker.is_simple_callback
     
     def test_rich_callback_detection(self):
         """Test that rich callbacks are detected correctly."""
@@ -204,7 +203,7 @@ class TestProgressTracker:
             pass
         
         tracker = ProgressTracker(rich_cb, "test", 10)
-        assert tracker.is_simple_callback == False
+        assert not tracker.is_simple_callback
     
     def test_update_phase(self):
         """Test phase updates."""

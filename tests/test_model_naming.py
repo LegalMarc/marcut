@@ -8,7 +8,6 @@ These fixtures mirror the Swift-side parity test
 change a case here, update it there too (and vice versa).
 """
 
-import pytest
 
 from marcut.model_naming import (
     ParsedModelName,

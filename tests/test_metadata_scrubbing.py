@@ -14,7 +14,6 @@ import tempfile
 import unittest
 import zipfile
 from dataclasses import fields
-from pathlib import Path
 from xml.etree import ElementTree as ET
 
 try:

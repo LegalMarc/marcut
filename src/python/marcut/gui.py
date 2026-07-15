@@ -11,8 +11,6 @@ from tkinter import filedialog, messagebox, ttk
 import threading
 import subprocess
 from pathlib import Path
-import json
-import tempfile
 from datetime import datetime
 import time
 import requests
@@ -442,7 +440,7 @@ class MarcutGUI:
                     ))
                     
             except Exception as e:
-                self.model_status.config(text=f"❌ Error downloading model")
+                self.model_status.config(text="❌ Error downloading model")
                 self.root.after(0, lambda msg=str(e): messagebox.showerror(
                     "Download Error",
                     f"An error occurred while downloading the model:\n{msg}"
@@ -569,7 +567,7 @@ class MarcutGUI:
             
     def setup_embedded_ollama(self):
         """Set up embedded Ollama when standard detection fails"""
-        print(f"[DEBUG] Setting up embedded Ollama...")
+        print("[DEBUG] Setting up embedded Ollama...")
         
         # Try to find and start embedded Ollama directly
         ollama_binary = self.get_ollama_binary_path()
@@ -584,7 +582,7 @@ class MarcutGUI:
                 try:
                     response = requests.get(f"{_ollama_base_url()}/api/tags", timeout=10)
                     if response.status_code == 200:
-                        print(f"[DEBUG] Ollama already running")
+                        print("[DEBUG] Ollama already running")
                         self.ollama_status.config(text="✅ Ollama running")
                         self.check_embedded_model()
                         return
@@ -592,7 +590,7 @@ class MarcutGUI:
                     pass
                 
                 # Start embedded Ollama
-                print(f"[DEBUG] Starting embedded Ollama service...")
+                print("[DEBUG] Starting embedded Ollama service...")
                 self.ollama_status.config(text="⚠️ Starting AI service...")
                 
                 # Set up environment
@@ -613,27 +611,27 @@ class MarcutGUI:
                 )
                 
                 # Wait for service to start
-                print(f"[DEBUG] Waiting for Ollama service to start...")
-                for i in range(15):
+                print("[DEBUG] Waiting for Ollama service to start...")
+                for _ in range(15):
                     time.sleep(1)
                     try:
                         response = requests.get(f"{_ollama_base_url()}/api/tags", timeout=5)
                         if response.status_code == 200:
-                            print(f"[DEBUG] Ollama service started successfully")
+                            print("[DEBUG] Ollama service started successfully")
                             self.ollama_status.config(text="✅ Ollama running")
                             self.check_embedded_model()
                             return
                     except requests.exceptions.RequestException:
                         pass
                 
-                print(f"[DEBUG] Ollama service failed to start")
+                print("[DEBUG] Ollama service failed to start")
                 self.ollama_status.config(text="❌ Failed to start Ollama")
                 
             except Exception as e:
                 print(f"[DEBUG] Error setting up embedded Ollama: {e}")
                 self.ollama_status.config(text="❌ Error starting Ollama")
         else:
-            print(f"[DEBUG] No embedded Ollama found")
+            print("[DEBUG] No embedded Ollama found")
             self.show_setup_wizard()
     
     def check_embedded_model(self):
@@ -661,7 +659,7 @@ class MarcutGUI:
     
     def show_setup_wizard(self):
         """Show the first-run setup wizard for model download"""
-        print(f"[DEBUG] Showing setup wizard")
+        print("[DEBUG] Showing setup wizard")
         
         # Create a professional welcome dialog
         response = messagebox.askyesno(
@@ -710,12 +708,12 @@ class MarcutGUI:
                 )
                 
                 if result.returncode == 0:
-                    print(f"[DEBUG] Model download successful")
+                    print("[DEBUG] Model download successful")
                     self.model_status.config(text=f"✅ Model {self.model_name} ready")
                     self.root.after(0, lambda: self.show_setup_complete())
                 else:
                     print(f"[DEBUG] Model download failed: {result.stderr}")
-                    self.model_status.config(text=f"❌ Download failed")
+                    self.model_status.config(text="❌ Download failed")
                     self.root.after(0, lambda: messagebox.showerror(
                         "Download Failed",
                         f"Failed to download {self.model_name}.\n\n"
@@ -725,7 +723,7 @@ class MarcutGUI:
                     
             except Exception as e:
                 print(f"[DEBUG] Exception during model download: {e}")
-                self.model_status.config(text=f"❌ Download error")
+                self.model_status.config(text="❌ Download error")
                 self.root.after(0, lambda msg=str(e): messagebox.showerror(
                     "Download Error",
                     f"An error occurred while downloading the model:\n\n{msg}"

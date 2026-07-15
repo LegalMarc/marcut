@@ -5,7 +5,6 @@ import sys
 import os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src', 'python'))
 
-import pytest
 from marcut import pipeline
 
 class TestPipelineFixes:
@@ -69,7 +68,6 @@ class TestPipelineFixes:
         # 26. Add . and / to delimiters
         # "Company Name/Division"
         # If "Division" is excluded, trim it.
-        text = "Company Name/Division"
         # Excluded combo needs to be mocked or we rely on real excluded list.
         # "Division" might not be in real excluded list.
         # Let's try known excluded term if any?

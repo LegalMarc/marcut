@@ -18,10 +18,9 @@ import os
 import plistlib
 import subprocess
 import sys
-import time
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, Optional
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]

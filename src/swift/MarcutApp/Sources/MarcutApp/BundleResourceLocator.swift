@@ -21,7 +21,8 @@ enum BundleResourceLocator {
 
         // 2. Check Package Bundle (e.g. if we are inside a Swift Package structure)
         if let packageURL = Bundle.main.url(forResource: "MarcutApp_MarcutApp", withExtension: "bundle"),
-           let packageBundle = Bundle(url: packageURL) {
+           let packageBundle = Bundle(url: packageURL)
+        {
             if let url = packageBundle.url(forResource: name, withExtension: ext) {
                 return url
             }
@@ -31,10 +32,11 @@ enum BundleResourceLocator {
         }
 
         #if SWIFT_PACKAGE && DEBUG
-        if let url = Bundle.module.url(forResource: name, withExtension: ext) ??
-            Bundle.module.url(forResource: name, withExtension: ext, subdirectory: "Resources") {
-            return url
-        }
+            if let url = Bundle.module.url(forResource: name, withExtension: ext) ??
+                Bundle.module.url(forResource: name, withExtension: ext, subdirectory: "Resources")
+            {
+                return url
+            }
         #endif
 
         // 3. Check development paths (relative to CWD or known locations)
@@ -43,7 +45,7 @@ enum BundleResourceLocator {
             "\(name).\(ext)",
             "MarcutApp/Sources/MarcutApp/Resources/\(name).\(ext)",
             "src/swift/MarcutApp/Sources/MarcutApp/Resources/\(name).\(ext)",
-            "marcut/\(name).\(ext)"
+            "marcut/\(name).\(ext)",
         ]
 
         for path in candidatePaths {

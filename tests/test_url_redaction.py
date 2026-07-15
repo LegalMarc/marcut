@@ -6,10 +6,8 @@ Tests URL detection, redaction, and sequential ID assignment
 
 import unittest
 import sys
-import os
 import tempfile
 from pathlib import Path
-from typing import List, Dict, Any
 
 # Add project root to path for imports
 project_root = Path(__file__).parent.parent
@@ -184,10 +182,9 @@ class TestURLRedaction(unittest.TestCase):
         ]
 
         # Create a mock DocxMap
-        test_text = "Visit https://example.com and http://test.org, then https://example.com again"
 
         # Test the finalization process with URLs
-        ct = ClusterTable()
+        ClusterTable()
         url_counter = {}
 
         # Process spans like in _finalize_and_write

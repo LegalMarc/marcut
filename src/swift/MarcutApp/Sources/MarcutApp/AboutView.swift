@@ -4,6 +4,7 @@ struct AboutView: View {
     private var appVersion: String {
         Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "Unknown"
     }
+
     private var buildNumber: String {
         Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? ""
     }
@@ -73,8 +74,16 @@ struct AboutView: View {
 
             // Links
             HStack(spacing: 8) {
-                AboutLinkButton(icon: "globe", title: "Website", url: URL(string: "https://github.com/legalmarc/marcut")!)
-                AboutLinkButton(icon: "person.bubble.fill", title: "Support", url: URL(string: "https://www.linkedin.com/in/marcmandel/")!)
+                AboutLinkButton(
+                    icon: "globe",
+                    title: "Website",
+                    url: URL(string: "https://github.com/legalmarc/marcut")!
+                )
+                AboutLinkButton(
+                    icon: "person.bubble.fill",
+                    title: "Support",
+                    url: URL(string: "https://www.linkedin.com/in/marcmandel/")!
+                )
                 AboutActionButton(icon: "book.fill", title: "Help") {
                     Task { @MainActor in
                         LifecycleUtils.openHelpWindow(anchor: "marcutapp-help")

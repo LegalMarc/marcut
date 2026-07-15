@@ -12,6 +12,10 @@ Marcut is a native macOS application for legal and professional document redacti
 
 See [Technical Architecture](docs/TECHNICAL_ARCHITECTURE.md) for a system design overview.
 
+<p align="center">
+  <img src="assets/screenshots/marcut-idle.png" alt="Marcut main window: drag-and-drop area, Browse and Settings buttons, and the redaction/scrub action bar" width="720">
+</p>
+
 ## 🚀 Key Features
 
 *   **Local-First & Private:** All processing happens on your device. No cloud uploads.
@@ -23,6 +27,18 @@ See [Technical Architecture](docs/TECHNICAL_ARCHITECTURE.md) for a system design
 *   **Audit Ready:** Produces JSON redaction reports and metadata scrub reports for verification; reports may include raw detected text and document metadata.
 *   **Fail-Safe by Design:** Pre-flight checks (writable destination, free disk space), clear plain-English errors, live per-document progress, and fail-closed handling if the AI can't fully analyze a document (no silently incomplete redactions).
 *   **App Store Ready:** Fully sandboxed and code-signed architecture.
+
+## 📸 Screenshots
+
+| Live AI progress | Redaction settings |
+|:---:|:---:|
+| <img src="assets/screenshots/marcut-processing.png" alt="Marcut mid-redaction: AI Analysis progress bar, heartbeat status, and estimated time remaining, with a Stop Processing control" width="380"> | <img src="assets/screenshots/marcut-settings.png" alt="Marcut Redaction Settings: processing mode (Rules Only vs Rules + AI), system notifications, output location, and quit-warning behavior" width="380"> |
+
+Redaction streams progress per chunk as the AI model works, with a live heartbeat and time estimate — and finishes with a clear per-document status:
+
+<p align="center">
+  <img src="assets/screenshots/marcut-finished.png" alt="Marcut after a completed redaction: Finished Processing status with per-document actions (view report, reveal in Finder, share)" width="720">
+</p>
 
 ## 📖 Documentation
 

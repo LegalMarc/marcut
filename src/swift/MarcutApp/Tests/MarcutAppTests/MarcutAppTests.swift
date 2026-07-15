@@ -1,10 +1,9 @@
-import XCTest
-import SwiftUI
 @testable import MarcutApp
+import SwiftUI
+import XCTest
 
 @MainActor
 final class MarcutAppTests: XCTestCase {
-
     // MARK: - Test Infrastructure
 
     /// Test helper for creating DocumentItems
@@ -17,7 +16,7 @@ final class MarcutAppTests: XCTestCase {
 
     /// Test helper for creating a test ViewModel
     private func createTestViewModel() -> DocumentRedactionViewModel {
-        return DocumentRedactionViewModel()
+        DocumentRedactionViewModel()
     }
 
     /// Test helper for resolving sample file URLs from the repo root
@@ -53,7 +52,7 @@ final class MarcutAppTests: XCTestCase {
 
     // MARK: - Launch Diagnostics Tests
 
-    func testLaunchArgumentRedactionHidesPathValues() throws {
+    func testLaunchArgumentRedactionHidesPathValues() {
         let args = [
             "MarcutApp",
             "--redact",
@@ -63,7 +62,7 @@ final class MarcutAppTests: XCTestCase {
             "--report",
             "/Users/example/Client A/report.json",
             "--mode",
-            "rules"
+            "rules",
         ]
 
         let redacted = redactedLaunchArguments(args)
@@ -78,9 +77,9 @@ final class MarcutAppTests: XCTestCase {
 
     // MARK: - Tooltip Tests (Task 1.2)
 
-    func testTooltipButtonConfiguration() throws {
+    func testTooltipButtonConfiguration() {
         // Test that TooltipButton is properly configured
-        let action = { }
+        let action = {}
         let button = TooltipButton(
             action: action,
             icon: "doc.text.fill",
@@ -94,7 +93,7 @@ final class MarcutAppTests: XCTestCase {
         XCTAssertEqual(button.description, "Opens the redacted .docx file with sensitive information removed")
     }
 
-    func testTooltipButtonsInDocumentRow() throws {
+    func testTooltipButtonsInDocumentRow() {
         // Test that completed document rows have all 3 tooltip buttons
         let testItem = createTestDocumentItem(status: .completed)
 
@@ -105,7 +104,7 @@ final class MarcutAppTests: XCTestCase {
 
     // MARK: - Button Position Tests (Task 1.3)
 
-    func testButtonOrderInActionButtons() throws {
+    func testButtonOrderInActionButtons() {
         // Test that Clear All appears before Redact Documents in the button layout
         // Create ContentView and verify the view can be constructed.
         let contentView = ContentView()
@@ -115,7 +114,7 @@ final class MarcutAppTests: XCTestCase {
 
     // MARK: - Dynamic Button State Tests (Task 1.4)
 
-    func testFinishedProcessingStateLogic() throws {
+    func testFinishedProcessingStateLogic() {
         // Test the logic behind finished processing state
         // Since we can't mock the final class, we test the logic directly
 
@@ -129,7 +128,7 @@ final class MarcutAppTests: XCTestCase {
         XCTAssertTrue(hasFinishedProcessing, "Should be finished when completed but no processing or valid docs")
     }
 
-    func testProcessingStateLogic() throws {
+    func testProcessingStateLogic() {
         // Test different processing state combinations
 
         // Active processing
@@ -152,7 +151,7 @@ final class MarcutAppTests: XCTestCase {
 
     // MARK: - Model Selection Tests (Task 1.5)
 
-    func testModelSelectionOptions() throws {
+    func testModelSelectionOptions() {
         // Test that the correct 3 models are available
         let expectedModels = ["qwen2.5:14b", "qwen2.5:7b", "phi4-mini:3.8b"]
 
@@ -161,13 +160,13 @@ final class MarcutAppTests: XCTestCase {
 
         // Verify default model is one of the expected models
         XCTAssertTrue(expectedModels.contains(settings.model),
-                     "Default model should be one of the supported models")
+                      "Default model should be one of the supported models")
 
         // Test model descriptions exist (in a real test, we'd verify the UI)
         let modelDescriptions = [
             "qwen2.5:14b": "Gold standard. Best accuracy for legal & complex documents.",
             "qwen2.5:7b": "Balanced. Excellent extraction with lower memory usage.",
-            "phi4-mini:3.8b": "Fast & lightweight. Good for simple documents."
+            "phi4-mini:3.8b": "Fast & lightweight. Good for simple documents.",
         ]
 
         for model in expectedModels {
@@ -175,7 +174,7 @@ final class MarcutAppTests: XCTestCase {
         }
     }
 
-    func testModelSelectionPersistence() throws {
+    func testModelSelectionPersistence() {
         // Test that model selection persists in settings
         var settings = RedactionSettings()
         let originalModel = settings.model
@@ -192,7 +191,7 @@ final class MarcutAppTests: XCTestCase {
 
     // MARK: - Model Catalog Tests (ticket #22)
 
-    func testModelCatalogLoadsExpectedModelsAndParameters() throws {
+    func testModelCatalogLoadsExpectedModelsAndParameters() {
         // Exercises the same bundled `models.json` resource shipped with the
         // app (kept in sync with `src/python/marcut/models.json` and
         // `assets/models.json`), via the production loader `ModelCatalog`.
@@ -206,7 +205,10 @@ final class MarcutAppTests: XCTestCase {
         }
         XCTAssertEqual(qwen25_14b.displayName, "Qwen 2.5 14B")
         XCTAssertEqual(qwen25_14b.description, "Gold standard. Best accuracy for legal & complex documents.")
-        XCTAssertEqual(qwen25_14b.setupDescription, "Gold standard. Best accuracy for legal & complex documents. Recommended.")
+        XCTAssertEqual(
+            qwen25_14b.setupDescription,
+            "Gold standard. Best accuracy for legal & complex documents. Recommended."
+        )
         XCTAssertEqual(qwen25_14b.processingTime, "~50s")
         XCTAssertEqual(qwen25_14b.sizeLabel, "9.0 GB")
         XCTAssertEqual(qwen25_14b.badge, "Best")
@@ -234,7 +236,7 @@ final class MarcutAppTests: XCTestCase {
         XCTAssertNil(catalog.entry(for: "not-a-real-model:1b"))
     }
 
-    func testModelCatalogDefaultModelIsListedAndIsSettingsDefault() throws {
+    func testModelCatalogDefaultModelIsListedAndIsSettingsDefault() {
         let catalog = ModelCatalog.shared
         XCTAssertTrue(catalog.modelIds.contains(catalog.defaultModelId))
         XCTAssertEqual(RedactionSettings().model, catalog.defaultModelId)
@@ -260,13 +262,17 @@ final class MarcutAppTests: XCTestCase {
         let pythonContents = try String(contentsOf: pythonCopy, encoding: .utf8)
         let assetsContents = try String(contentsOf: assetsCopy, encoding: .utf8)
 
-        XCTAssertEqual(swiftContents, pythonContents, "Swift Resources/models.json has drifted from src/python/marcut/models.json")
+        XCTAssertEqual(
+            swiftContents,
+            pythonContents,
+            "Swift Resources/models.json has drifted from src/python/marcut/models.json"
+        )
         XCTAssertEqual(swiftContents, assetsContents, "Swift Resources/models.json has drifted from assets/models.json")
     }
 
     // MARK: - Progress Indicator Tests (Task 1.6)
 
-    func testPreparingStateLogic() throws {
+    func testPreparingStateLogic() {
         // Test the preparing state logic that should prevent beach balls
 
         // Simulate the preparing state
@@ -286,7 +292,7 @@ final class MarcutAppTests: XCTestCase {
 
     // MARK: - Accessibility Identifier Tests
 
-    func testTooltipButtonAccessibilityIdentifier() throws {
+    func testTooltipButtonAccessibilityIdentifier() {
         let button = TooltipButton(
             action: {},
             icon: "doc.text.fill",
@@ -299,7 +305,7 @@ final class MarcutAppTests: XCTestCase {
         XCTAssertEqual(button.accessibilityId, "document.openRedacted.test")
     }
 
-    func testFinalRedactedCopyURLUsesSeparateDocxCopy() throws {
+    func testFinalRedactedCopyURLUsesSeparateDocxCopy() {
         let source = URL(fileURLWithPath: "/tmp/client-review.docx")
 
         let finalURL = DocumentRedactionViewModel.finalRedactedCopyURL(for: source) { _ in false }
@@ -308,11 +314,11 @@ final class MarcutAppTests: XCTestCase {
         XCTAssertNotEqual(finalURL, source)
     }
 
-    func testFinalRedactedCopyURLAvoidsOverwrite() throws {
+    func testFinalRedactedCopyURLAvoidsOverwrite() {
         let source = URL(fileURLWithPath: "/tmp/client-review.docx")
         let occupied = Set([
             "/tmp/client-review Final Redacted.docx",
-            "/tmp/client-review Final Redacted 2.docx"
+            "/tmp/client-review Final Redacted 2.docx",
         ])
 
         let finalURL = DocumentRedactionViewModel.finalRedactedCopyURL(for: source) { occupied.contains($0) }
@@ -347,6 +353,7 @@ final class MarcutAppTests: XCTestCase {
     }
 
     // MARK: - Ollama Port Conflict Detection Tests (ticket #45 / B3)
+
     //
     // `performOllamaStartup()` needs a real bundled `ollama` binary to exercise
     // end-to-end (not present under `swift test`, see `resolveOllamaPath()`), so these
@@ -388,6 +395,7 @@ final class MarcutAppTests: XCTestCase {
     }
 
     // MARK: - Model Name Normalization Parity Tests (ticket #21)
+
     //
     // `PythonBridgeService.normalizedModelIdentifier` is the Swift half of the
     // model-name-parsing rules; `marcut.model_naming.parse_model_identifier` /
@@ -429,6 +437,7 @@ final class MarcutAppTests: XCTestCase {
     }
 
     // MARK: - Model Download Notification Tests
+
     //
     // NOTE: These tests inject fake closures for `modelDownloadAuthorizationRequester` and
     // `modelDownloadCompletionNotifier` instead of exercising the real `PermissionManager.shared`
@@ -439,7 +448,7 @@ final class MarcutAppTests: XCTestCase {
     // success, with the correct model name, and never called on failure) without touching that
     // code path.
 
-    func testModelDownloadNotifierFiresOnSuccessWithModelName() async {
+    func testModelDownloadNotifierFiresOnSuccessWithModelName() {
         let bridge = PythonBridgeService()
         var notifiedModelNames: [String] = []
         var authorizationRequestCount = 0
@@ -521,6 +530,7 @@ final class MarcutAppTests: XCTestCase {
     }
 
     // MARK: - Model Download Failure Classification Tests (issue #50 / B8)
+
     //
     // `shouldRetryModelDownload` / `shouldFallbackToCLIDownload` / `formatModelDownloadError` /
     // `normalizeModelDownloadErrorMessage` drive the retry-then-fallback-to-CLI state machine
@@ -575,7 +585,7 @@ final class MarcutAppTests: XCTestCase {
         XCTAssertEqual(PythonBridgeService.formatModelDownloadError(error), "Download cancelled.")
     }
 
-    func testModelSelectionRowAccessibilityIdentifier() throws {
+    func testModelSelectionRowAccessibilityIdentifier() {
         let row = ModelSelectionRow(
             modelId: "qwen2.5:14b",
             displayName: "Qwen 2.5 14B",
@@ -592,18 +602,18 @@ final class MarcutAppTests: XCTestCase {
 
     // MARK: - Settings Search Tests
 
-    func testSettingsSearchMatchesCaseInsensitiveSubstring() throws {
+    func testSettingsSearchMatchesCaseInsensitiveSubstring() {
         XCTAssertTrue(SettingsView.matchesSearch("Excluded Terms", query: "exclud"))
         XCTAssertTrue(SettingsView.matchesSearch("Excluded Terms", query: "TERMS"))
         XCTAssertTrue(SettingsView.matchesSearch("Chunk Overlap", query: "chunk overlap"))
     }
 
-    func testSettingsSearchEmptyQueryMatchesEverything() throws {
+    func testSettingsSearchEmptyQueryMatchesEverything() {
         XCTAssertTrue(SettingsView.matchesSearch("Excluded Terms", query: ""))
         XCTAssertTrue(SettingsView.matchesSearch("Excluded Terms", query: "   "))
     }
 
-    func testSettingsSearchRejectsNonMatchingQuery() throws {
+    func testSettingsSearchRejectsNonMatchingQuery() {
         XCTAssertFalse(SettingsView.matchesSearch("Excluded Terms", query: "zzz-not-present"))
         XCTAssertFalse(SettingsView.matchesSearch("Chunk Overlap", query: "temperature"))
     }
@@ -690,7 +700,7 @@ final class MarcutAppTests: XCTestCase {
         let existingSettings = nonDefaultRedactionSettings()
 
         XCTAssertThrowsError(try RedactionProfile.decoded(from: data)) { error in
-            guard case RedactionProfile.ProfileError.unsupportedSchemaVersion(let found, let supported) = error else {
+            guard case let RedactionProfile.ProfileError.unsupportedSchemaVersion(found, supported) = error else {
                 XCTFail("Expected unsupportedSchemaVersion, got \(error)")
                 return
             }
@@ -704,7 +714,7 @@ final class MarcutAppTests: XCTestCase {
 
     // MARK: - Mass Progress Tests
 
-    func testMassTotalDeferredUntilEnhancedStage() throws {
+    func testMassTotalDeferredUntilEnhancedStage() {
         let item = createTestDocumentItem(status: .processing)
 
         XCTAssertTrue(item.ingestProgressPayload("{\"type\":\"mass_total\",\"value\":120}"))
@@ -715,7 +725,7 @@ final class MarcutAppTests: XCTestCase {
         XCTAssertTrue(item.isMassTrackingActive, "Mass tracking should activate during enhanced stage")
     }
 
-    func testChunkEndClampsProcessedMassToTotal() throws {
+    func testChunkEndClampsProcessedMassToTotal() {
         let item = createTestDocumentItem(status: .processing)
         item.beginStage(.enhancedDetection)
 
@@ -730,7 +740,7 @@ final class MarcutAppTests: XCTestCase {
 
     // MARK: - Batch ETA Tests
 
-    func testBatchETAReturnsNilWithFewerThanTwoSamples() throws {
+    func testBatchETAReturnsNilWithFewerThanTwoSamples() {
         XCTAssertNil(
             BatchETACalculator.estimate(samples: [], remainingSizes: [1000]),
             "No samples should yield no estimate"
@@ -744,7 +754,7 @@ final class MarcutAppTests: XCTestCase {
         )
     }
 
-    func testBatchETAComputesRemainingTimeFromObservedRate() throws {
+    func testBatchETAComputesRemainingTimeFromObservedRate() {
         // Two documents completed: 1000 bytes in 10s, then 2000 bytes in 20s -> 100 bytes/sec overall.
         let samples = [
             BatchETASample(duration: 10, size: 1000),
@@ -757,7 +767,7 @@ final class MarcutAppTests: XCTestCase {
         XCTAssertEqual(eta ?? -1, 5.0, accuracy: 0.001)
     }
 
-    func testBatchETASumsMultipleRemainingDocuments() throws {
+    func testBatchETASumsMultipleRemainingDocuments() {
         let samples = [
             BatchETASample(duration: 10, size: 1000),
             BatchETASample(duration: 10, size: 1000),
@@ -769,7 +779,7 @@ final class MarcutAppTests: XCTestCase {
         XCTAssertEqual(eta ?? -1, 5.0, accuracy: 0.001)
     }
 
-    func testBatchETAReturnsZeroWhenNoRemainingWork() throws {
+    func testBatchETAReturnsZeroWhenNoRemainingWork() {
         let samples = [
             BatchETASample(duration: 10, size: 1000),
             BatchETASample(duration: 10, size: 1000),
@@ -779,7 +789,7 @@ final class MarcutAppTests: XCTestCase {
         XCTAssertEqual(eta, 0.0, "No remaining documents should mean zero time remaining, not nil")
     }
 
-    func testBatchETAReturnsNilWhenObservedRateIsDegenerate() throws {
+    func testBatchETAReturnsNilWhenObservedRateIsDegenerate() {
         // Zero total size across samples (e.g. size signal unavailable) -> no reliable rate.
         let samples = [
             BatchETASample(duration: 10, size: 0),
@@ -795,10 +805,10 @@ final class MarcutAppTests: XCTestCase {
         // complete first (fast, low size); eight large documents (50x the
         // size) are still queued/in-flight.
         let smallSamples = [
-            BatchETASample(duration: 2, size: 1_000),
-            BatchETASample(duration: 2, size: 1_000),
+            BatchETASample(duration: 2, size: 1000),
+            BatchETASample(duration: 2, size: 1000),
         ]
-        let remainingLargeSizes: [Int64] = Array(repeating: 50_000, count: 8)
+        let remainingLargeSizes: [Int64] = Array(repeating: 50000, count: 8)
 
         let eta = try XCTUnwrap(
             BatchETACalculator.estimate(samples: smallSamples, remainingSizes: remainingLargeSizes)
@@ -819,7 +829,7 @@ final class MarcutAppTests: XCTestCase {
 
     // MARK: - Integration Tests
 
-    func testDocumentItemStatusTransitions() throws {
+    func testDocumentItemStatusTransitions() {
         // Test document item status transitions
         let item = createTestDocumentItem(status: .validDocument)
 
@@ -838,7 +848,7 @@ final class MarcutAppTests: XCTestCase {
 
     // MARK: - Error Handling Tests
 
-    func testInvalidDocumentHandling() throws {
+    func testInvalidDocumentHandling() {
         let item = createTestDocumentItem(status: .invalidDocument)
         item.errorMessage = "Only DOCX files are supported"
 
@@ -923,7 +933,7 @@ final class MarcutAppTests: XCTestCase {
         XCTAssertTrue(isValid, "Expected absolute customXML relationship target to pass validation")
     }
 
-    func testFailedDocumentHandling() throws {
+    func testFailedDocumentHandling() {
         let item = createTestDocumentItem(status: .failed)
         item.errorMessage = "Processing failed - check logs for details"
 
@@ -933,7 +943,7 @@ final class MarcutAppTests: XCTestCase {
 
     // MARK: - Retry Failed Tests
 
-    func testRetryFailedDocumentsOnlyReQueuesFailedItems() throws {
+    func testRetryFailedDocumentsOnlyReQueuesFailedItems() {
         let viewModel = createTestViewModel()
 
         let completedItem = createTestDocumentItem(status: .completed)
@@ -966,11 +976,11 @@ final class MarcutAppTests: XCTestCase {
         XCTAssertEqual(validItem.status, .validDocument)
     }
 
-    func testRetryFailedDocumentsNoOpWhenNoFailedItems() throws {
+    func testRetryFailedDocumentsNoOpWhenNoFailedItems() {
         let viewModel = createTestViewModel()
         viewModel.items = [
             createTestDocumentItem(status: .completed),
-            createTestDocumentItem(status: .validDocument)
+            createTestDocumentItem(status: .validDocument),
         ]
 
         var retried: [DocumentItem] = []
@@ -983,7 +993,7 @@ final class MarcutAppTests: XCTestCase {
         XCTAssertTrue(retried.isEmpty, "Retry should be a no-op when there are no failed documents")
     }
 
-    func testHasFailedDocumentsReflectsItemStatuses() throws {
+    func testHasFailedDocumentsReflectsItemStatuses() {
         let viewModel = createTestViewModel()
         XCTAssertFalse(viewModel.hasFailedDocuments, "No documents means no failed documents")
 
@@ -997,6 +1007,7 @@ final class MarcutAppTests: XCTestCase {
     }
 
     // MARK: - Batch State Transition Tests (issue #50 / B8)
+
     //
     // `processAllDocuments()` walks a batch sequentially and does not stop the batch when one
     // document fails (DocumentRedactionViewModel.swift): the `while` loop only cares whether an
@@ -1006,7 +1017,7 @@ final class MarcutAppTests: XCTestCase {
     // inert trigger to re-run `updateState()` -- the same indirect-call pattern used by
     // `testHasFailedDocumentsReflectsItemStatuses` above (`updateState()` itself is private).
 
-    func testBatchStateFlagsReflectPerDocumentFailureAmidInFlightBatch() throws {
+    func testBatchStateFlagsReflectPerDocumentFailureAmidInFlightBatch() {
         let viewModel = createTestViewModel()
         let queuedItem = createTestDocumentItem(status: .validDocument)
         let processingItem = createTestDocumentItem(status: .processing)
@@ -1019,8 +1030,14 @@ final class MarcutAppTests: XCTestCase {
         XCTAssertTrue(viewModel.hasValidDocuments, "A still-queued document should be reflected")
         XCTAssertTrue(viewModel.hasProcessingDocuments, "An in-flight document should be reflected")
         XCTAssertTrue(viewModel.hasCompletedDocuments, "A completed document should be reflected")
-        XCTAssertTrue(viewModel.hasFailedDocuments, "One document failing mid-batch must not be masked by its siblings' states")
-        XCTAssertFalse(viewModel.hasFinishedProcessing, "Batch isn't finished while a document is still queued/processing")
+        XCTAssertTrue(
+            viewModel.hasFailedDocuments,
+            "One document failing mid-batch must not be masked by its siblings' states"
+        )
+        XCTAssertFalse(
+            viewModel.hasFinishedProcessing,
+            "Batch isn't finished while a document is still queued/processing"
+        )
 
         // The in-flight document finishes and the queued one starts. The earlier failure must
         // keep reporting failed regardless of later, unrelated transitions in the same batch --
@@ -1029,7 +1046,10 @@ final class MarcutAppTests: XCTestCase {
         queuedItem.status = .processing
         viewModel.add(urls: [])
 
-        XCTAssertTrue(viewModel.hasFailedDocuments, "Earlier per-document failure persists across later transitions in the batch")
+        XCTAssertTrue(
+            viewModel.hasFailedDocuments,
+            "Earlier per-document failure persists across later transitions in the batch"
+        )
         XCTAssertTrue(viewModel.hasProcessingDocuments)
         XCTAssertFalse(viewModel.hasFinishedProcessing)
 
@@ -1052,7 +1072,10 @@ final class MarcutAppTests: XCTestCase {
         viewModel.add(urls: [])
 
         XCTAssertFalse(viewModel.hasFailedDocuments)
-        XCTAssertTrue(viewModel.hasFinishedProcessing, "Once the failure is resolved, a fully-completed batch reports finished")
+        XCTAssertTrue(
+            viewModel.hasFinishedProcessing,
+            "Once the failure is resolved, a fully-completed batch reports finished"
+        )
     }
 
     // MARK: - Watchdog Tests (issue #43 / B1: embedded Python worker hang/crash)
@@ -1080,7 +1103,7 @@ final class MarcutAppTests: XCTestCase {
                 return 1
             }
         ) { error in
-            guard case PythonBridgeError.workerStalled(let operation) = error else {
+            guard case let PythonBridgeError.workerStalled(operation) = error else {
                 XCTFail("Expected PythonBridgeError.workerStalled, got \(error)")
                 return
             }
@@ -1142,11 +1165,15 @@ final class MarcutAppTests: XCTestCase {
         viewModel.ensureHeartbeatMonitorRunning(for: item)
 
         let deadline = Date().addingTimeInterval(5.0)
-        while item.status == .processing && Date() < deadline {
+        while item.status == .processing, Date() < deadline {
             try await Task.sleep(nanoseconds: 50_000_000)
         }
 
-        XCTAssertEqual(item.status, .failed, "A document with no progress signal for longer than the stall threshold must be marked failed, not left hanging forever")
+        XCTAssertEqual(
+            item.status,
+            .failed,
+            "A document with no progress signal for longer than the stall threshold must be marked failed, not left hanging forever"
+        )
         XCTAssertEqual(item.errorMessage, DocumentRedactionViewModel.processingStalledMessage)
     }
 
@@ -1176,10 +1203,16 @@ final class MarcutAppTests: XCTestCase {
         try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
         defer {
             // Restore write permission before cleanup, otherwise removal itself can fail.
-            try? FileManager.default.setAttributes([.posixPermissions: NSNumber(value: Int16(0o755))], ofItemAtPath: tempDir.path)
+            try? FileManager.default.setAttributes(
+                [.posixPermissions: NSNumber(value: Int16(0o755))],
+                ofItemAtPath: tempDir.path
+            )
             try? FileManager.default.removeItem(at: tempDir)
         }
-        try FileManager.default.setAttributes([.posixPermissions: NSNumber(value: Int16(0o555))], ofItemAtPath: tempDir.path)
+        try FileManager.default.setAttributes(
+            [.posixPermissions: NSNumber(value: Int16(0o555))],
+            ofItemAtPath: tempDir.path
+        )
 
         let viewModel = createTestViewModel()
         let error = viewModel.validateDestination(tempDir)
@@ -1193,7 +1226,10 @@ final class MarcutAppTests: XCTestCase {
         defer { try? FileManager.default.removeItem(at: tempDir) }
 
         let viewModel = createTestViewModel()
-        XCTAssertNil(viewModel.validateDestination(tempDir), "A writable destination with no space estimate requested must pass")
+        XCTAssertNil(
+            viewModel.validateDestination(tempDir),
+            "A writable destination with no space estimate requested must pass"
+        )
     }
 
     /// Free-space logic is exercised through the injectable `freeSpaceProvider` parameter
@@ -1211,7 +1247,10 @@ final class MarcutAppTests: XCTestCase {
             freeSpaceProvider: { _ in 1024 } // simulate an almost-full disk
         )
 
-        XCTAssertNotNil(error, "Insufficient free space at the destination must fail preflight, not wait for a mid-run write failure")
+        XCTAssertNotNil(
+            error,
+            "Insufficient free space at the destination must fail preflight, not wait for a mid-run write failure"
+        )
         XCTAssertTrue(error?.contains("free disk space") ?? false)
         XCTAssertTrue(error?.contains("1.00 GB") ?? false, "Error should state the estimated need")
     }
@@ -1250,7 +1289,7 @@ final class MarcutAppTests: XCTestCase {
         XCTAssertNil(error, "An undeterminable free-space figure must not block the run")
     }
 
-    func testDiskSpaceCheckParseByteSizeHandlesModelCatalogLabels() throws {
+    func testDiskSpaceCheckParseByteSizeHandlesModelCatalogLabels() {
         XCTAssertEqual(DiskSpaceCheck.parseByteSize("9.0 GB"), 9_663_676_416)
         XCTAssertEqual(DiskSpaceCheck.parseByteSize("22 GB"), 23_622_320_128)
         XCTAssertEqual(DiskSpaceCheck.parseByteSize("512 MB"), 536_870_912)
@@ -1261,7 +1300,7 @@ final class MarcutAppTests: XCTestCase {
     /// Model downloads must be checked against the catalog-declared size (`models.json`
     /// `sizeLabel`) before `ollama pull` even starts, rather than relying on pattern-matching
     /// "no space" out of Ollama's own output after the fact.
-    func testModelDownloadSpaceShortfallFailsWhenCatalogSizeExceedsAvailable() throws {
+    func testModelDownloadSpaceShortfallFailsWhenCatalogSizeExceedsAvailable() {
         let directory = FileManager.default.temporaryDirectory
         let shortfall = PythonBridgeService.modelDownloadSpaceShortfall(
             modelName: "qwen2.5:14b",
@@ -1275,7 +1314,7 @@ final class MarcutAppTests: XCTestCase {
         XCTAssertTrue(shortfall?.contains("free disk space") ?? false)
     }
 
-    func testModelDownloadSpaceShortfallPassesWhenCatalogSizeFitsAvailable() throws {
+    func testModelDownloadSpaceShortfallPassesWhenCatalogSizeFitsAvailable() {
         let directory = FileManager.default.temporaryDirectory
         let shortfall = PythonBridgeService.modelDownloadSpaceShortfall(
             modelName: "phi4-mini:3.8b",
@@ -1287,7 +1326,7 @@ final class MarcutAppTests: XCTestCase {
         XCTAssertNil(shortfall)
     }
 
-    func testModelDownloadSpaceShortfallSkipsCheckWhenSizeLabelMissingOrUnparseable() throws {
+    func testModelDownloadSpaceShortfallSkipsCheckWhenSizeLabelMissingOrUnparseable() {
         let directory = FileManager.default.temporaryDirectory
         XCTAssertNil(PythonBridgeService.modelDownloadSpaceShortfall(
             modelName: "custom:model",
@@ -1328,7 +1367,11 @@ final class MarcutAppTests: XCTestCase {
         // is an irrelevant implementation detail for this test.
         let discoveredNames = DebugLogger.discoverLogFiles(in: tempDir).map(\.lastPathComponent)
 
-        XCTAssertEqual(discoveredNames, ["marcut-2.log", "marcut.log"], "Log files should be sorted most-recently-modified first, and non-.log files excluded")
+        XCTAssertEqual(
+            discoveredNames,
+            ["marcut-2.log", "marcut.log"],
+            "Log files should be sorted most-recently-modified first, and non-.log files excluded"
+        )
     }
 
     func testDiscoverLogFilesReturnsEmptyArrayWhenNoLogsExist() throws {
@@ -1339,19 +1382,23 @@ final class MarcutAppTests: XCTestCase {
         XCTAssertTrue(DebugLogger.discoverLogFiles(in: tempDir).isEmpty, "Empty directory should yield no log files")
     }
 
-    func testDiscoverLogFilesReturnsEmptyArrayWhenDirectoryMissing() throws {
-        let missingDir = FileManager.default.temporaryDirectory.appendingPathComponent("does-not-exist-\(UUID().uuidString)")
+    func testDiscoverLogFilesReturnsEmptyArrayWhenDirectoryMissing() {
+        let missingDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("does-not-exist-\(UUID().uuidString)")
 
-        XCTAssertTrue(DebugLogger.discoverLogFiles(in: missingDir).isEmpty, "Nonexistent directory should yield no log files, not throw")
+        XCTAssertTrue(
+            DebugLogger.discoverLogFiles(in: missingDir).isEmpty,
+            "Nonexistent directory should yield no log files, not throw"
+        )
     }
 
     // MARK: - Performance Tests
 
-    func testRedactionStatusPerformance() throws {
+    func testRedactionStatusPerformance() {
         // Test that RedactionStatus operations are performant
         measure {
             // Simulate rapid status checks
-            for i in 0..<10000 {
+            for i in 0 ..< 10000 {
                 let status: RedactionStatus = (i % 2 == 0) ? .processing : .completed
                 _ = status.isProcessing
                 _ = status.isComplete
@@ -1360,6 +1407,7 @@ final class MarcutAppTests: XCTestCase {
     }
 
     // MARK: - Excluded-Word Match Preview Tests
+
     //
     // Ground truth for these expectations was captured by running the production
     // matcher directly (`marcut.rules._is_excluded`) against the same phrases, e.g.:
@@ -1372,20 +1420,20 @@ final class MarcutAppTests: XCTestCase {
         ExcludedWordMatcher.baseEntries + ExcludedWordMatcher.compileEntries(fromLines: lines)
     }
 
-    func testExcludedWordMatcherMatchesExactLiteral() throws {
+    func testExcludedWordMatcherMatchesExactLiteral() {
         let entries = excludedWordEntries(fromLines: ["Non-Disclosure Agreement", "Acme Widgets"])
         let result = ExcludedWordMatcher.match("Non-Disclosure Agreement", entries: entries)
         XCTAssertTrue(result.matched)
         XCTAssertEqual(result.matchedEntry, "Non-Disclosure Agreement")
     }
 
-    func testExcludedWordMatcherIsCaseInsensitive() throws {
+    func testExcludedWordMatcherIsCaseInsensitive() {
         let entries = excludedWordEntries(fromLines: ["Confidential Information"])
         XCTAssertTrue(ExcludedWordMatcher.match("confidential information", entries: entries).matched)
         XCTAssertTrue(ExcludedWordMatcher.match("CONFIDENTIAL INFORMATION", entries: entries).matched)
     }
 
-    func testExcludedWordMatcherStripsLeadingDeterminer() throws {
+    func testExcludedWordMatcherStripsLeadingDeterminer() {
         let entries = excludedWordEntries(fromLines: ["Board of Directors"])
         XCTAssertTrue(ExcludedWordMatcher.match("the Board of Directors", entries: entries).matched)
         XCTAssertTrue(ExcludedWordMatcher.match("Board of Directors", entries: entries).matched)
@@ -1398,7 +1446,7 @@ final class MarcutAppTests: XCTestCase {
     /// already determiner-stripped text and matches a second time. Ground-truth
     /// verified against `marcut.rules._is_excluded` for each phrase below — all
     /// return `True` in production, so the Swift preview must match them too.
-    func testExcludedWordMatcherStripsTwoStackedLeadingDeterminers() throws {
+    func testExcludedWordMatcherStripsTwoStackedLeadingDeterminers() {
         let entries = excludedWordEntries(fromLines: [])
         XCTAssertTrue(ExcludedWordMatcher.match("all such Notices", entries: entries).matched)
         XCTAssertTrue(ExcludedWordMatcher.match("both the Parties", entries: entries).matched)
@@ -1408,14 +1456,14 @@ final class MarcutAppTests: XCTestCase {
         XCTAssertTrue(ExcludedWordMatcher.match("either such Party", entries: entries).matched)
     }
 
-    func testExcludedWordMatcherIgnoresTrailingPunctuationAndWhitespace() throws {
+    func testExcludedWordMatcherIgnoresTrailingPunctuationAndWhitespace() {
         let entries = excludedWordEntries(fromLines: ["Non-Disclosure Agreement"])
         XCTAssertTrue(ExcludedWordMatcher.match("Non-Disclosure Agreement.", entries: entries).matched)
         XCTAssertTrue(ExcludedWordMatcher.match("Non-Disclosure Agreement,", entries: entries).matched)
         XCTAssertTrue(ExcludedWordMatcher.match("  Non-Disclosure Agreement  ", entries: entries).matched)
     }
 
-    func testExcludedWordMatcherTreatsSimplePluralsAsEquivalent() throws {
+    func testExcludedWordMatcherTreatsSimplePluralsAsEquivalent() {
         let entries = excludedWordEntries(fromLines: ["Agreement"])
         XCTAssertTrue(ExcludedWordMatcher.match("Agreement", entries: entries).matched)
         XCTAssertTrue(ExcludedWordMatcher.match("Agreements", entries: entries).matched)
@@ -1425,26 +1473,26 @@ final class MarcutAppTests: XCTestCase {
         XCTAssertTrue(ExcludedWordMatcher.match("Companies", entries: iesEntries).matched)
     }
 
-    func testExcludedWordMatcherSupportsRegexEntries() throws {
+    func testExcludedWordMatcherSupportsRegexEntries() {
         let entries = excludedWordEntries(fromLines: ["Article [A-Z0-9]+"])
         XCTAssertTrue(ExcludedWordMatcher.match("Article IV", entries: entries).matched)
         XCTAssertTrue(ExcludedWordMatcher.match("Article 5", entries: entries).matched)
         XCTAssertFalse(ExcludedWordMatcher.match("Preamble", entries: entries).matched)
     }
 
-    func testExcludedWordMatcherNoMatchForUnrelatedPhrase() throws {
+    func testExcludedWordMatcherNoMatchForUnrelatedPhrase() {
         let entries = excludedWordEntries(fromLines: ["Confidential Information", "Board of Directors"])
         XCTAssertFalse(ExcludedWordMatcher.match("John Smith", entries: entries).matched)
         XCTAssertFalse(ExcludedWordMatcher.match("Acme Corp", entries: entries).matched)
     }
 
-    func testExcludedWordMatcherEmptyPhraseDoesNotMatch() throws {
+    func testExcludedWordMatcherEmptyPhraseDoesNotMatch() {
         let entries = excludedWordEntries(fromLines: ["Company"])
         XCTAssertFalse(ExcludedWordMatcher.match("", entries: entries).matched)
         XCTAssertFalse(ExcludedWordMatcher.match("   ", entries: entries).matched)
     }
 
-    func testExcludedWordMatcherHonorsAlwaysOnBaseTerms() throws {
+    func testExcludedWordMatcherHonorsAlwaysOnBaseTerms() {
         // "Company", "Board of Directors", "Purchaser", etc. are excluded
         // unconditionally (marcut.model._get_base_excluded_literals) even though
         // they never appear in the user-editable excluded-words text.
@@ -1487,7 +1535,7 @@ final class MarcutAppTests: XCTestCase {
         return defaults
     }
 
-    func testPendingBatchJobRecordRoundTripPreservesValues() throws {
+    func testPendingBatchJobRecordRoundTripPreservesValues() {
         let defaults = makePendingBatchJobTestDefaults()
         var settings = RedactionSettings()
         settings.model = "mistral:7b"
@@ -1505,7 +1553,7 @@ final class MarcutAppTests: XCTestCase {
         XCTAssertEqual(loaded?.schemaVersion, PendingBatchJobRecord.currentSchemaVersion)
     }
 
-    func testPendingBatchJobStoreSaveNilClearsRecord() throws {
+    func testPendingBatchJobStoreSaveNilClearsRecord() {
         let defaults = makePendingBatchJobTestDefaults()
         let record = PendingBatchJobRecord(documentPaths: ["/Users/test/a.docx"], settings: RedactionSettings())
         PendingBatchJobStore.save(record, defaults: defaults)
@@ -1515,7 +1563,7 @@ final class MarcutAppTests: XCTestCase {
         XCTAssertNil(PendingBatchJobStore.load(defaults: defaults))
     }
 
-    func testPendingBatchJobStoreDiscardsMalformedRecordWithoutCrashing() throws {
+    func testPendingBatchJobStoreDiscardsMalformedRecordWithoutCrashing() {
         let defaults = makePendingBatchJobTestDefaults()
         defaults.set(Data("{ this is not valid json".utf8), forKey: PendingBatchJobStore.defaultsKey)
 
@@ -1535,7 +1583,7 @@ final class MarcutAppTests: XCTestCase {
         XCTAssertNil(defaults.data(forKey: PendingBatchJobStore.defaultsKey))
     }
 
-    func testPendingBatchJobStoreDiscardsEmptyPathsRecord() throws {
+    func testPendingBatchJobStoreDiscardsEmptyPathsRecord() {
         let defaults = makePendingBatchJobTestDefaults()
         let record = PendingBatchJobRecord(documentPaths: [], settings: RedactionSettings())
         PendingBatchJobStore.save(record, defaults: defaults)
@@ -1544,6 +1592,7 @@ final class MarcutAppTests: XCTestCase {
     }
 
     // MARK: - Resume/Discard Flow Tests (issue #19 regression)
+
     //
     // `DocumentRedactionViewModel` persists pending-batch state via `PendingBatchJobStore`'s
     // `.standard`-defaulted parameter with no injection seam, so these tests exercise the real
@@ -1617,6 +1666,7 @@ final class MarcutAppTests: XCTestCase {
     }
 
     // MARK: - Kill-Mid-Document Resume Safety Tests (issue #48 / B6)
+
     //
     // "Verify resume-after-quit never presents partial outputs as complete." Validated by
     // reading the two halves of the path together:
@@ -1682,7 +1732,10 @@ final class MarcutAppTests: XCTestCase {
             viewModel.add(urls: [])
 
             let persisted = PendingBatchJobStore.load()
-            XCTAssertNotNil(persisted, "A batch with documents still pending/mid-processing must persist a resume record")
+            XCTAssertNotNil(
+                persisted,
+                "A batch with documents still pending/mid-processing must persist a resume record"
+            )
             XCTAssertEqual(
                 Set(persisted?.documentPaths ?? []),
                 Set([midProcessingItem.url.path, queuedItem.url.path]),
@@ -1743,7 +1796,10 @@ final class MarcutAppTests: XCTestCase {
             }
         }
 
-        let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent(
+            UUID().uuidString,
+            isDirectory: true
+        )
         try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: tempDir) }
 
@@ -1769,7 +1825,7 @@ final class MarcutAppTests: XCTestCase {
         viewModel.resumePendingJob()
 
         let deadline = Date().addingTimeInterval(10.0)
-        while viewModel.items.first?.status == .checking && Date() < deadline {
+        while viewModel.items.first?.status == .checking, Date() < deadline {
             try await Task.sleep(nanoseconds: 50_000_000)
         }
 
@@ -1789,6 +1845,7 @@ final class MarcutAppTests: XCTestCase {
     }
 
     // MARK: - Failure Message Mapping Tests (issue #46 / B4)
+
     //
     // `FailureMessagePresenter.message(forCode:)` is the single place that turns a pipeline
     // `error_code` (or the absence of one, for bridge-level failures) into the user-facing
@@ -1821,15 +1878,26 @@ final class MarcutAppTests: XCTestCase {
                 FailureMessagePresenter.message(forCode: nil),
                 "Known code '\(code)' must not fall back to the generic message"
             )
-            XCTAssertTrue(message.contains(FailureMessagePresenter.logHint), "Message for '\(code)' should point to the App Log")
+            XCTAssertTrue(
+                message.contains(FailureMessagePresenter.logHint),
+                "Message for '\(code)' should point to the App Log"
+            )
             seenMessages.insert(message)
         }
-        XCTAssertEqual(seenMessages.count, knownCodes.count, "Every known error code should map to a distinct friendly message")
+        XCTAssertEqual(
+            seenMessages.count,
+            knownCodes.count,
+            "Every known error code should map to a distinct friendly message"
+        )
     }
 
     func testFailureMessageFallsBackToGenericForUnknownCode() {
         let message = FailureMessagePresenter.message(forCode: "SOME_CODE_THAT_DOES_NOT_EXIST")
-        XCTAssertEqual(message, FailureMessagePresenter.message(forCode: nil), "Unrecognized codes should get the generic message")
+        XCTAssertEqual(
+            message,
+            FailureMessagePresenter.message(forCode: nil),
+            "Unrecognized codes should get the generic message"
+        )
         XCTAssertTrue(message.contains(FailureMessagePresenter.genericMessage))
     }
 
@@ -1862,6 +1930,7 @@ final class MarcutAppTests: XCTestCase {
     }
 
     // MARK: - Power Assertion / Sleep-Wake Tests (B5, issue #47)
+
     //
     // `PowerAssertionGuard` itself is tested in isolation with injected acquire/release fakes
     // (no real IOKit calls, deterministic). The ViewModel-integration tests below inject a fresh
@@ -1949,7 +2018,11 @@ final class MarcutAppTests: XCTestCase {
 
         shouldSucceed = true
         powerGuard.begin()
-        XCTAssertEqual(acquireCount, 2, "A later begin() must retry the acquire rather than remembering the earlier failure forever")
+        XCTAssertEqual(
+            acquireCount,
+            2,
+            "A later begin() must retry the acquire rather than remembering the earlier failure forever"
+        )
         XCTAssertTrue(powerGuard.isHoldingAssertion)
         powerGuard.end()
     }
@@ -1981,7 +2054,7 @@ final class MarcutAppTests: XCTestCase {
         viewModel.ensureHeartbeatMonitorRunning(for: item)
 
         let deadline = Date().addingTimeInterval(5.0)
-        while item.status == .processing && Date() < deadline {
+        while item.status == .processing, Date() < deadline {
             try await Task.sleep(nanoseconds: 50_000_000)
         }
 
@@ -2011,13 +2084,20 @@ final class MarcutAppTests: XCTestCase {
 
         XCTAssertFalse(ok, "Download should fail when the Ollama service is disallowed")
         XCTAssertEqual(acquireCount, 1, "downloadModel must hold the assertion for the duration of the attempt")
-        XCTAssertEqual(releaseCount, 1, "downloadModel's early failure path must still release the assertion, not leak it")
+        XCTAssertEqual(
+            releaseCount,
+            1,
+            "downloadModel's early failure path must still release the assertion, not leak it"
+        )
     }
 
     /// Wake with nothing processing must not probe Ollama at all -- the common case (waking up
     /// with no batch running) should be a pure no-op.
-    func testHandleSystemWakeNoOpsWhenNothingIsProcessing() async throws {
-        let viewModel = DocumentRedactionViewModel(powerAssertion: PowerAssertionGuard(acquire: { _ in 1 }, release: { _ in }))
+    func testHandleSystemWakeNoOpsWhenNothingIsProcessing() async {
+        let viewModel = DocumentRedactionViewModel(powerAssertion: PowerAssertionGuard(
+            acquire: { _ in 1 },
+            release: { _ in }
+        ))
         var healthCheckCallCount = 0
         viewModel.wakeOllamaHealthCheck = { healthCheckCallCount += 1; return true }
 
@@ -2029,8 +2109,11 @@ final class MarcutAppTests: XCTestCase {
     /// If the wake-time health check finds Ollama responsive, in-flight documents must resume
     /// rather than fail, and `lastHeartbeat` must be refreshed so the heartbeat watchdog doesn't
     /// see the sleep duration itself as a stall.
-    func testHandleSystemWakeResumesProcessingWhenHealthCheckPasses() async throws {
-        let viewModel = DocumentRedactionViewModel(powerAssertion: PowerAssertionGuard(acquire: { _ in 1 }, release: { _ in }))
+    func testHandleSystemWakeResumesProcessingWhenHealthCheckPasses() async {
+        let viewModel = DocumentRedactionViewModel(powerAssertion: PowerAssertionGuard(
+            acquire: { _ in 1 },
+            release: { _ in }
+        ))
         let item = createTestDocumentItem(status: .processing)
         let staleHeartbeat = Date().addingTimeInterval(-500) // would already read as stalled by wall-clock alone
         item.lastHeartbeat = staleHeartbeat
@@ -2052,8 +2135,11 @@ final class MarcutAppTests: XCTestCase {
     /// If the wake-time health check finds Ollama unresponsive, in-flight documents must fail
     /// immediately with the wake-specific message rather than being left to the generic
     /// heartbeat-stall message (or hanging until it eventually fires).
-    func testHandleSystemWakeFailsInFlightDocumentsWhenHealthCheckFails() async throws {
-        let viewModel = DocumentRedactionViewModel(powerAssertion: PowerAssertionGuard(acquire: { _ in 1 }, release: { _ in }))
+    func testHandleSystemWakeFailsInFlightDocumentsWhenHealthCheckFails() async {
+        let viewModel = DocumentRedactionViewModel(powerAssertion: PowerAssertionGuard(
+            acquire: { _ in 1 },
+            release: { _ in }
+        ))
         let item = createTestDocumentItem(status: .processing)
         item.lastHeartbeat = Date()
         viewModel.items = [item]
@@ -2073,18 +2159,18 @@ extension RedactionStatus {
     var isProcessing: Bool {
         switch self {
         case .processing, .analyzing, .redacting:
-            return true
+            true
         default:
-            return false
+            false
         }
     }
 
     var isComplete: Bool {
         switch self {
         case .completed:
-            return true
+            true
         default:
-            return false
+            false
         }
     }
 }

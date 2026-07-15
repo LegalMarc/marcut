@@ -34,5 +34,7 @@ enum DefaultsKey: String {
     case metadataCleaningSettings = "MetadataCleaningSettings"
 
     /// Convenience for call sites that need the raw string (e.g. `@AppStorage`, `defaults.object(forKey:)`).
-    var key: String { rawValue }
+    var key: String {
+        rawValue
+    }
 }

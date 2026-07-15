@@ -1,8 +1,29 @@
 import sys
 import io
 import datetime
-from dataclasses import fields
+import hashlib
+import traceback
+import warnings
+import time
+import os
+import tempfile
 import logging
+from dataclasses import fields
+from typing import List, Dict, Any, Tuple, Optional, Callable, TypedDict
+from .docx_io import DocxMap, MetadataCleaningSettings
+from .docx_revisions import accept_revisions_in_docx_bytes
+from .chunker import make_chunks
+from .rules import run_rules, _is_excluded_combo, _is_excluded, _is_specific_org_span, ADDRESS
+from .model_enhanced import (
+    LlamaCppRedactionPipeline,
+    run_enhanced_model,
+    apply_llm_overrides_to_rule_spans,
+    LLMChunkExtractionFailed,
+)
+from .cluster import ClusterTable
+from .confidence import combine, low_conf
+from .report import write_report, write_json_file, make_private_file
+import regex as re  # For consistency pass boundaries
 
 # Unicode to ASCII mapping for common document characters
 # These are frequently found in Word documents and cause encoding issues
@@ -77,31 +98,6 @@ try:
 except Exception:
     pass
 
-import json
-import hashlib
-import traceback
-import warnings
-import time
-import os
-import tempfile
-from typing import List, Dict, Any, Tuple, Optional, Callable, TypedDict
-from .docx_io import DocxMap, MetadataCleaningSettings
-from .docx_revisions import accept_revisions_in_docx_bytes
-from .chunker import make_chunks
-from .rules import run_rules, _is_excluded_combo, _is_excluded, _is_specific_org_span, ADDRESS
-from .model_enhanced import (
-    LlamaCppRedactionPipeline,
-    run_enhanced_model,
-    apply_llm_overrides_to_rule_spans,
-    DocumentContext,
-    build_prompt_context,
-    LLMChunkExtractionFailed,
-)
-from .cluster import ClusterTable
-from .confidence import combine, low_conf
-from .report import write_report, write_json_file, make_private_file
-import regex as re  # For consistency pass boundaries
-
 logger = logging.getLogger(__name__)
 
 def _metadata_env_enabled(name: str) -> bool:
@@ -141,7 +137,7 @@ def _merge_overlaps(spans: List[Dict[str,Any]], text: str) -> List[Dict[str,Any]
 
     # Validate span data structures
     valid_spans = []
-    for i, span in enumerate(spans):
+    for span in spans:
         if not isinstance(span, dict):
             continue
         if not all(key in span for key in ["start", "end", "label"]):
@@ -686,13 +682,15 @@ def _apply_consistency_pass(
                 for match in re.finditer(pattern_str, text):
                     matched_text = match.group(0)
                     label = case_sensitive_map.get(matched_text)
-                    if not label: continue
+                    if not label:
+                        continue
 
                     s, e = match.span()
                     if _overlaps_existing(s, e, label, matched_text):
                         continue
                     key = (s, e, label)
-                    if key in existing_keys or key in new_keys: continue
+                    if key in existing_keys or key in new_keys:
+                        continue
 
                     new_spans.append({
                         "start": s, "end": e, "label": label, "text": matched_text,
@@ -700,7 +698,8 @@ def _apply_consistency_pass(
                     })
                     new_keys.add(key)
             except Exception as e:
-                if debug: print(f"Consistency Pass Error (CS): {e}")
+                if debug:
+                    print(f"Consistency Pass Error (CS): {e}")
 
     # Build regex for case-insensitive (ORGs)
     if case_insensitive_map:
@@ -712,13 +711,15 @@ def _apply_consistency_pass(
                     matched_text = match.group(0)
                     # Lookup by lowercase
                     label = case_insensitive_map.get(matched_text.lower())
-                    if not label: continue
+                    if not label:
+                        continue
 
                     s, e = match.span()
                     if _overlaps_existing(s, e, label, matched_text):
                         continue
                     key = (s, e, label)
-                    if key in existing_keys or key in new_keys: continue
+                    if key in existing_keys or key in new_keys:
+                        continue
 
                     new_spans.append({
                         "start": s, "end": e, "label": label, "text": matched_text,
@@ -726,7 +727,8 @@ def _apply_consistency_pass(
                     })
                     new_keys.add(key)
             except Exception as e:
-                 if debug: print(f"Consistency Pass Error (CI): {e}")
+                if debug:
+                    print(f"Consistency Pass Error (CI): {e}")
 
     # 3. Fuzzy Scan for ORGs (Per-candidate, expensive but necessary for complex forms)
     # Only iterate ORG candidates
@@ -753,16 +755,22 @@ def _apply_consistency_pass(
         try:
             for match in re.finditer(fuzzy_pattern, text, flags=re.IGNORECASE):
                 s, e = match.span()
-                if exclude_if and exclude_if(cand_text, label): continue
-                if s > 0 and text[s - 1].isalnum(): continue
-                if e < len(text) and text[e:e+1].isalnum(): continue
-                if _overlaps_existing(s, e, label, text[s:e]): continue
+                if exclude_if and exclude_if(cand_text, label):
+                    continue
+                if s > 0 and text[s - 1].isalnum():
+                    continue
+                if e < len(text) and text[e:e+1].isalnum():
+                    continue
+                if _overlaps_existing(s, e, label, text[s:e]):
+                    continue
 
                 key = (s, e, label)
-                if key in existing_keys or key in new_keys: continue
+                if key in existing_keys or key in new_keys:
+                    continue
 
                 # Length check
-                if (e - s) < max(4, len("".join(norm_tokens)) - 1): continue
+                if (e - s) < max(4, len("".join(norm_tokens)) - 1):
+                    continue
 
                 new_spans.append({
                     "start": s, "end": e, "label": label, "text": text[s:e],
@@ -1417,7 +1425,6 @@ def _finalize_and_write(
     spans = _drop_invalid_spans(text, spans, warnings, suppressed, debug=debug)
 
     ct = ClusterTable()
-    url_counter = {}
 
     # Assign entity IDs for clustering and consistent numbering
     # Use generic counters for exact-match types
@@ -1646,7 +1653,7 @@ def _finalize_and_write(
                 error_code="REPORT_SAVE_FAILED",
                 technical_details=f"Report path: {report_path}, Error: {str(e)}",
                 original_error=e
-            )
+            ) from e
 
         _replace_existing_temp(report_temp_path, report_path)
         _replace_existing_temp(report_html_temp_path, os.path.splitext(report_path)[0] + ".html")
@@ -1663,7 +1670,7 @@ def _finalize_and_write(
             error_code="ARTIFACT_FINALIZE_FAILED",
             technical_details=str(e),
             original_error=e,
-        )
+        ) from e
     _cleanup_temp_artifacts(temp_paths)
     return 0
 
@@ -1906,7 +1913,7 @@ def run_redaction(
                 error_code="DOC_LOAD_FAILED",
                 technical_details=f"Input path: {input_path}, Error: {str(e)}",
                 original_error=e
-            )
+            ) from e
 
         # Enhanced error handling for rules processing
         try:
@@ -1920,7 +1927,7 @@ def run_redaction(
                 error_code="RULES_ENGINE_FAILED",
                 technical_details=f"Error in rules processing: {str(e)}",
                 original_error=e
-            )
+            ) from e
 
         if guardrailed_mode:
             rule_spans = _filter_excluded_combo_spans(text, rule_spans, suppressed)
@@ -1973,7 +1980,7 @@ def run_redaction(
                     error_code="OUTPUT_SAVE_FAILED",
                     technical_details=f"Output path: {output_path}, Error: {str(e)}",
                     original_error=e
-                )
+                ) from e
 
         if normalized_mode in llm_modes:
             # Enhanced error handling for AI processing
@@ -2027,7 +2034,7 @@ def run_redaction(
                         f"after retries. Unanalyzed ranges: {ranges}"
                     ),
                     original_error=e
-                )
+                ) from e
             except Exception as e:
                 # Check for specific error patterns
                 error_str = str(e).lower()
@@ -2037,28 +2044,28 @@ def run_redaction(
                         error_code="AI_SERVICE_UNAVAILABLE",
                         technical_details=f"Ollama service error: {str(e)}. Ensure Ollama is running and accessible.",
                         original_error=e
-                    )
+                    ) from e
                 elif "timeout" in error_str or "deadline" in error_str:
                     raise RedactionError(
                         message="AI processing timed out",
                         error_code="AI_PROCESSING_TIMEOUT",
                         technical_details=f"Model: {model_id}, Error: {str(e)}. Try with a smaller document or different model.",
                         original_error=e
-                    )
+                    ) from e
                 elif "model" in error_str and ("not found" in error_str or "pull" in error_str):
                     raise RedactionError(
                         message="AI model is not available",
                         error_code="AI_MODEL_UNAVAILABLE",
                         technical_details=f"Model: {model_id}, Error: {str(e)}. Ensure the model is downloaded and available.",
                         original_error=e
-                    )
+                    ) from e
                 else:
                     raise RedactionError(
                         message="AI processing failed with an unexpected error",
                         error_code="AI_PROCESSING_FAILED",
                         technical_details=f"Model: {model_id}, Error: {str(e)}",
                         original_error=e
-                    )
+                    ) from e
 
             if guardrailed_mode:
                 model_spans = _filter_excluded_combo_spans(text, model_spans, suppressed)
@@ -2132,7 +2139,7 @@ def run_redaction(
                     error_code="OUTPUT_SAVE_FAILED",
                     technical_details=f"Output path: {output_path}, Error: {str(e)}",
                     original_error=e
-                )
+                ) from e
 
     except RedactionError as err:
         if debug:
@@ -2506,7 +2513,6 @@ def _read_metadata_values(dm) -> dict:
         from docx.oxml.ns import qn
         from lxml import etree
         import posixpath
-        import zipfile
 
         def _iter_part_elements():
             if dm.doc.element is not None:
@@ -4218,7 +4224,7 @@ def scrub_metadata_only(
             # COPY PATH: Safe handling for None preset
             import shutil
             if debug:
-                print(f"[MARCUT_PIPELINE] None preset: Copying file without processed save.")
+                print("[MARCUT_PIPELINE] None preset: Copying file without processed save.")
             shutil.copy2(input_path, output_path)
             return (True, "", None)
 

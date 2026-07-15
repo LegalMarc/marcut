@@ -27,11 +27,16 @@ enum DiskSpaceCheck {
         let cleaned = label.trimmingCharacters(in: .whitespaces)
         let pattern = #"(\d+\.?\d*)\s*([KMGT]B)"#
         guard let regex = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive]),
-              let match = regex.firstMatch(in: cleaned, options: [], range: NSRange(cleaned.startIndex..., in: cleaned)),
+              let match = regex.firstMatch(
+                  in: cleaned,
+                  options: [],
+                  range: NSRange(cleaned.startIndex..., in: cleaned)
+              ),
               let valueRange = Range(match.range(at: 1), in: cleaned),
               let unitRange = Range(match.range(at: 2), in: cleaned),
               let value = Double(cleaned[valueRange]),
-              value > 0 else {
+              value > 0
+        else {
             return nil
         }
 
@@ -66,7 +71,8 @@ enum DiskSpaceCheck {
     ) -> String? {
         guard estimatedBytesNeeded > 0,
               let available = freeSpaceProvider(directory),
-              available < estimatedBytesNeeded else {
+              available < estimatedBytesNeeded
+        else {
             return nil
         }
         return "Not enough free disk space to \(subject) (needs ~\(formatGB(estimatedBytesNeeded)), "

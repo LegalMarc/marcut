@@ -19,7 +19,7 @@ struct HelpHTMLView: NSViewRepresentable {
         return webView
     }
 
-    func updateNSView(_ webView: WKWebView, context: Context) {
+    func updateNSView(_: WKWebView, context: Context) {
         if context.coordinator.lastHTML != htmlContent {
             context.coordinator.load(html: htmlContent, baseURL: Bundle.main.resourceURL)
         }
@@ -55,13 +55,17 @@ struct HelpHTMLView: NSViewRepresentable {
             pendingAnchor = nil
         }
 
-        func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+        func webView(_: WKWebView, didFinish _: WKNavigation!) {
             if let anchor = pendingAnchor {
                 scrollTo(anchor: anchor)
             }
         }
 
-        func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction, decisionHandler: @escaping (WKNavigationActionPolicy) -> Void) {
+        func webView(
+            _: WKWebView,
+            decidePolicyFor navigationAction: WKNavigationAction,
+            decisionHandler: @escaping (WKNavigationActionPolicy) -> Void
+        ) {
             guard let url = navigationAction.request.url else {
                 decisionHandler(.allow)
                 return

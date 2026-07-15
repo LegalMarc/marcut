@@ -86,7 +86,7 @@ def run_gguf_extraction(
     elif 'MARCUT_SYSTEM_PROMPT_PATH' in os.environ:
         del os.environ['MARCUT_SYSTEM_PROMPT_PATH']
     
-    from marcut.model import llama_cpp_extract, get_system_prompt, _map_label, _find_entity_spans
+    from marcut.model import llama_cpp_extract
     
     timing = {
         "prompt_build": 0.0, "http_request": 0.0, "ollama_model_load": 0.0,
@@ -156,7 +156,7 @@ def check_ollama() -> bool:
     try:
         resp = requests.get('http://127.0.0.1:11434/api/tags', timeout=5)
         return resp.status_code == 200
-    except:
+    except Exception:
         return False
 
 
@@ -167,7 +167,7 @@ def get_available_ollama_models() -> List[str]:
         resp = requests.get('http://127.0.0.1:11434/api/tags', timeout=5)
         data = resp.json()
         return [m['name'] for m in data.get('models', [])]
-    except:
+    except Exception:
         return []
 
 
@@ -279,7 +279,7 @@ def main():
         timing_detail = None
         error = None
         
-        for run in range(args.runs):
+        for _ in range(args.runs):
             try:
                 spans, timing = run_extraction(path_or_id, text, args.prompt, is_gguf=is_gguf)
                 times.append(timing['http_request'])

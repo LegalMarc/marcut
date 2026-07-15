@@ -1,9 +1,10 @@
+import AppKit
+import Foundation
 import SwiftUI
 import UniformTypeIdentifiers
-import Foundation
-import AppKit
 
 // MARK: - AttributeGraph Debugging Extensions
+
 extension ContentView {
     private func debugAttributeGraph() {
         print("🔍 ContentView AttributeGraph Analysis:")
@@ -32,7 +33,7 @@ extension ContentView {
         var previousHasDocuments = viewModel.hasDocuments
         var previousIsEnvironmentReady = viewModel.isEnvironmentReady
 
-        for i in 0..<30 { // Monitor for 30 seconds
+        for i in 0 ..< 30 { // Monitor for 30 seconds
             try? await Task.sleep(nanoseconds: 1_000_000_000) // 1 second
 
             let currentItemsCount = viewModel.items.count
@@ -40,15 +41,18 @@ extension ContentView {
             let currentIsEnvironmentReady = viewModel.isEnvironmentReady
 
             if currentItemsCount != previousItemsCount ||
-               currentHasDocuments != previousHasDocuments ||
-               currentIsEnvironmentReady != previousIsEnvironmentReady {
-
+                currentHasDocuments != previousHasDocuments ||
+                currentIsEnvironmentReady != previousIsEnvironmentReady
+            {
                 print("🔄 AttributeGraph state change detected at \(i)s:")
                 print("  - items.count: \(previousItemsCount) → \(currentItemsCount)")
                 print("  - hasDocuments: \(previousHasDocuments) → \(currentHasDocuments)")
                 print("  - isEnvironmentReady: \(previousIsEnvironmentReady) → \(currentIsEnvironmentReady)")
 
-                ContentView.logToFile("AttributeGraph state change at \(i)s - items:\(currentItemsCount) docs:\(currentHasDocuments) env:\(currentIsEnvironmentReady)")
+                ContentView
+                    .logToFile(
+                        "AttributeGraph state change at \(i)s - items:\(currentItemsCount) docs:\(currentHasDocuments) env:\(currentIsEnvironmentReady)"
+                    )
 
                 previousItemsCount = currentItemsCount
                 previousHasDocuments = currentHasDocuments
@@ -62,8 +66,9 @@ extension ContentView {
 }
 
 // MARK: - Custom Color Palette (Adaptive for Light/Dark Mode)
-struct CustomColors {
-    // Adaptive color properties that respond to color scheme
+
+enum CustomColors {
+    /// Adaptive color properties that respond to color scheme
     static func appBackground(for scheme: ColorScheme) -> Color {
         switch scheme {
         case .light:
@@ -183,10 +188,11 @@ struct CustomColors {
 }
 
 // MARK: - Window Background Helper
+
 struct WindowBackgroundView: NSViewRepresentable {
     @Environment(\.colorScheme) var colorScheme
 
-    func makeNSView(context: Context) -> NSView {
+    func makeNSView(context _: Context) -> NSView {
         let view = NSView()
         DispatchQueue.main.async {
             if let window = view.window {
@@ -197,7 +203,7 @@ struct WindowBackgroundView: NSViewRepresentable {
         return view
     }
 
-    func updateNSView(_ nsView: NSView, context: Context) {
+    func updateNSView(_ nsView: NSView, context _: Context) {
         if let window = nsView.window {
             let bgColor = CustomColors.appBackground(for: colorScheme)
             window.backgroundColor = NSColor(bgColor)
@@ -206,6 +212,7 @@ struct WindowBackgroundView: NSViewRepresentable {
 }
 
 // MARK: - Main Content View
+
 struct ContentView: View {
     @EnvironmentObject private var viewModel: DocumentRedactionViewModel
     @State private var isTargeted = false
@@ -218,7 +225,8 @@ struct ContentView: View {
     @State private var hasCheckedEnvironment = false
     @State private var pendingDropLoads = 0
     @Environment(\.colorScheme) private var colorScheme
-    @AppStorage(DefaultsKey.outputSaveLocationPreference.key) private var outputSaveLocationRaw = OutputSaveLocation.alwaysAsk.rawValue
+    @AppStorage(DefaultsKey.outputSaveLocationPreference.key) private var outputSaveLocationRaw = OutputSaveLocation
+        .alwaysAsk.rawValue
     @AppStorage(DefaultsKey.lastExplicitOutputDirectoryPath.key) private var lastExplicitOutputDirectoryPath = ""
     private let actionButtonHeight: CGFloat = 52
 
@@ -226,11 +234,11 @@ struct ContentView: View {
         OutputSaveLocation(rawValue: outputSaveLocationRaw) ?? .alwaysAsk
     }
 
-    // Check if first run has been completed before
+    /// Check if first run has been completed before
     private var hasCompletedFirstRun: Bool {
         UserDefaults.standard.bool(forKey: DefaultsKey.hasCompletedFirstRun.key)
     }
-    
+
     var body: some View {
         VStack(spacing: 24) {
             // Drop zone
@@ -307,7 +315,8 @@ struct ContentView: View {
                                 )
                             }
                             .buttonStyle(.plain)
-                            .disabled(isPreparing || isStopping || viewModel.hasProcessingDocuments || currentProcessingTask != nil)
+                            .disabled(isPreparing || isStopping || viewModel
+                                .hasProcessingDocuments || currentProcessingTask != nil)
                             .accessibilityIdentifier("content.retryFailed")
                         }
                         Spacer()
@@ -372,7 +381,7 @@ struct ContentView: View {
                 hasCheckedEnvironment = true
 
                 // OPTIMIZATION: Check first-run status immediately before heavy environment checks
-                if !hasCompletedFirstRun && viewModel.availableModels.isEmpty {
+                if !hasCompletedFirstRun, viewModel.availableModels.isEmpty {
                     ContentView.logToFile("🚀 Fast-path: Launching first-run setup immediately")
                     viewModel.requestFirstRunSetup()
                     // We still run environment check in background to populate status, but don't block UI
@@ -420,7 +429,8 @@ struct ContentView: View {
                                 ContentView.logToFile("❌ Automatic recovery failed - showing detailed error")
                                 // Show detailed error with recovery options
                                 let diagnostics = viewModel.getDetailedEnvironmentDiagnostics()
-                                let diagnosticText = diagnostics.map { "\($0.key): \($0.value)" }.joined(separator: "\n")
+                                let diagnosticText = diagnostics.map { "\($0.key): \($0.value)" }
+                                    .joined(separator: "\n")
 
                                 alertInfo = AlertInfo(
                                     title: "Environment Issues Detected",
@@ -493,8 +503,9 @@ struct ContentView: View {
             Text("Resume \(record.documentPaths.count) pending document(s) from your last session?")
         }
     }
-    
+
     // MARK: - Drop Zone
+
     private var dropZone: some View {
         VStack(spacing: 0) {
             // Drop area
@@ -515,7 +526,8 @@ struct ContentView: View {
             .overlay(
                 RoundedRectangle(cornerRadius: 12)
                     .strokeBorder(
-                        isTargeted ? CustomColors.accentColor(for: colorScheme) : CustomColors.subtleBorder(for: colorScheme).opacity(0.2),
+                        isTargeted ? CustomColors.accentColor(for: colorScheme) : CustomColors
+                            .subtleBorder(for: colorScheme).opacity(0.2),
                         style: StrokeStyle(lineWidth: 2.5, dash: isTargeted ? [] : [8, 4])
                     )
                     .animation(.easeInOut(duration: 0.2), value: isTargeted)
@@ -540,9 +552,9 @@ struct ContentView: View {
                 .buttonStyle(.borderedProminent)
                 .controlSize(.large)
                 .accessibilityIdentifier("content.browse")
-                
+
                 Spacer()
-                
+
                 Button(action: { showSettings = true }) {
                     HStack(spacing: 6) {
                         Image(systemName: "gearshape.fill")
@@ -567,8 +579,9 @@ struct ContentView: View {
                 .stroke(CustomColors.subtleBorder(for: colorScheme).opacity(0.3), lineWidth: 1)
         )
     }
-    
+
     // MARK: - Action Buttons
+
     private var actionButtons: some View {
         HStack(spacing: 12) {
             // Metadata-only report (no scrubbing)
@@ -592,12 +605,12 @@ struct ContentView: View {
             }
             .disabled(
                 !hasMetadataReportWork ||
-                isPreparing ||
-                isStopping ||
-                viewModel.hasProcessingDocuments ||
-                currentProcessingTask != nil ||
-                viewModel.isPythonInitializing ||
-                viewModel.pythonInitializationError != nil
+                    isPreparing ||
+                    isStopping ||
+                    viewModel.hasProcessingDocuments ||
+                    currentProcessingTask != nil ||
+                    viewModel.isPythonInitializing ||
+                    viewModel.pythonInitializationError != nil
             )
             .buttonStyle(.plain)
             .scaleEffect(hasMetadataReportWork ? 1.0 : 0.98)
@@ -625,18 +638,18 @@ struct ContentView: View {
             }
             .disabled(
                 !hasScrubWork ||
-                isPreparing ||
-                isStopping ||
-                viewModel.hasProcessingDocuments ||
-                currentProcessingTask != nil ||
-                viewModel.isPythonInitializing ||
-                viewModel.pythonInitializationError != nil
+                    isPreparing ||
+                    isStopping ||
+                    viewModel.hasProcessingDocuments ||
+                    currentProcessingTask != nil ||
+                    viewModel.isPythonInitializing ||
+                    viewModel.pythonInitializationError != nil
             )
             .buttonStyle(.plain)
             .scaleEffect(hasScrubWork ? 1.0 : 0.98)
             .animation(.easeInOut(duration: 0.2), value: hasScrubWork)
             .accessibilityIdentifier("content.scrubMetadata")
-            
+
             // Process/Stop Button (right side)
             if isPreparing {
                 // Show progress indicator while preparing
@@ -681,7 +694,8 @@ struct ContentView: View {
                         Image(systemName: "stop.fill")
                             .font(.system(size: 16, weight: .semibold))
                         // If any item is in analyzing state (model download), reflect that in label
-                        Text(viewModel.items.contains(where: { $0.status == .analyzing }) ? "Cancel Download" : "Stop Processing")
+                        Text(viewModel.items
+                            .contains(where: { $0.status == .analyzing }) ? "Cancel Download" : "Stop Processing")
                             .font(.system(size: 16, weight: .semibold))
                     }
                     .frame(maxWidth: .infinity)
@@ -692,7 +706,11 @@ struct ContentView: View {
                     .background(
                         RoundedRectangle(cornerRadius: 12)
                             .fill(CustomColors.destructiveColor(for: colorScheme))
-                            .shadow(color: CustomColors.destructiveColor(for: colorScheme).opacity(0.2), radius: 6, y: 3)
+                            .shadow(
+                                color: CustomColors.destructiveColor(for: colorScheme).opacity(0.2),
+                                radius: 6,
+                                y: 3
+                            )
                     )
                 }
                 .buttonStyle(.plain)
@@ -748,11 +766,18 @@ struct ContentView: View {
                     .foregroundColor(.white)
                     .background(
                         RoundedRectangle(cornerRadius: 12)
-                            .fill(hasReadyDocuments ? CustomColors.accentColor(for: colorScheme) : Color.gray.opacity(0.4))
-                            .shadow(color: hasReadyDocuments ? CustomColors.accentColor(for: colorScheme).opacity(0.2) : Color.clear, radius: 6, y: 3)
+                            .fill(hasReadyDocuments ? CustomColors.accentColor(for: colorScheme) : Color.gray
+                                .opacity(0.4))
+                            .shadow(
+                                color: hasReadyDocuments ? CustomColors.accentColor(for: colorScheme)
+                                    .opacity(0.2) : Color.clear,
+                                radius: 6,
+                                y: 3
+                            )
                     )
                 }
-                .disabled(!hasReadyDocuments || !viewModel.isEnvironmentReady || isPreparing || viewModel.isPythonInitializing || viewModel.pythonInitializationError != nil)
+                .disabled(!hasReadyDocuments || !viewModel.isEnvironmentReady || isPreparing || viewModel
+                    .isPythonInitializing || viewModel.pythonInitializationError != nil)
                 .buttonStyle(.plain)
                 .scaleEffect(hasReadyDocuments ? 1.0 : 0.98)
                 .animation(.easeInOut(duration: 0.2), value: hasReadyDocuments)
@@ -760,8 +785,9 @@ struct ContentView: View {
             }
         }
     }
-    
+
     // MARK: - Actions
+
     private func handleDrop(providers: [NSItemProvider]) {
         ContentView.logToFile("=== HANDLING FILE DROP ===")
         ContentView.logToFile("Number of providers: \(providers.count)")
@@ -776,13 +802,14 @@ struct ContentView: View {
                 provider.loadItem(forTypeIdentifier: UTType.fileURL.identifier, options: nil) { item, error in
                     DispatchQueue.main.async {
                         defer { finishDropLoad() }
-                        if let error = error {
+                        if let error {
                             ContentView.logToFile("Error loading item: \(error.localizedDescription)")
                             return
                         }
 
                         if let data = item as? Data,
-                           let url = URL(dataRepresentation: data, relativeTo: nil) {
+                           let url = URL(dataRepresentation: data, relativeTo: nil)
+                        {
                             ContentView.logToFile("Adding file: \(url.lastPathComponent)")
                             viewModel.add(urls: [url])
                             ContentView.logToFile("After adding - hasValidDocuments: \(viewModel.hasValidDocuments)")
@@ -796,14 +823,14 @@ struct ContentView: View {
             }
         }
     }
-    
+
     private func openPanel() {
         // Permissions are handled centrally by FileAccessCoordinator - no need to check on every browse
         ContentView.logToFile("🔐 File browser - using centralized permission system")
 
         let panel = NSOpenPanel()
         panel.allowsMultipleSelection = true
-        panel.allowedContentTypes = [UTType.init(filenameExtension: "docx") ?? UTType.data]
+        panel.allowedContentTypes = [UTType(filenameExtension: "docx") ?? UTType.data]
         panel.message = "Select Microsoft Word documents (.docx) to redact"
 
         NSApp.activate(ignoringOtherApps: true)
@@ -812,7 +839,7 @@ struct ContentView: View {
             Task { await viewModel.refreshEnvironmentStatus() }
         }
     }
-    
+
     private func startProcessing() {
         // Log that the button was clicked
         ContentView.logToFile("=== REDACT DOCUMENTS BUTTON CLICKED ===")
@@ -1007,7 +1034,7 @@ struct ContentView: View {
     private static func logToFile(_ message: String) {
         DebugLogger.shared.log(message, component: "ContentView")
     }
-    
+
     private func stopProcessing() {
         isStopping = true
         currentProcessingTask?.cancel()
@@ -1144,10 +1171,10 @@ struct ContentView: View {
         // Show preparing state
         isStopping = false
         isPreparing = true
-        
+
         Task {
             try? await Task.sleep(nanoseconds: 100_000_000) // 0.1 second
-            
+
             await MainActor.run {
                 if outputSaveLocation.requiresPrompt {
                     let panel = NSOpenPanel()
@@ -1159,11 +1186,11 @@ struct ContentView: View {
                     panel.prompt = "Save Here"
 
                     isPreparing = false
-                    
+
                     if panel.runModal() == .OK, let destination = panel.url {
                         ContentView.logToFile("Metadata scrub destination: \(destination.path)")
                         rememberExplicitDestination(destination)
-                        
+
                         // Validate destination
                         if let error = viewModel.validateDestination(destination) {
                             alertInfo = AlertInfo(title: "Destination Error", message: error)
@@ -1185,7 +1212,7 @@ struct ContentView: View {
                             )
                             return
                         }
-                        
+
                         // Start metadata-only processing
                         currentProcessingTask = Task {
                             await viewModel.scrubMetadataOnly(to: destination)
@@ -1218,7 +1245,7 @@ struct ContentView: View {
                         }
                     }
                 }
-                
+
                 isPreparing = false
             }
         }
@@ -1241,7 +1268,9 @@ struct ContentView: View {
         guard !trimmed.isEmpty else { return nil }
         let candidate = URL(fileURLWithPath: trimmed, isDirectory: true).standardizedFileURL
         var isDirectory: ObjCBool = false
-        guard FileManager.default.fileExists(atPath: candidate.path, isDirectory: &isDirectory), isDirectory.boolValue else {
+        guard FileManager.default.fileExists(atPath: candidate.path, isDirectory: &isDirectory),
+              isDirectory.boolValue
+        else {
             return nil
         }
         return candidate
@@ -1298,13 +1327,14 @@ struct ContentView: View {
 }
 
 // MARK: - Document List View
+
 struct DocumentListView: View {
     @ObservedObject var viewModel: DocumentRedactionViewModel
     @Binding var alertInfo: AlertInfo?
     @Environment(\.colorScheme) private var colorScheme
     let onRetry: (DocumentItem) -> Void
     private let timer = Timer.publish(every: 1, on: .main, in: .common).autoconnect()
-    
+
     var body: some View {
         ScrollView {
             LazyVStack(spacing: 12) {
@@ -1329,7 +1359,7 @@ struct DocumentListView: View {
             }
         }
     }
-    
+
     private func handleTap(on item: DocumentItem) {
         switch item.status {
         case .failed:
@@ -1350,6 +1380,7 @@ struct DocumentListView: View {
 }
 
 // MARK: - Document Row
+
 struct DocumentRow: View {
     @ObservedObject var item: DocumentItem
     @ObservedObject var viewModel: DocumentRedactionViewModel
@@ -1357,7 +1388,7 @@ struct DocumentRow: View {
     @Environment(\.colorScheme) private var colorScheme
     private let heartbeatTimeout: TimeInterval = 30.0
     let onRetry: (DocumentItem) -> Void
-    
+
     var body: some View {
         HStack(spacing: 12) {
             // Trash button to remove this document
@@ -1372,13 +1403,13 @@ struct DocumentRow: View {
             .opacity(item.status.isProcessing ? 0.3 : 1.0)
             .help("Remove from list")
             .accessibilityIdentifier("document.remove.\(item.id.uuidString)")
-            
+
             // Status icon
             Image(systemName: iconName)
                 .font(.system(size: 20, weight: .medium))
                 .foregroundColor(iconColor)
                 .frame(width: 24, height: 24)
-            
+
             // Document info and progress
             VStack(alignment: .leading, spacing: 6) {
                 // Document name
@@ -1403,7 +1434,7 @@ struct DocumentRow: View {
                         }
                     }
                 }
-                
+
                 // Enhanced status display for processing documents
                 if item.status.isProcessing {
                     VStack(alignment: .leading, spacing: 8) {
@@ -1429,34 +1460,51 @@ struct DocumentRow: View {
                     }
                 }
             }
-            
+
             Spacer(minLength: 12)
-            
+
             if item.status.isComplete {
                 // Action buttons for completed items with enhanced tooltips
                 HStack(spacing: 8) {
                     TooltipButton(
-                        action: { performUserAction(failureMessage: "The document is not available yet.") { viewModel.openRedactedDocument(item) } },
+                        action: {
+                            performUserAction(failureMessage: "The document is not available yet.") {
+                                viewModel.openRedactedDocument(item)
+                            }
+                        },
                         icon: "doc.text.fill",
-                        tooltip: item.reportOutputURL != nil ? "Open Redacted Document" : "Open Metadata Scrubbed Document",
-                        description: item.reportOutputURL != nil ? "Opens the redacted .docx file with sensitive information removed" : "Opens the metadata-cleaned .docx file",
+                        tooltip: item
+                            .reportOutputURL != nil ? "Open Redacted Document" : "Open Metadata Scrubbed Document",
+                        description: item
+                            .reportOutputURL != nil ?
+                            "Opens the redacted .docx file with sensitive information removed" :
+                            "Opens the metadata-cleaned .docx file",
                         isEnabled: item.redactedOutputURL != nil,
                         accessibilityId: "document.openRedacted.\(item.id.uuidString)"
                     )
 
                     TooltipButton(
-                        action: { performUserAction(failureMessage: "Output files could not be revealed in Finder.") { viewModel.revealInFinder(item) } },
+                        action: {
+                            performUserAction(failureMessage: "Output files could not be revealed in Finder.") {
+                                viewModel.revealInFinder(item)
+                            }
+                        },
                         icon: "folder.fill",
                         tooltip: "Show in Finder",
                         description: "Reveals output files in Finder for easy access",
-                        isEnabled: item.redactedOutputURL != nil || item.reportOutputURL != nil || item.scrubReportOutputURL != nil,
+                        isEnabled: item.redactedOutputURL != nil || item.reportOutputURL != nil || item
+                            .scrubReportOutputURL != nil,
                         accessibilityId: "document.revealInFinder.\(item.id.uuidString)"
                     )
-                    
+
                     // Show redaction report button if available
                     if item.reportOutputURL != nil {
                         TooltipButton(
-                            action: { performUserAction(failureMessage: "The audit report is not available yet.") { viewModel.openReport(item) } },
+                            action: {
+                                performUserAction(failureMessage: "The audit report is not available yet.") {
+                                    viewModel.openReport(item)
+                                }
+                            },
                             icon: "doc.text.magnifyingglass",
                             tooltip: "View Audit Report",
                             description: "Shows detailed report of all detected entities and redactions",
@@ -1464,19 +1512,28 @@ struct DocumentRow: View {
                             accessibilityId: "document.openReport.\(item.id.uuidString)"
                         )
                     }
-                    
+
                     // Show scrub report button (always available, enabled if URL exists)
                     TooltipButton(
-                        action: { performUserAction(failureMessage: "The scrub report is not available yet.") { viewModel.openScrubReport(item) } },
+                        action: {
+                            performUserAction(failureMessage: "The scrub report is not available yet.") {
+                                viewModel.openScrubReport(item)
+                            }
+                        },
                         icon: "magnifyingglass.circle.fill",
                         tooltip: "View Scrub Report",
                         description: "Shows metadata report (before/after or observed) with raw JSON link",
-                        isEnabled: item.scrubReportOutputURL != nil || item.metadataReportOutputURL != nil || item.reportOutputURL != nil,
+                        isEnabled: item.scrubReportOutputURL != nil || item.metadataReportOutputURL != nil || item
+                            .reportOutputURL != nil,
                         accessibilityId: "document.openScrubReport.\(item.id.uuidString)"
                     )
 
                     TooltipButton(
-                        action: { performUserAction(failureMessage: "The document is not available yet.") { viewModel.shareDocument(item) } },
+                        action: {
+                            performUserAction(failureMessage: "The document is not available yet.") {
+                                viewModel.shareDocument(item)
+                            }
+                        },
                         icon: "square.and.arrow.up",
                         tooltip: "Send Document",
                         description: "Choose between a final redacted copy or a review copy with Track Changes",
@@ -1484,11 +1541,15 @@ struct DocumentRow: View {
                         accessibilityId: "document.share.\(item.id.uuidString)"
                     )
                 }
-                } else if metadataReportAvailable {
-                    VStack(alignment: .trailing, spacing: 6) {
-                        HStack(spacing: 8) {
-                            TooltipButton(
-                                action: { performUserAction(failureMessage: "The metadata report is not available yet.") { viewModel.openMetadataReport(item) } },
+            } else if metadataReportAvailable {
+                VStack(alignment: .trailing, spacing: 6) {
+                    HStack(spacing: 8) {
+                        TooltipButton(
+                            action: {
+                                performUserAction(failureMessage: "The metadata report is not available yet.") {
+                                    viewModel.openMetadataReport(item)
+                                }
+                            },
                             icon: "magnifyingglass.circle.fill",
                             tooltip: "View Metadata Report",
                             description: "Opens the metadata-only report (HTML preferred)",
@@ -1496,7 +1557,11 @@ struct DocumentRow: View {
                             accessibilityId: "document.openMetadataReport.\(item.id.uuidString)"
                         )
                         TooltipButton(
-                            action: { performUserAction(failureMessage: "The metadata report is not available yet.") { viewModel.saveMetadataReport(item) } },
+                            action: {
+                                performUserAction(failureMessage: "The metadata report is not available yet.") {
+                                    viewModel.saveMetadataReport(item)
+                                }
+                            },
                             icon: "square.and.arrow.down",
                             tooltip: "Save metadata report (HTML + JSON)",
                             description: "Saves the HTML report and JSON data to a location you choose",
@@ -1524,50 +1589,55 @@ struct DocumentRow: View {
         .background(
             RoundedRectangle(cornerRadius: 12)
                 .fill(CustomColors.cardBackground(for: colorScheme))
-                .shadow(color: colorScheme == .dark ? Color.black.opacity(0.2) : Color.black.opacity(0.03), radius: 6, x: 0, y: 1)
+                .shadow(
+                    color: colorScheme == .dark ? Color.black.opacity(0.2) : Color.black.opacity(0.03),
+                    radius: 6,
+                    x: 0,
+                    y: 1
+                )
         )
         .overlay(
             RoundedRectangle(cornerRadius: 12)
                 .stroke(CustomColors.subtleBorder(for: colorScheme), lineWidth: 1)
         )
     }
-    
+
     private var metadataReportAvailable: Bool {
         item.metadataReportOutputURL != nil || item.metadataReportHTMLOutputURL != nil
     }
-    
+
     private var iconName: String {
         switch item.status {
-        case .checking: return "doc.text.magnifyingglass"
-        case .validDocument: return "doc.text.fill"
-        case .invalidDocument: return "doc.badge.exclamationmark"
-        case .processing, .analyzing, .redacting: return "doc.text.magnifyingglass"
-        case .completed: return "checkmark.circle.fill"
-        case .failed: return "xmark.circle.fill"
-        case .cancelled: return "stop.circle.fill"
+        case .checking: "doc.text.magnifyingglass"
+        case .validDocument: "doc.text.fill"
+        case .invalidDocument: "doc.badge.exclamationmark"
+        case .processing, .analyzing, .redacting: "doc.text.magnifyingglass"
+        case .completed: "checkmark.circle.fill"
+        case .failed: "xmark.circle.fill"
+        case .cancelled: "stop.circle.fill"
         }
     }
-    
+
     private var iconColor: Color {
         switch item.status {
-        case .validDocument, .completed: return CustomColors.accentColor(for: colorScheme)
-        case .invalidDocument, .failed: return CustomColors.destructiveColor(for: colorScheme)
-        case .cancelled: return CustomColors.secondaryText(for: colorScheme)
-        default: return CustomColors.accentColor(for: colorScheme)
+        case .validDocument, .completed: CustomColors.accentColor(for: colorScheme)
+        case .invalidDocument, .failed: CustomColors.destructiveColor(for: colorScheme)
+        case .cancelled: CustomColors.secondaryText(for: colorScheme)
+        default: CustomColors.accentColor(for: colorScheme)
         }
     }
-    
+
     private func getStageColor(_ stage: ProcessingStage) -> Color {
         switch stage {
-        case .preflight: return .blue
-        case .ruleDetection: return .green
-        case .llmValidation: return .orange
-        case .enhancedDetection: return .purple
-        case .merging: return .indigo
-        case .outputGeneration: return .teal
+        case .preflight: .blue
+        case .ruleDetection: .green
+        case .llmValidation: .orange
+        case .enhancedDetection: .purple
+        case .merging: .indigo
+        case .outputGeneration: .teal
         }
     }
-    
+
     private func performUserAction(failureMessage: String, action: () -> Bool) {
         guard action() else {
             alertInfo = AlertInfo(title: "Action Unavailable", message: failureMessage)
@@ -1577,10 +1647,11 @@ struct DocumentRow: View {
 }
 
 // MARK: - Status View
+
 struct StatusView: View {
     let status: RedactionStatus
     @Environment(\.colorScheme) private var colorScheme
-    
+
     var body: some View {
         Group {
             switch status {
@@ -1649,6 +1720,7 @@ struct StatusView: View {
 }
 
 // MARK: - Footer View
+
 struct FooterView: View {
     @Environment(\.colorScheme) private var colorScheme
     var body: some View {
@@ -1661,17 +1733,18 @@ struct FooterView: View {
             .lineLimit(2)
             .multilineTextAlignment(.center)
             .font(.system(size: 13, weight: .medium))
-            
+
             HStack(spacing: 4) {
                 Text("Got bugs? Message me at")
                     .foregroundColor(CustomColors.secondaryText(for: colorScheme))
-                Link("linkedin.com/in/marcmandel/", destination: URL(string: "https://www.linkedin.com/in/marcmandel/")!)
+                Link(
+                    "linkedin.com/in/marcmandel/",
+                    destination: URL(string: "https://www.linkedin.com/in/marcmandel/")!
+                )
             }
             .lineLimit(2)
             .multilineTextAlignment(.center)
             .font(.system(size: 13, weight: .medium))
-            
-
         }
         .multilineTextAlignment(.center)
         .padding(.top, 8)
@@ -1696,15 +1769,15 @@ struct EnvironmentStatusBanner: View {
             ? ("bolt.circle.fill", .green, "Ollama running")
             : ("bolt.slash.fill", .orange, "Ollama offline")
     }
-    
+
     private var environmentStatusComponents: (String, String?) {
         let baseStatus = viewModel.environmentStatus
         if baseStatus.contains("Starting") {
             let dots = String(repeating: ".", count: animationDotCount)
             // Clean status text (remove any existing dots just in case)
             let cleanStatus = baseStatus.replacingOccurrences(of: "...", with: "")
-                                        .replacingOccurrences(of: "..", with: "")
-                                        .trimmingCharacters(in: .punctuationCharacters)
+                .replacingOccurrences(of: "..", with: "")
+                .trimmingCharacters(in: .punctuationCharacters)
             return (cleanStatus, dots)
         }
         return (baseStatus, nil)
@@ -1714,22 +1787,26 @@ struct EnvironmentStatusBanner: View {
         HStack(spacing: 16) {
             StatusLabel(icon: frameworkStatus.0, color: frameworkStatus.1, text: frameworkStatus.2)
             StatusLabel(icon: ollamaStatus.0, color: ollamaStatus.1, text: ollamaStatus.2)
-            StatusLabel(icon: "shippingbox.fill", color: viewModel.availableModels.isEmpty ? .orange : .blue, text: "\(viewModel.availableModels.count) models")
+            StatusLabel(
+                icon: "shippingbox.fill",
+                color: viewModel.availableModels.isEmpty ? .orange : .blue,
+                text: "\(viewModel.availableModels.count) models"
+            )
             Spacer()
-            
+
             // Simplified ready status - just checkmark and "Ready with AI"
             if viewModel.isEnvironmentReady {
                 StatusLabel(
-                    icon: "checkmark.circle.fill", 
-                    color: .green, 
+                    icon: "checkmark.circle.fill",
+                    color: .green,
                     text: viewModel.settings.mode == .rules ? "Ready (Rules Only)" : "Ready with AI",
                     animatingDots: nil
                 )
             } else {
                 let (statusText, dots) = environmentStatusComponents
                 StatusLabel(
-                    icon: "hourglass", 
-                    color: .orange, 
+                    icon: "hourglass",
+                    color: .orange,
                     text: statusText,
                     animatingDots: dots
                 )
@@ -1752,7 +1829,7 @@ struct EnvironmentStatusBanner: View {
             stopAnimation()
         }
     }
-    
+
     private func startAnimation() {
         stopAnimation()
         timer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { _ in
@@ -1767,7 +1844,7 @@ struct EnvironmentStatusBanner: View {
             }
         }
     }
-    
+
     private func stopAnimation() {
         timer?.invalidate()
         timer = nil
@@ -1777,13 +1854,13 @@ struct EnvironmentStatusBanner: View {
         let icon: String
         let color: Color
         let text: String
-        var animatingDots: String? = nil
+        var animatingDots: String?
 
         var body: some View {
             HStack(spacing: 6) {
                 Image(systemName: icon)
                     .foregroundColor(color)
-                
+
                 HStack(spacing: 0) {
                     Text(text)
                     if let dots = animatingDots {
@@ -1864,7 +1941,7 @@ extension DocumentRow {
     private func formatTimeRemaining(_ timeInterval: TimeInterval) -> String {
         let minutes = Int(timeInterval) / 60
         let seconds = Int(timeInterval) % 60
-        
+
         if minutes > 60 {
             let hours = minutes / 60
             let remainingMinutes = minutes % 60
@@ -1877,9 +1954,8 @@ extension DocumentRow {
     }
 }
 
-
-// Batch-level "time remaining" indicator shown above the action buttons during a multi-document
-// run, once BatchETACalculator has enough completed-document samples to produce an estimate.
+/// Batch-level "time remaining" indicator shown above the action buttons during a multi-document
+/// run, once BatchETACalculator has enough completed-document samples to produce an estimate.
 struct BatchETAView: View {
     let remainingSeconds: TimeInterval
     @Environment(\.colorScheme) private var colorScheme
@@ -1913,59 +1989,57 @@ struct BatchETAView: View {
     }
 }
 
-// Countdown timer component
+/// Countdown timer component
 struct CountdownTimerView: View {
     let remainingSeconds: TimeInterval
     let isActive: Bool
     @Environment(\.colorScheme) private var colorScheme
-    
-    var body: some View {
-        Group {
-            if isActive {
-                HStack(spacing: 2) {
-                    Image(systemName: remainingSeconds > 0 ? "clock" : "hourglass")
-                        .font(.system(size: 10, weight: .medium))
-                        .foregroundColor(CustomColors.accentColor(for: colorScheme))
 
-                    Text(remainingSeconds > 0 ? formatTime(remainingSeconds) : "Processing...")
-                        .font(.system(size: 12, weight: .semibold, design: .monospaced))
-                        .foregroundColor(CustomColors.accentColor(for: colorScheme))
-                }
-                .padding(.horizontal, 8)
-                .padding(.vertical, 3)
-                .background(
-                    Capsule()
-                        .fill(CustomColors.accentColor(for: colorScheme).opacity(0.1))
-                        .overlay(
-                            Capsule()
-                                .stroke(CustomColors.accentColor(for: colorScheme).opacity(0.2), lineWidth: 0.5)
-                        )
-                )
-            } else if !isActive {
-                HStack(spacing: 2) {
-                    Image(systemName: "checkmark.circle.fill")
-                        .font(.system(size: 12, weight: .medium))
-                        .foregroundColor(.green)
-                    
-                    Text("Done")
-                        .font(.system(size: 12, weight: .semibold))
-                        .foregroundColor(.green)
-                }
-                .padding(.horizontal, 8)
-                .padding(.vertical, 3)
-                .background(
-                    Capsule()
-                        .fill(Color.green.opacity(0.1))
-                )
+    var body: some View {
+        if isActive {
+            HStack(spacing: 2) {
+                Image(systemName: remainingSeconds > 0 ? "clock" : "hourglass")
+                    .font(.system(size: 10, weight: .medium))
+                    .foregroundColor(CustomColors.accentColor(for: colorScheme))
+
+                Text(remainingSeconds > 0 ? formatTime(remainingSeconds) : "Processing...")
+                    .font(.system(size: 12, weight: .semibold, design: .monospaced))
+                    .foregroundColor(CustomColors.accentColor(for: colorScheme))
             }
+            .padding(.horizontal, 8)
+            .padding(.vertical, 3)
+            .background(
+                Capsule()
+                    .fill(CustomColors.accentColor(for: colorScheme).opacity(0.1))
+                    .overlay(
+                        Capsule()
+                            .stroke(CustomColors.accentColor(for: colorScheme).opacity(0.2), lineWidth: 0.5)
+                    )
+            )
+        } else if !isActive {
+            HStack(spacing: 2) {
+                Image(systemName: "checkmark.circle.fill")
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundColor(.green)
+
+                Text("Done")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundColor(.green)
+            }
+            .padding(.horizontal, 8)
+            .padding(.vertical, 3)
+            .background(
+                Capsule()
+                    .fill(Color.green.opacity(0.1))
+            )
         }
     }
-    
+
     private func formatTime(_ timeInterval: TimeInterval) -> String {
         let totalSeconds = Int(timeInterval)
         let minutes = totalSeconds / 60
         let seconds = totalSeconds % 60
-        
+
         if minutes > 60 {
             let hours = minutes / 60
             let remainingMinutes = minutes % 60
@@ -2041,12 +2115,13 @@ struct HeartbeatStatusView: View {
 }
 
 // MARK: - Enhanced Tooltip Button
+
 struct TooltipButton: View {
     let action: () -> Void
     let iconView: (Color) -> AnyView
     let tooltip: String
     let description: String
-    var isEnabled: Bool = true  // Default to enabled
+    var isEnabled: Bool = true // Default to enabled
     let iconName: String?
     let accessibilityId: String?
 

@@ -13,7 +13,7 @@ from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
 from datetime import datetime, timezone
 from typing import List, Dict, Any, Optional, Iterable, Tuple
-from dataclasses import dataclass, field, fields
+from dataclasses import dataclass, fields
 
 def _safe_fromstring(xml_bytes: bytes):
     """Safe XML parsing that disables entity resolution."""
@@ -487,7 +487,6 @@ class DocxMap:
                 if i + 1 >= len(data):
                     break
                 length = (data[i] << 8) + data[i + 1]
-                segment_start = i - 1
                 segment_end = min(i + length, len(data))
                 if marker in (0xE1, 0xED):  # APP1/APP13
                     changed = True
@@ -1383,7 +1382,6 @@ class DocxMap:
 
     def _scan_paragraph(self, para):
         from docx.text.run import Run
-        from docx.text.paragraph import Paragraph
         from docx.oxml.ns import qn
         
         # Iterate over children to catch runs inside hyperlinks AND drawings (text boxes)
@@ -1444,7 +1442,8 @@ class DocxMap:
                         self._append_run(para, run)
                         self._scan_run_contents(subchild)
         
-        self.text += "\n"; self.index.append(("break", None, None))
+        self.text += "\n"
+        self.index.append(("break", None, None))
 
     def _scan_container(self, container):
         from docx.text.paragraph import Paragraph
@@ -1667,7 +1666,8 @@ class DocxMap:
 
     def _insert_deletion_after(self, anchor_el, text: str, rPr=None):
         del_el = OxmlElement('w:del')
-        del_el.set(qn('w:id'), str(self._rev_id)); self._rev_id += 1
+        del_el.set(qn('w:id'), str(self._rev_id))
+        self._rev_id += 1
         del_el.set(qn('w:author'), self.author_name)
         del_el.set(qn('w:date'), datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'))
         
@@ -1685,7 +1685,8 @@ class DocxMap:
 
     def _insert_insertion_after(self, anchor_el, text: str, rPr=None):
         ins_el = OxmlElement('w:ins')
-        ins_el.set(qn('w:id'), str(self._rev_id)); self._rev_id += 1
+        ins_el.set(qn('w:id'), str(self._rev_id))
+        self._rev_id += 1
         ins_el.set(qn('w:author'), self.author_name)
         ins_el.set(qn('w:date'), datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'))
         r = self._make_text_run(text, rPr)
@@ -2054,7 +2055,7 @@ class DocxMap:
                         # Define namespace
                         ns = {'ep': 'http://schemas.openxmlformats.org/officeDocument/2006/extended-properties'}
 
-                        def _remove_elements(tag: str) -> None:
+                        def _remove_elements(tag: str, app_xml=app_xml, ns=ns) -> None:
                             for elem in app_xml.findall(f'.//ep:{tag}', namespaces=ns):
                                 parent = elem.getparent()
                                 if parent is not None:
@@ -2363,7 +2364,8 @@ class DocxMap:
                 cis = sorted(ci for _, _, ci in chars if ci is not None)
                 if not cis:
                     continue
-                start_ci = cis[0]; end_ci = cis[-1]
+                start_ci = cis[0]
+                end_ci = cis[-1]
                 pre = original[:start_ci]
                 mid = original[start_ci:end_ci+1]
                 post = original[end_ci+1:]

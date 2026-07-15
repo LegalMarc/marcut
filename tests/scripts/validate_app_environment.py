@@ -21,7 +21,7 @@ import sys
 import time
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, Optional
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -422,7 +422,7 @@ class AppEnvironmentValidator:
                 # Check if we can access model info (doesn't download, just checks availability)
                 test_model = "qwen2.5:14b"
                 request = urllib.request.Request(
-                    f"http://localhost:11434/api/show",
+                    "http://localhost:11434/api/show",
                     data=json.dumps({"name": test_model}).encode(),
                     headers={
                         "Content-Type": "application/json",
@@ -623,19 +623,19 @@ class AppEnvironmentValidator:
 
         # Provide recommendations
         if not overall_success:
-            print(f"\n🔧 RECOMMENDATIONS:")
+            print("\n🔧 RECOMMENDATIONS:")
 
             if not results.get("PythonKit Environment", False):
-                print(f"  • Fix Python framework bundling in build process")
-                print(f"  • Ensure Python.framework is properly signed")
+                print("  • Fix Python framework bundling in build process")
+                print("  • Ensure Python.framework is properly signed")
 
             if not results.get("Ollama Service Detection", False):
-                print(f"  • Bundle Ollama binary in app resources")
-                print(f"  • Or ensure system Ollama is available")
+                print("  • Bundle Ollama binary in app resources")
+                print("  • Or ensure system Ollama is available")
 
             if not results.get("App Container Access", False):
-                print(f"  • Check app bundle permissions")
-                print(f"  • Verify app is properly signed")
+                print("  • Check app bundle permissions")
+                print("  • Verify app is properly signed")
 
         # Return comprehensive results
         return {

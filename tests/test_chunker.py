@@ -2,7 +2,6 @@
 Tests for the chunker module, including Phase 1 small document optimization.
 """
 
-import pytest
 from marcut.chunker import make_chunks, SMALL_DOC_THRESHOLD
 
 

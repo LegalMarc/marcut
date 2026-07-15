@@ -34,7 +34,6 @@ from marcut.pipeline import (
     RedactionError,
     _write_failure_report,
     safe_print,
-    UNICODE_TO_ASCII,
 )
 
 

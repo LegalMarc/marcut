@@ -1823,7 +1823,6 @@ return hasSettings & "," & hasAbout & "," & hasHelp
         """Test that key accessibility identifiers exist and respond to basic actions."""
         print("\n🧭 Testing Accessibility Identifiers...")
 
-        app_name = self.app_path.stem
         all_ok = True
 
         # Main window controls

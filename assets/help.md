@@ -357,10 +357,11 @@ Notifications
 
 1. Click Redact Documents.
 2. Choose an output folder.
-3. The app checks the environment (Python runtime and model readiness).
-4. Progress stages appear for each document: Loading, Detecting Data, AI Analysis, Validating, Merging, Creating Output.
-5. For a batch of 3 or more documents, an estimated-time-remaining figure appears once at least 2 documents have completed, based on the observed processing rate so far in that run. With fewer completed documents there isn't enough data yet, so no estimate is shown.
+3. The app runs pre-flight checks: Python runtime, model readiness, that the output folder is writable, and that there is enough free disk space. A failed check is reported upfront (for example a writability or "not enough free disk space" message) instead of failing partway through the run.
+4. Progress stages appear for each document: Loading, Detecting Data, AI Analysis, Validating, Merging, Creating Output. During AI Analysis the bar advances continuously as the model streams through each chunk, not only when a whole chunk finishes.
+5. For a batch of 3 or more documents, an estimated-time-remaining figure appears once at least 2 documents have completed. The estimate is weighted by each document's word count, so a queue that starts with small/fast documents doesn't produce a misleadingly short figure for larger documents still pending. With fewer completed documents there isn't enough data yet, so no estimate is shown.
 6. You can cancel processing with Stop. Stopping is responsive: an active Ollama request or hanging extraction is interrupted promptly rather than waiting for the current document to finish, and no partial output is written for a cancelled document.
+7. While any document is processing, Marcut keeps the Mac awake so sleep does not interrupt a long run. If the Mac does sleep and wake mid-run, the AI service is health-checked on wake: processing continues if it responds, or the in-flight document is failed cleanly (with a restart prompt) if it does not.
 
 Metadata-only option
 - Use Scrub Metadata to clean metadata without redacting text.
@@ -892,6 +893,10 @@ Override behaviors:
 - Constrained LLM Overrides: AI can drop only ORG/NAME/LOC rule spans when confidence meets `llm_skip_confidence` (default 0.99 in the app; CLI default 0.95).
 - LLM Overrides: AI can drop rule spans across labels; use with caution.
 
+Fail-closed on incomplete extraction:
+- If the AI extraction for any chunk never succeeds (after its retries), the run fails closed with error code `AI_CHUNK_EXTRACTION_INCOMPLETE`: no output DOCX is written and the report is a failure report naming the character range(s) that were never analyzed.
+- This is deliberate for a privacy tool: shipping a "redacted" document that skipped an unanalyzed range would be worse than failing the run. Retry with a smaller chunk size, a different model, or after confirming the AI service is reachable.
+
 LLM tuning controls:
 - `temperature`: sampling variability (lower is more deterministic).
 - `seed`: helps reproducibility.
@@ -1175,8 +1180,23 @@ If permission is denied, you can grant it later in macOS System Settings.
 - "AI processing timed out"
   - Use a smaller model, reduce `chunk-tokens`, or switch to Rules only.
 
+- "The AI could not fully scan this document, so it was not redacted" (`AI_CHUNK_EXTRACTION_INCOMPLETE`)
+  - Part of the document could not be analyzed by the AI, so Marcut fails the run closed rather than shipping a document with an unscanned range. No output DOCX is written. Try again, reduce `chunk-tokens`, or use a different model. See AI Extraction and Validation for why this fails closed.
+
 - "Cannot write to selected destination"
-  - Choose a different output folder with write permission.
+  - Choose a different output folder with write permission. This is checked before the run starts.
+
+- "Not enough free disk space..."
+  - Free up space or choose a location on a volume with more room. The message states roughly how much is needed versus available. Checked before a redaction run and before a model download.
+
+- "Another Ollama (or other) instance is running on port ..."
+  - A foreign process was already listening on the port Marcut expected for its embedded AI service. Marcut reports it and tries a different port. If it recurs, quit any separately launched Ollama instance and relaunch Marcut.
+
+- "Processing stalled - the embedded engine stopped responding"
+  - The embedded AI worker wedged and stopped sending progress. Marcut detects this via an internal heartbeat and fails the document instead of freezing. Restart Marcut and re-run.
+
+- "Processing didn't survive sleep..."
+  - The Mac slept and the AI service didn't respond after waking. Restart Marcut to resume processing.
 
 - "Python runtime unavailable" (macOS app)
   - Restart the app; reinstall if the embedded runtime failed to load.

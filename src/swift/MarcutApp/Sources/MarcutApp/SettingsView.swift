@@ -1,34 +1,34 @@
-import SwiftUI
 import AppKit
+import SwiftUI
 import UniformTypeIdentifiers
 
 /// App appearance theme preference
 enum AppTheme: String, CaseIterable {
-    case system = "system"
-    case light = "light"
-    case dark = "dark"
+    case system
+    case light
+    case dark
 
     var displayName: String {
         switch self {
-        case .system: return "Follow System"
-        case .light: return "Light"
-        case .dark: return "Dark"
+        case .system: "Follow System"
+        case .light: "Light"
+        case .dark: "Dark"
         }
     }
 
     var appearance: NSAppearance? {
         switch self {
-        case .system: return nil
-        case .light: return NSAppearance(named: .aqua)
-        case .dark: return NSAppearance(named: .darkAqua)
+        case .system: nil
+        case .light: NSAppearance(named: .aqua)
+        case .dark: NSAppearance(named: .darkAqua)
         }
     }
 
     var colorScheme: ColorScheme? {
         switch self {
-        case .system: return nil
-        case .light: return .light
-        case .dark: return .dark
+        case .system: nil
+        case .light: .light
+        case .dark: .dark
         }
     }
 }
@@ -58,9 +58,12 @@ struct SettingsView: View {
     @State private var profileImportSucceeded = false
     @AppStorage(DefaultsKey.advancedModeEnabled.key) private var isAdvancedModeEnabled = true
     @AppStorage(DefaultsKey.advancedAIMode.key) private var advancedAIModeRaw = RedactionMode.rulesOverride.rawValue
-    @AppStorage(DefaultsKey.advancedLLMConfidence.key) private var advancedLlmConfidence = RedactionSettings.standardNormalModeConfidence
-    @AppStorage(DefaultsKey.outputSaveLocationPreference.key) private var outputSaveLocationRaw = OutputSaveLocation.alwaysAsk.rawValue
-    @AppStorage(DefaultsKey.unsavedReportQuitBehavior.key) private var unsavedReportQuitBehaviorRaw = UnsavedReportQuitBehavior.warn.rawValue
+    @AppStorage(DefaultsKey.advancedLLMConfidence.key) private var advancedLlmConfidence = RedactionSettings
+        .standardNormalModeConfidence
+    @AppStorage(DefaultsKey.outputSaveLocationPreference.key) private var outputSaveLocationRaw = OutputSaveLocation
+        .alwaysAsk.rawValue
+    @AppStorage(DefaultsKey.unsavedReportQuitBehavior.key) private var unsavedReportQuitBehaviorRaw =
+        UnsavedReportQuitBehavior.warn.rawValue
     @AppStorage(DefaultsKey.appTheme.key) private var appThemeRaw = AppTheme.system.rawValue
     @ObservedObject private var permissionManager = PermissionManager.shared
     private let overridesManager = UserOverridesManager.shared
@@ -95,7 +98,7 @@ struct SettingsView: View {
     private static let sectionLabels: [SettingsSection: [String]] = [
         .processingMode: [
             "Processing Mode", "Rules Only", "Fast rule-based detection for structured PII.",
-            "Rules + AI"
+            "Rules + AI",
         ],
         .sharedSettings: [
             "Shared Settings", "System Notifications", "Enable Completion Banners",
@@ -108,30 +111,32 @@ struct SettingsView: View {
             "Edit Custom List…", "Reset to Defaults", "Settings Profile",
             "Share this configuration with your team as a JSON file, or load one someone else exported.",
             "Export Profile…", "Import Profile…", "Advanced Mode",
-            "Show advanced AI controls and override modes."
+            "Show advanced AI controls and override modes.",
         ],
         .rulesEngine: [
-            "Rules Engine", "Select which deterministic rules run.", "Invert Selection"
+            "Rules Engine", "Select which deterministic rules run.", "Invert Selection",
         ],
         .aiModel: [
             "AI Model", "Select AI Model", "Qwen 3.5 35B A3B", "Qwen 2.5 14B", "Qwen 2.5 7B", "Phi-4 Mini 3.8B",
-            "AI System Prompt", "Customize Prompt…", "Manage Models…", "Reveal Models…"
+            "AI System Prompt", "Customize Prompt…", "Manage Models…", "Reveal Models…",
         ],
         .advancedAI: [
             "Advanced AI Settings", "Rules + AI Behavior", "Rules Override",
             "Constrained LLM Overrides", "LLM Overrides", "LLM Confidence", "Temperature",
-            "Chunk Size", "Chunk Overlap", "Processing Timeout", "Random Seed"
+            "Chunk Size", "Chunk Overlap", "Processing Timeout", "Random Seed",
         ],
         .debug: [
-            "Debug", "Enable Debug Logging", "View Logs", "Open App Log", "Open Ollama Log", "Clear Logs"
-        ]
+            "Debug", "Enable Debug Logging", "View Logs", "Open App Log", "Open Ollama Log", "Clear Logs",
+        ],
     ]
 
     /// Pure, testable predicate: does `label` match `query`? Empty query always matches.
     /// Matching is a case-insensitive substring match.
     static func matchesSearch(_ label: String, query: String) -> Bool {
         let trimmedQuery = query.trimmingCharacters(in: .whitespacesAndNewlines)
-        if trimmedQuery.isEmpty { return true }
+        if trimmedQuery.isEmpty {
+            return true
+        }
         return label.range(of: trimmedQuery, options: [.caseInsensitive, .diacriticInsensitive]) != nil
     }
 
@@ -143,7 +148,9 @@ struct SettingsView: View {
             let ruleMatches = RedactionRule.allCases.contains { rule in
                 Self.matchesSearch(rule.displayName, query: searchQuery)
             }
-            if ruleMatches { return true }
+            if ruleMatches {
+                return true
+            }
         }
         let labels = Self.sectionLabels[section] ?? []
         return labels.contains { Self.matchesSearch($0, query: searchQuery) }
@@ -154,7 +161,9 @@ struct SettingsView: View {
         guard !searchQuery.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return true }
         // If the section header itself matches (e.g. "Rules Engine"), show all rows.
         let sectionLabels = Self.sectionLabels[.rulesEngine] ?? []
-        if sectionLabels.contains(where: { Self.matchesSearch($0, query: searchQuery) }) { return true }
+        if sectionLabels.contains(where: { Self.matchesSearch($0, query: searchQuery) }) {
+            return true
+        }
         return Self.matchesSearch(rule.displayName, query: searchQuery)
     }
 
@@ -163,7 +172,9 @@ struct SettingsView: View {
         var initialSettings = viewModel.settings
         if viewModel.availableModels.count == 1, let onlyModel = viewModel.availableModels.first {
             initialSettings.model = onlyModel
-        } else if !viewModel.availableModels.contains(initialSettings.model), let first = viewModel.availableModels.first {
+        } else if !viewModel.availableModels.contains(initialSettings.model),
+                  let first = viewModel.availableModels.first
+        {
             initialSettings.model = first
         }
         let defaults = UserDefaults.standard
@@ -179,17 +190,26 @@ struct SettingsView: View {
         }
         if defaults.object(forKey: DefaultsKey.advancedLLMConfidenceMigratedTo99.key) == nil {
             if let storedConfidence = defaults.object(forKey: DefaultsKey.advancedLLMConfidence.key) as? NSNumber,
-               storedConfidence.intValue == 95 {
-                defaults.set(RedactionSettings.standardNormalModeConfidence, forKey: DefaultsKey.advancedLLMConfidence.key)
+               storedConfidence.intValue == 95
+            {
+                defaults.set(
+                    RedactionSettings.standardNormalModeConfidence,
+                    forKey: DefaultsKey.advancedLLMConfidence.key
+                )
             }
             defaults.set(true, forKey: DefaultsKey.advancedLLMConfidenceMigratedTo99.key)
         }
         if defaults.object(forKey: DefaultsKey.outputSaveLocationPreference.key) == nil {
-            if let legacy = defaults.object(forKey: DefaultsKey.legacyMetadataReportAlwaysSaveToDownloads.key) as? Bool {
+            if let legacy = defaults
+                .object(forKey: DefaultsKey.legacyMetadataReportAlwaysSaveToDownloads.key) as? Bool
+            {
                 let mapped = legacy ? OutputSaveLocation.downloads.rawValue : OutputSaveLocation.alwaysAsk.rawValue
                 defaults.set(mapped, forKey: DefaultsKey.outputSaveLocationPreference.key)
             } else {
-                defaults.set(OutputSaveLocation.alwaysAsk.rawValue, forKey: DefaultsKey.outputSaveLocationPreference.key)
+                defaults.set(
+                    OutputSaveLocation.alwaysAsk.rawValue,
+                    forKey: DefaultsKey.outputSaveLocationPreference.key
+                )
             }
         }
         if defaults.object(forKey: DefaultsKey.unsavedReportQuitBehavior.key) == nil {
@@ -197,7 +217,8 @@ struct SettingsView: View {
         }
 
         let advancedEnabled = defaults.bool(forKey: DefaultsKey.advancedModeEnabled.key)
-        let storedModeRaw = defaults.string(forKey: DefaultsKey.advancedAIMode.key) ?? RedactionMode.rulesOverride.rawValue
+        let storedModeRaw = defaults.string(forKey: DefaultsKey.advancedAIMode.key) ?? RedactionMode.rulesOverride
+            .rawValue
         let storedMode = RedactionMode(rawValue: storedModeRaw) ?? .rulesOverride
         let normalizedMode = storedMode == .rules ? .rulesOverride : storedMode
         let storedConfidence = defaults.integer(forKey: DefaultsKey.advancedLLMConfidence.key)
@@ -230,10 +251,10 @@ struct SettingsView: View {
                     if isSectionVisible(.rulesEngine) {
                         rulesEngineSection
                     }
-                    if localSettings.mode.usesLLM && isSectionVisible(.aiModel) {
+                    if localSettings.mode.usesLLM, isSectionVisible(.aiModel) {
                         aiModelSection
                     }
-                    if isAdvancedModeEnabled && isSectionVisible(.advancedAI) {
+                    if isAdvancedModeEnabled, isSectionVisible(.advancedAI) {
                         advancedAISection
                     }
                     if isSectionVisible(.debug) {
@@ -292,26 +313,25 @@ struct SettingsView: View {
             LogViewerSheet()
         }
         .alert("Override Error", isPresented: overrideErrorBinding, presenting: overrideErrorMessage) { _ in
-            Button("OK", role: .cancel) { }
+            Button("OK", role: .cancel) {}
                 .accessibilityIdentifier("settings.overrideError.ok")
         } message: { message in
             Text(message)
         }
         .alert("Import Failed", isPresented: profileErrorBinding, presenting: profileErrorMessage) { _ in
-            Button("OK", role: .cancel) { }
+            Button("OK", role: .cancel) {}
                 .accessibilityIdentifier("settings.profile.importError.ok")
         } message: { message in
             Text(message)
         }
         .alert("Profile Imported", isPresented: $profileImportSucceeded) {
-            Button("OK", role: .cancel) { }
+            Button("OK", role: .cancel) {}
                 .accessibilityIdentifier("settings.profile.importSuccess.ok")
         } message: {
             Text("Settings were replaced with the imported profile. Click Save Settings to apply.")
         }
     }
 
-    @ViewBuilder
     private var headerView: some View {
         VStack(spacing: 8) {
             Text("Redaction Settings")
@@ -425,14 +445,16 @@ struct SettingsView: View {
 
                     if PermissionManager.shared.notificationStatus == .denied {
                         Button("Open System Settings (Permission Denied)") {
-                             if let url = URL(string: "x-apple.systempreferences:com.apple.preference.notifications") {
-                                 NSWorkspace.shared.open(url)
-                             }
+                            if let url = URL(string: "x-apple.systempreferences:com.apple.preference.notifications") {
+                                NSWorkspace.shared.open(url)
+                            }
                         }
                         .font(.caption)
                         .buttonStyle(.link)
                         .accessibilityIdentifier("settings.notifications.openSystemSettings")
-                    } else if PermissionManager.shared.notificationStatus == .notDetermined && permissionManager.userEnabledNotifications {
+                    } else if PermissionManager.shared.notificationStatus == .notDetermined,
+                              permissionManager.userEnabledNotifications
+                    {
                         Button("Authorize Notifications") {
                             Task { try? await PermissionManager.shared.forceRequestNotificationPermission() }
                         }
@@ -626,9 +648,11 @@ struct SettingsView: View {
                         VStack(alignment: .leading, spacing: 2) {
                             Text("Advanced Mode")
                                 .font(.system(size: 14, weight: .medium))
-                            Text("Show advanced AI controls and override modes. Normal mode is equivalent to Advanced Mode set to Rules Override at 99% confidence.")
-                                .font(.system(size: 12))
-                                .foregroundColor(CustomColors.secondaryText(for: colorScheme))
+                            Text(
+                                "Show advanced AI controls and override modes. Normal mode is equivalent to Advanced Mode set to Rules Override at 99% confidence."
+                            )
+                            .font(.system(size: 12))
+                            .foregroundColor(CustomColors.secondaryText(for: colorScheme))
                         }
                     }
                     .toggleStyle(.switch)
@@ -659,7 +683,9 @@ struct SettingsView: View {
                     Spacer()
                 }
 
-                ForEach(RedactionRule.allCases.sorted { $0.displayName < $1.displayName }.filter(isRuleVisible)) { rule in
+                ForEach(RedactionRule.allCases.sorted { $0.displayName < $1.displayName }
+                    .filter(isRuleVisible))
+                { rule in
                     Toggle(isOn: binding(for: rule)) {
                         VStack(alignment: .leading, spacing: 2) {
                             Text(rule.displayName)
@@ -672,7 +698,6 @@ struct SettingsView: View {
                     .toggleStyle(.checkbox)
                     .accessibilityIdentifier("settings.rules.toggle.\(rule.rawValue)")
                 }
-
             }
         }
     }
@@ -759,9 +784,11 @@ struct SettingsView: View {
                 VStack(alignment: .leading, spacing: 6) {
                     Text("LLM Processing Concurrency")
                         .font(.system(size: 14, weight: .medium))
-                    Text("Higher concurrency extracts entities faster but uses significantly more system Unified Memory.")
-                        .font(.system(size: 12))
-                        .foregroundColor(CustomColors.secondaryText(for: colorScheme))
+                    Text(
+                        "Higher concurrency extracts entities faster but uses significantly more system Unified Memory."
+                    )
+                    .font(.system(size: 12))
+                    .foregroundColor(CustomColors.secondaryText(for: colorScheme))
 
                     HStack {
                         Slider(
@@ -769,7 +796,7 @@ struct SettingsView: View {
                                 get: { Double(localSettings.llmConcurrency) },
                                 set: { localSettings.llmConcurrency = Int($0) }
                             ),
-                            in: 1...5,
+                            in: 1 ... 5,
                             step: 1
                         )
                         .accessibilityIdentifier("settings.llmConcurrency.slider")
@@ -824,8 +851,12 @@ struct SettingsView: View {
 
     private var timeoutSteps: [Int] {
         var steps: [Int] = [30, 60, 120]
-        for m in 3...45 { steps.append(m * 60) }
-        for i in 0..<30 { steps.append((50 + i * 5) * 60) }
+        for m in 3 ... 45 {
+            steps.append(m * 60)
+        }
+        for i in 0 ..< 30 {
+            steps.append((50 + i * 5) * 60)
+        }
         steps.append(Int.max)
         return steps
     }
@@ -905,7 +936,7 @@ struct SettingsView: View {
                                 Stepper(
                                     "",
                                     value: advancedConfidenceBinding,
-                                    in: 0...100,
+                                    in: 0 ... 100,
                                     step: 1
                                 )
                                 .labelsHidden()
@@ -917,9 +948,11 @@ struct SettingsView: View {
                     }
                 }
 
-                Text("Confidence is the minimum certainty required to override a rules match. Higher = more likely to remain redacted. Confidence has no impact on system prompt based redaction (a separate pipeline).")
-                    .font(.system(size: 10))
-                    .foregroundColor(CustomColors.secondaryText(for: colorScheme))
+                Text(
+                    "Confidence is the minimum certainty required to override a rules match. Higher = more likely to remain redacted. Confidence has no impact on system prompt based redaction (a separate pipeline)."
+                )
+                .font(.system(size: 10))
+                .foregroundColor(CustomColors.secondaryText(for: colorScheme))
             }
 
             Divider()
@@ -928,7 +961,7 @@ struct SettingsView: View {
                 Text("Temperature: \(localSettings.temperature, specifier: "%.1f")")
                     .font(.system(size: 14, weight: .medium))
                     .foregroundColor(CustomColors.primaryText(for: colorScheme))
-                Slider(value: $localSettings.temperature, in: 0.0...2.0, step: 0.1)
+                Slider(value: $localSettings.temperature, in: 0.0 ... 2.0, step: 0.1)
                     .accessibilityIdentifier("settings.ai.temperature")
                 Text("Lower = more focused and deterministic. Higher = more creative but may hallucinate entities.")
                     .font(.system(size: 12))
@@ -942,11 +975,13 @@ struct SettingsView: View {
                 Slider(value: Binding(
                     get: { Double(localSettings.chunkTokens) },
                     set: { localSettings.chunkTokens = Int($0) }
-                ), in: 500...2000, step: 100)
-                .accessibilityIdentifier("settings.ai.chunkSize")
-                Text("Larger = fewer chunks, faster overall but may miss entities in long sections. Smaller = more thorough but slower.")
-                    .font(.system(size: 12))
-                    .foregroundColor(CustomColors.secondaryText(for: colorScheme))
+                ), in: 500 ... 2000, step: 100)
+                    .accessibilityIdentifier("settings.ai.chunkSize")
+                Text(
+                    "Larger = fewer chunks, faster overall but may miss entities in long sections. Smaller = more thorough but slower."
+                )
+                .font(.system(size: 12))
+                .foregroundColor(CustomColors.secondaryText(for: colorScheme))
             }
 
             VStack(alignment: .leading, spacing: 8) {
@@ -956,11 +991,13 @@ struct SettingsView: View {
                 Slider(value: Binding(
                     get: { Double(localSettings.overlap) },
                     set: { localSettings.overlap = Int($0) }
-                ), in: 50...400, step: 25)
-                .accessibilityIdentifier("settings.ai.chunkOverlap")
-                Text("Higher = catches entities at chunk boundaries but increases processing time. Lower = faster but may miss split names.")
-                    .font(.system(size: 12))
-                    .foregroundColor(CustomColors.secondaryText(for: colorScheme))
+                ), in: 50 ... 400, step: 25)
+                    .accessibilityIdentifier("settings.ai.chunkOverlap")
+                Text(
+                    "Higher = catches entities at chunk boundaries but increases processing time. Lower = faster but may miss split names."
+                )
+                .font(.system(size: 12))
+                .foregroundColor(CustomColors.secondaryText(for: colorScheme))
             }
 
             VStack(alignment: .leading, spacing: 8) {
@@ -968,7 +1005,7 @@ struct SettingsView: View {
                     .font(.system(size: 14, weight: .medium))
                     .foregroundColor(CustomColors.primaryText(for: colorScheme))
 
-                Slider(value: timeoutSliderIndex, in: 0...Double(timeoutSteps.count - 1), step: 1)
+                Slider(value: timeoutSliderIndex, in: 0 ... Double(timeoutSteps.count - 1), step: 1)
                     .accessibilityIdentifier("settings.ai.timeout")
                 Text("Maximum time per document. Increase for very large documents. Use ∞ to disable timeout entirely.")
                     .font(.system(size: 12))
@@ -982,13 +1019,14 @@ struct SettingsView: View {
                 Slider(value: Binding(
                     get: { Double(localSettings.seed) },
                     set: { localSettings.seed = Int($0) }
-                ), in: 1...1000, step: 1)
-                .accessibilityIdentifier("settings.ai.seed")
-                Text("Fixed seed = reproducible results on same document. Change to get different AI outputs for testing.")
-                    .font(.system(size: 12))
-                    .foregroundColor(CustomColors.secondaryText(for: colorScheme))
+                ), in: 1 ... 1000, step: 1)
+                    .accessibilityIdentifier("settings.ai.seed")
+                Text(
+                    "Fixed seed = reproducible results on same document. Change to get different AI outputs for testing."
+                )
+                .font(.system(size: 12))
+                .foregroundColor(CustomColors.secondaryText(for: colorScheme))
             }
-
         }
     }
 
@@ -998,10 +1036,12 @@ struct SettingsView: View {
                 .toggleStyle(.checkbox)
                 .accessibilityIdentifier("settings.debug.toggle")
 
-            Text("When enabled, both the app and helper write verbose diagnostics to logs for troubleshooting. This may impact performance and generate large files.")
-                .font(.system(size: 12))
-                .foregroundColor(CustomColors.secondaryText(for: colorScheme))
-                .padding(.top, 4)
+            Text(
+                "When enabled, both the app and helper write verbose diagnostics to logs for troubleshooting. This may impact performance and generate large files."
+            )
+            .font(.system(size: 12))
+            .foregroundColor(CustomColors.secondaryText(for: colorScheme))
+            .padding(.top, 4)
 
             HStack(spacing: 12) {
                 Button("View Logs") {
@@ -1065,14 +1105,22 @@ struct SettingsView: View {
     private var overrideErrorBinding: Binding<Bool> {
         Binding(
             get: { overrideErrorMessage != nil },
-            set: { if !$0 { overrideErrorMessage = nil } }
+            set: {
+                if !$0 {
+                    overrideErrorMessage = nil
+                }
+            }
         )
     }
 
     private var profileErrorBinding: Binding<Bool> {
         Binding(
             get: { profileErrorMessage != nil },
-            set: { if !$0 { profileErrorMessage = nil } }
+            set: {
+                if !$0 {
+                    profileErrorMessage = nil
+                }
+            }
         )
     }
 
@@ -1172,7 +1220,7 @@ struct SettingsView: View {
             get: { advancedLlmConfidence },
             set: { newValue in
                 advancedLlmConfidence = newValue
-                if isAdvancedModeEnabled && localSettings.mode != .rules {
+                if isAdvancedModeEnabled, localSettings.mode != .rules {
                     localSettings.llmConfidenceThreshold = newValue
                 }
             }
@@ -1224,7 +1272,7 @@ struct SettingsView: View {
     private func selectAdvancedAIMode(_ mode: RedactionMode) {
         let normalized = mode == .rules ? .rulesOverride : mode
         advancedAIModeRaw = normalized.rawValue
-        if isAdvancedModeEnabled && localSettings.mode != .rules {
+        if isAdvancedModeEnabled, localSettings.mode != .rules {
             localSettings.mode = normalized
         }
     }
@@ -1232,13 +1280,13 @@ struct SettingsView: View {
     private func advancedModeTitle(_ mode: RedactionMode) -> String {
         switch mode {
         case .rulesOverride:
-            return "Rules Override"
+            "Rules Override"
         case .constrainedOverrides:
-            return "Constrained LLM Overrides"
+            "Constrained LLM Overrides"
         case .llmOverrides:
-            return "LLM Overrides"
+            "LLM Overrides"
         case .rules:
-            return "Rules Only"
+            "Rules Only"
         }
     }
 
@@ -1484,13 +1532,16 @@ private struct ScrollableTextEditor: NSViewRepresentable {
         textView.isHorizontallyResizable = true
         textView.autoresizingMask = [.width]
         textView.textContainer?.widthTracksTextView = true
-        textView.textContainer?.containerSize = NSSize(width: scrollView.contentSize.width, height: .greatestFiniteMagnitude)
+        textView.textContainer?.containerSize = NSSize(
+            width: scrollView.contentSize.width,
+            height: .greatestFiniteMagnitude
+        )
 
         scrollView.documentView = textView
         return scrollView
     }
 
-    func updateNSView(_ nsView: NSScrollView, context: Context) {
+    func updateNSView(_ nsView: NSScrollView, context _: Context) {
         guard let textView = nsView.documentView as? NSTextView else { return }
         if textView.string != text {
             textView.string = text
@@ -1551,7 +1602,7 @@ struct FirstRunSetupView: View {
         switch viewModel.firstRunEntryPoint {
         case .manageModels:
             initialStep = .modelSelection
-        case .downloadSpecificModel(let targetModelId):
+        case let .downloadSpecificModel(targetModelId):
             initialStep = .modelSelection
             resolvedModel = targetModelId
             shouldAutoDownload = true
@@ -1604,7 +1655,9 @@ struct FirstRunSetupView: View {
 
                 // Navigation buttons
                 HStack(spacing: 16) {
-                    if setupStep != .welcome && setupStep != .downloading && !(isManageFlow && setupStep == .modelSelection) {
+                    if setupStep != .welcome, setupStep != .downloading,
+                       !(isManageFlow && setupStep == .modelSelection)
+                    {
                         Button("Back") {
                             withAnimation(.easeInOut(duration: 0.3)) {
                                 setupStep = previousStep
@@ -1614,7 +1667,7 @@ struct FirstRunSetupView: View {
                         .accessibilityIdentifier("setup.back")
                     }
 
-                    if setupStep != .downloading && !isManageFlow {
+                    if setupStep != .downloading, !isManageFlow {
                         Button("Use Rules Only") {
                             completeRulesOnly()
                         }
@@ -1650,7 +1703,7 @@ struct FirstRunSetupView: View {
             if autoStartDownload {
                 autoStartDownload = false
                 downloadModel()
-            } else if !isManageFlow && hasInstalledSupportedModel {
+            } else if !isManageFlow, hasInstalledSupportedModel {
                 // If a supported model already exists and we're not in the manage-models flow,
                 // skip the download prompt and finish onboarding immediately.
                 viewModel.markFirstRunComplete()
@@ -1679,7 +1732,6 @@ struct FirstRunSetupView: View {
         .accessibilityIdentifier("setup.close")
     }
 
-    @ViewBuilder
     private var welcomeContent: some View {
         VStack(spacing: 24) {
             VStack(spacing: 16) {
@@ -1687,10 +1739,12 @@ struct FirstRunSetupView: View {
                     .font(.title2)
                     .fontWeight(.semibold)
 
-                Text("MarcutApp uses local AI models to identify and redact sensitive information in your documents. All processing happens on your device - no data ever leaves your computer.")
-                    .font(.body)
-                    .multilineTextAlignment(.center)
-                    .foregroundColor(CustomColors.secondaryText(for: colorScheme))
+                Text(
+                    "MarcutApp uses local AI models to identify and redact sensitive information in your documents. All processing happens on your device - no data ever leaves your computer."
+                )
+                .font(.body)
+                .multilineTextAlignment(.center)
+                .foregroundColor(CustomColors.secondaryText(for: colorScheme))
             }
 
             VStack(alignment: .leading, spacing: 12) {
@@ -1715,7 +1769,6 @@ struct FirstRunSetupView: View {
         }
     }
 
-    @ViewBuilder
     private var modelSelectionContent: some View {
         VStack(spacing: 24) {
             // Model selection cards
@@ -1741,7 +1794,6 @@ struct FirstRunSetupView: View {
         }
     }
 
-    @ViewBuilder
     private var downloadingContent: some View {
         VStack(spacing: 32) {
             VStack(spacing: 16) {
@@ -1778,7 +1830,6 @@ struct FirstRunSetupView: View {
         }
     }
 
-    @ViewBuilder
     private var completeContent: some View {
         VStack(spacing: 24) {
             Image(systemName: "checkmark.circle.fill")
@@ -1800,19 +1851,19 @@ struct FirstRunSetupView: View {
 
     private var buttonTitle: String {
         switch setupStep {
-        case .welcome: return "Get Started"
-        case .modelSelection: return "Download Model"
-        case .downloading: return "Downloading..."
-        case .complete: return "Finish"
+        case .welcome: "Get Started"
+        case .modelSelection: "Download Model"
+        case .downloading: "Downloading..."
+        case .complete: "Finish"
         }
     }
 
     private var previousStep: SetupStep {
         switch setupStep {
-        case .welcome: return .welcome
-        case .modelSelection: return .welcome
-        case .downloading: return .modelSelection
-        case .complete: return .downloading
+        case .welcome: .welcome
+        case .modelSelection: .welcome
+        case .downloading: .modelSelection
+        case .complete: .downloading
         }
     }
 
@@ -1944,8 +1995,19 @@ struct ModelSelectionRow: View {
     let onDownload: (() -> Void)?
     @Environment(\.colorScheme) private var colorScheme
 
-    // Convenience initializers for different use cases
-    init(modelId: String, displayName: String, description: String, processingTime: String, accentColor: Color, isSelected: Bool, isInstalled: Bool, accessibilityId: String? = nil, onDownload: (() -> Void)? = nil, onSelect: @escaping () -> Void) {
+    /// Convenience initializers for different use cases
+    init(
+        modelId: String,
+        displayName: String,
+        description: String,
+        processingTime: String,
+        accentColor: Color,
+        isSelected: Bool,
+        isInstalled: Bool,
+        accessibilityId: String? = nil,
+        onDownload: (() -> Void)? = nil,
+        onSelect: @escaping () -> Void
+    ) {
         self.modelId = modelId
         self.displayName = displayName
         self.description = description
@@ -1960,7 +2022,18 @@ struct ModelSelectionRow: View {
         self.onDownload = onDownload
     }
 
-    init(modelId: String, displayName: String, description: String, size: String, badge: String, isSelected: Bool, isInstalled: Bool, accessibilityId: String? = nil, onDownload: (() -> Void)? = nil, onSelect: @escaping () -> Void) {
+    init(
+        modelId: String,
+        displayName: String,
+        description: String,
+        size: String,
+        badge: String,
+        isSelected: Bool,
+        isInstalled: Bool,
+        accessibilityId: String? = nil,
+        onDownload: (() -> Void)? = nil,
+        onSelect: @escaping () -> Void
+    ) {
         self.modelId = modelId
         self.displayName = displayName
         self.description = description
@@ -1980,7 +2053,8 @@ struct ModelSelectionRow: View {
             HStack(spacing: 16) {
                 Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
                     .font(.system(size: 20))
-                    .foregroundColor(isSelected ? (accentColor ?? CustomColors.accentColor(for: colorScheme)) : CustomColors.secondaryText(for: colorScheme))
+                    .foregroundColor(isSelected ? (accentColor ?? CustomColors.accentColor(for: colorScheme)) :
+                        CustomColors.secondaryText(for: colorScheme))
 
                 VStack(alignment: .leading, spacing: 6) {
                     HStack {
@@ -1988,7 +2062,7 @@ struct ModelSelectionRow: View {
                             .font(.system(size: 16, weight: .semibold))
                             .foregroundColor(CustomColors.primaryText(for: colorScheme))
 
-                        if let badge = badge {
+                        if let badge {
                             Text(badge)
                                 .font(.system(size: 11, weight: .medium))
                                 .padding(.horizontal, 8)
@@ -2009,13 +2083,13 @@ struct ModelSelectionRow: View {
                         .multilineTextAlignment(.leading)
 
                     HStack {
-                        if let size = size {
+                        if let size {
                             Text(size)
                                 .font(.system(size: 12, weight: .medium))
                                 .foregroundColor(CustomColors.secondaryText(for: colorScheme))
                         }
 
-                        if let processingTime = processingTime {
+                        if let processingTime {
                             Text("• \(processingTime)")
                                 .font(.system(size: 12))
                                 .foregroundColor(CustomColors.secondaryText(for: colorScheme))
@@ -2045,11 +2119,15 @@ struct ModelSelectionRow: View {
             .padding(16)
             .background(
                 RoundedRectangle(cornerRadius: 12)
-                    .fill(isSelected ? (accentColor ?? CustomColors.accentColor(for: colorScheme)).opacity(0.12) : CustomColors.contentBackground(for: colorScheme))
+                    .fill(isSelected ? (accentColor ?? CustomColors.accentColor(for: colorScheme))
+                        .opacity(0.12) : CustomColors.contentBackground(for: colorScheme))
             )
             .overlay(
                 RoundedRectangle(cornerRadius: 12)
-                    .stroke(isSelected ? (accentColor ?? CustomColors.accentColor(for: colorScheme)) : Color.clear, lineWidth: 2)
+                    .stroke(
+                        isSelected ? (accentColor ?? CustomColors.accentColor(for: colorScheme)) : Color.clear,
+                        lineWidth: 2
+                    )
             )
         }
         .buttonStyle(.plain)

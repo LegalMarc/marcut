@@ -1,6 +1,7 @@
 
 from typing import List, Dict, Any, Optional, Set, Callable
-import json, requests
+import json
+import requests
 import os
 import sys
 import re
@@ -251,7 +252,8 @@ def llama_cpp_extract(
                 entities = data["entities"]
                 all_spans = []
                 for ent in entities:
-                    if not isinstance(ent, dict): continue
+                    if not isinstance(ent, dict):
+                        continue
                     etext = ent.get("text", "")
                     etype = ent.get("type", "")
                     label = _map_label(etype)
@@ -290,13 +292,20 @@ def llama_cpp_extract(
 
 def _map_label(lbl: str) -> Optional[str]:
     t = (lbl or '').strip().upper()
-    if t in ("NAME", "PERSON", "HUMAN", "INDIVIDUAL"): return "NAME"
-    if t in ("ORG", "ORGANIZATION", "COMPANY", "INSTITUTION", "BUSINESS"): return "ORG"
-    if t in ("BRAND", "PRODUCT", "SERVICE"): return "BRAND"
-    if t in ("LOC", "LOCATION", "GPE", "PLACE", "ADDRESS"): return "LOC"
-    if t in ("MONEY", "CURRENCY"): return "MONEY"
-    if t in ("NUMBER", "QUANTITY", "COUNT", "AMOUNT"): return "NUMBER"
-    if t in ("DATE",): return "DATE"
+    if t in ("NAME", "PERSON", "HUMAN", "INDIVIDUAL"):
+        return "NAME"
+    if t in ("ORG", "ORGANIZATION", "COMPANY", "INSTITUTION", "BUSINESS"):
+        return "ORG"
+    if t in ("BRAND", "PRODUCT", "SERVICE"):
+        return "BRAND"
+    if t in ("LOC", "LOCATION", "GPE", "PLACE", "ADDRESS"):
+        return "LOC"
+    if t in ("MONEY", "CURRENCY"):
+        return "MONEY"
+    if t in ("NUMBER", "QUANTITY", "COUNT", "AMOUNT"):
+        return "NUMBER"
+    if t in ("DATE",):
+        return "DATE"
     # IMPORTANT: no fallback. Unknown labels are dropped.
     return None
 
@@ -889,7 +898,7 @@ def ollama_extract(
 
     try:
         parsed = parse_llm_response(response_text)
-    except json.JSONDecodeError as first_error:
+    except json.JSONDecodeError:
         _log_app_event(
             "JSON parsing failed. "
             f"Response length={len(response_text)} chars. Raw response omitted from logs."

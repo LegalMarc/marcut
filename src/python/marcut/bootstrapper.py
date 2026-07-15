@@ -4,7 +4,6 @@
 import os
 import sys
 import json
-import subprocess
 from pathlib import Path
 import tkinter as tk
 from tkinter import messagebox

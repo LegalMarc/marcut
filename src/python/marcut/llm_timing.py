@@ -3,7 +3,6 @@ LLM Timing Instrumentation Module
 """
 import time
 import json
-import sys
 import os
 import threading
 import requests

@@ -1,4 +1,5 @@
-import argparse, sys
+import argparse
+import sys
 import json
 import os
 import shlex
@@ -185,14 +186,14 @@ def main():
         )
 
         if result['success']:
-            print(f"✅ Redaction completed successfully")
+            print("✅ Redaction completed successfully")
             print(f"   Entities detected: {result['entity_count']}")
             print(f"   Processing time: {result['duration']:.2f}s")
             
             # Show timing breakdown if requested
             if (getattr(a, 'timing', False) or getattr(a, 'llm_detail', False)) and 'phase_timings' in result:
                 total = result['duration']
-                print(f"\n📊 Phase Timing Breakdown:")
+                print("\n📊 Phase Timing Breakdown:")
                 print(f"   {'Phase':<20} {'Time':>8} {'Pct':>6}")
                 print(f"   {'-'*20} {'-'*8} {'-'*6}")
                 for phase, duration in result['phase_timings'].items():
@@ -207,7 +208,7 @@ def main():
             if getattr(a, 'llm_detail', False) and 'llm_timing' in result:
                 llm = result['llm_timing']
                 llm_total = llm.get('http_request', 0)
-                print(f"\n🔬 LLM Sub-Phase Detail:")
+                print("\n🔬 LLM Sub-Phase Detail:")
                 print(f"   {'Sub-Phase':<22} {'Time':>8} {'Pct':>6}")
                 print(f"   {'-'*22} {'-'*8} {'-'*6}")
                 sub_phases = [

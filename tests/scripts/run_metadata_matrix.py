@@ -3,7 +3,6 @@ import argparse
 import csv
 import json
 import os
-import re
 import zipfile
 from dataclasses import fields
 from pathlib import Path
@@ -16,8 +15,8 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from marcut.docx_io import MetadataCleaningSettings
-from marcut import pipeline
+from marcut.docx_io import MetadataCleaningSettings  # noqa: E402 -- must follow the sys.path fixup above
+from marcut import pipeline  # noqa: E402 -- must follow the sys.path fixup above
 
 
 def read_baseline_args(log_path: Path) -> List[str]:

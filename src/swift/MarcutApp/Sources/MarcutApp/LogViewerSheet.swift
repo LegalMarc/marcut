@@ -1,5 +1,5 @@
-import SwiftUI
 import AppKit
+import SwiftUI
 
 /// Sheet that lets users view app log files in-app instead of navigating Finder to
 /// `~/Library/Application Support/MarcutApp/logs`. Shows the most recently modified log by
@@ -52,7 +52,6 @@ struct LogViewerSheet: View {
         }
     }
 
-    @ViewBuilder
     private var emptyState: some View {
         VStack(spacing: 12) {
             Spacer()

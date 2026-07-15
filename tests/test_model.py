@@ -204,29 +204,29 @@ class TestValidCandidate:
     
     def test_valid_name(self):
         """Test valid person name."""
-        assert _valid_candidate("John Smith", "NAME") == True
-        assert _valid_candidate("Mary Jane Watson", "NAME") == True
+        assert _valid_candidate("John Smith", "NAME")
+        assert _valid_candidate("Mary Jane Watson", "NAME")
     
     def test_single_word_name_rejected(self):
         """Test that single-word names are rejected."""
-        assert _valid_candidate("John", "NAME") == False
-        assert _valid_candidate("Smith", "NAME") == False
+        assert not _valid_candidate("John", "NAME")
+        assert not _valid_candidate("Smith", "NAME")
     
     def test_valid_org(self):
         """Test valid organization names."""
-        assert _valid_candidate("Sample 123 Corporation Inc.", "ORG") == True
-        assert _valid_candidate("Sample 123 & Associates LLC", "ORG") == True
+        assert _valid_candidate("Sample 123 Corporation Inc.", "ORG")
+        assert _valid_candidate("Sample 123 & Associates LLC", "ORG")
     
     def test_boilerplate_rejected(self):
         """Test that boilerplate terms are rejected."""
-        assert _valid_candidate("the Agreement", "ORG") == False
-        assert _valid_candidate("Section 1", "NAME") == False
-        assert _valid_candidate("Board of Directors", "ORG") == False
+        assert not _valid_candidate("the Agreement", "ORG")
+        assert not _valid_candidate("Section 1", "NAME")
+        assert not _valid_candidate("Board of Directors", "ORG")
     
     def test_empty_string_rejected(self):
         """Test that empty strings are rejected."""
-        assert _valid_candidate("", "NAME") == False
-        assert _valid_candidate("   ", "ORG") == False
+        assert not _valid_candidate("", "NAME")
+        assert not _valid_candidate("   ", "ORG")
 
 
 class TestExclusionNormalization:
@@ -246,14 +246,14 @@ class TestExclusionNormalization:
 
     def test_matches_exclusion_literal_singularizes(self):
         literals = {"agreement", "company"}
-        assert _matches_exclusion_literal("agreements", literals) == True
-        assert _matches_exclusion_literal("company(s)", literals) == True
-        assert _matches_exclusion_literal("cats", literals) == False
-        assert _matches_exclusion_literal("parties", {"party"}) == True
+        assert _matches_exclusion_literal("agreements", literals)
+        assert _matches_exclusion_literal("company(s)", literals)
+        assert not _matches_exclusion_literal("cats", literals)
+        assert _matches_exclusion_literal("parties", {"party"})
 
     def test_generic_term_singularization(self):
-        assert _is_generic_term("The Agreements") == True
-        assert _is_generic_term("A Company(s)") == True
+        assert _is_generic_term("The Agreements")
+        assert _is_generic_term("A Company(s)")
 
 
 class TestFindEntitySpans:
@@ -709,23 +709,23 @@ class TestIsGenericTerm:
     
     def test_agreement_generic(self):
         """Test that 'agreement' is detected as generic."""
-        assert _is_generic_term("agreement") == True
-        assert _is_generic_term("Agreement") == True
+        assert _is_generic_term("agreement")
+        assert _is_generic_term("Agreement")
     
     def test_company_generic(self):
         """Test that 'company' is detected as generic."""
-        assert _is_generic_term("company") == True
+        assert _is_generic_term("company")
         # Note: "the Company" with article is handled differently by _valid_candidate
     
     def test_board_generic(self):
         """Test that 'board' terms are generic."""
-        assert _is_generic_term("board") == True
-        assert _is_generic_term("Board of Directors") == True
+        assert _is_generic_term("board")
+        assert _is_generic_term("Board of Directors")
     
     def test_real_name_not_generic(self):
         """Test that real names are not generic."""
-        assert _is_generic_term("John Smith") == False
-        assert _is_generic_term("Sample 123 Inc.") == False
+        assert not _is_generic_term("John Smith")
+        assert not _is_generic_term("Sample 123 Inc.")
 
 
 class TestGetExclusionPatterns:
@@ -745,7 +745,7 @@ class TestGetExclusionPatterns:
         
         # Test that 'agreement' matches at least one pattern
         matched = any(p.match("agreement") for p in patterns)
-        assert matched == True
+        assert matched
 
 
 class TestGetSystemPrompt:

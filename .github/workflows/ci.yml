@@ -33,10 +33,27 @@ jobs:
           print(f"Version in sync: {py_version}")
           EOF
 
-      - name: Ruff (error-tier lint gate)
+      - name: Ruff (full lint gate)
         run: |
           pip install ruff
-          ruff check --select E9,F63,F7,F82 src/python tests
+          ruff check src/python tests
+
+      - name: Help docs in sync (assets/*.md is canonical; regenerate, don't hand-edit the Swift copies)
+        run: |
+          python3 scripts/render_help_html.py
+          # Only the .md fallback copies are tracked -- Resources/*.html is gitignored
+          # (pure regenerated build output). If the .md copies are fresh, the HTML
+          # rendering from them is deterministic and therefore fresh too.
+          tracked=(
+            "src/swift/MarcutApp/Sources/MarcutApp/Resources/help.md"
+            "src/swift/MarcutApp/Sources/MarcutApp/Resources/forensics-guide.md"
+          )
+          if ! git diff --quiet -- "${tracked[@]}"; then
+            echo "::error::assets/help.md or assets/forensics-guide.md is out of sync with the generated Swift Resources copies. Edit the assets/*.md source and run 'python3 scripts/render_help_html.py' to regenerate, then commit both the assets/ source and the Swift Resources .md copy."
+            git diff -- "${tracked[@]}"
+            exit 1
+          fi
+          echo "Help docs in sync."
 
   smoke:
     runs-on: macos-14
@@ -67,3 +84,14 @@ jobs:
           mkdir -p src/swift/MarcutApp/Sources/MarcutApp/Frameworks
           mkdir -p src/swift/MarcutApp/Sources/MarcutApp/python_site
           swift build --package-path src/swift/MarcutApp
+
+      - name: SwiftFormat (lint gate)
+        run: |
+          # Pinned to an exact release rather than `brew install` -- the runner image's
+          # pre-cached brew version silently drifts from what contributors have locally,
+          # and different SwiftFormat versions disagree on some rules (E4 hardening, 2026-07).
+          curl -sL -o /tmp/swiftformat.zip "https://github.com/nicklockwood/SwiftFormat/releases/download/0.62.1/swiftformat.zip"
+          unzip -o -q /tmp/swiftformat.zip -d /tmp/swiftformat
+          chmod +x /tmp/swiftformat/swiftformat
+          /tmp/swiftformat/swiftformat --version
+          /tmp/swiftformat/swiftformat --lint src/swift/MarcutApp/Sources src/swift/MarcutApp/Tests

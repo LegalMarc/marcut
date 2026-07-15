@@ -1,6 +1,5 @@
 
 import pytest
-import os
 from marcut.unified_redactor import validate_model_name, validate_parameters
 from marcut.docx_io import _safe_fromstring
 

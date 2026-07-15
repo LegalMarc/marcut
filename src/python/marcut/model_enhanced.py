@@ -31,8 +31,7 @@ from typing import List, Dict, Any, Optional, Tuple, Set
 import requests
 import threading
 import concurrent.futures
-from dataclasses import dataclass, asdict
-import hashlib
+from dataclasses import dataclass
 from .cancellation import ProcessingDeadlineExceeded, check_processing_deadline, remaining_seconds
 from .model import (
     parse_llm_response,
@@ -808,7 +807,7 @@ def ollama_validate(
                 last_error = e
                 print(f"Validation attempt {attempt_idx} failed: HTTP {status}")
             else:
-                raise RuntimeError(f"Ollama validation request failed: {e}")
+                raise RuntimeError(f"Ollama validation request failed: {e}") from e
 
         if attempt_idx < len(retry_plan):
             time.sleep(attempt["wait"])
@@ -973,7 +972,7 @@ class IntelligentRedactionPipeline:
                     print(message, flush=True)
                 except UnicodeEncodeError:
                     print(message.encode('ascii', errors='replace').decode('ascii'), flush=True)
-            except Exception as e:
+            except Exception:
                 pass
 
         all_entities = []
@@ -1478,8 +1477,8 @@ class LlamaCppRedactionPipeline:
 
         try:
             from llama_cpp import Llama
-        except ImportError:
-            raise RuntimeError("llama-cpp-python not installed. Run: pip install llama-cpp-python")
+        except ImportError as e:
+            raise RuntimeError("llama-cpp-python not installed. Run: pip install llama-cpp-python") from e
 
         # Load model if not cached or if path changed
         if _llama_model is None or _llama_model_path != self.model_path:
@@ -1498,7 +1497,7 @@ class LlamaCppRedactionPipeline:
                 )
                 _llama_model_path = self.model_path
             except Exception as e:
-                raise RuntimeError(f"Error loading model: {e}")
+                raise RuntimeError(f"Error loading model: {e}") from e
 
         return _llama_model
 
@@ -1516,7 +1515,7 @@ class LlamaCppRedactionPipeline:
             )
             return response['choices'][0]['text'].strip()
         except Exception as e:
-            raise RuntimeError(f"Error during inference: {e}")
+            raise RuntimeError(f"Error during inference: {e}") from e
 
     def extract_entities(self, text: str, doc_context: DocumentContext) -> List[Entity]:
         """Extract entities using local Llama.cpp model.

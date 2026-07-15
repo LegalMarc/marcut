@@ -757,12 +757,14 @@ _RULE_FILTER_CACHE: Dict[str, Optional[Set[str]]] = {"raw": None, "labels": None
 
 def luhn_ok(s: str) -> bool:
     digits = [int(c) for c in re.sub(r"\D", "", s)]
-    if len(digits) < 13 or len(digits) > 19: return False
+    if len(digits) < 13 or len(digits) > 19:
+        return False
     checksum, parity = 0, len(digits) % 2
     for i, d in enumerate(digits):
         if i % 2 == parity:
             d *= 2
-            if d > 9: d -= 9
+            if d > 9:
+                d -= 9
         checksum += d
     return checksum % 10 == 0
 
