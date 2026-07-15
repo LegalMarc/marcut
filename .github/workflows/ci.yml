@@ -33,10 +33,10 @@ jobs:
           print(f"Version in sync: {py_version}")
           EOF
 
-      - name: Ruff (error-tier lint gate)
+      - name: Ruff (full lint gate)
         run: |
           pip install ruff
-          ruff check --select E9,F63,F7,F82 src/python tests
+          ruff check src/python tests
 
   smoke:
     runs-on: macos-14
@@ -67,3 +67,8 @@ jobs:
           mkdir -p src/swift/MarcutApp/Sources/MarcutApp/Frameworks
           mkdir -p src/swift/MarcutApp/Sources/MarcutApp/python_site
           swift build --package-path src/swift/MarcutApp
+
+      - name: SwiftFormat (lint gate)
+        run: |
+          brew install swiftformat
+          swiftformat --lint src/swift/MarcutApp/Sources src/swift/MarcutApp/Tests
