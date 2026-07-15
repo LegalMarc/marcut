@@ -6,7 +6,6 @@ import os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src', 'python'))
 
 import pytest
-import regex as re
 from marcut import rules
 
 class TestRulesFixes:
@@ -32,7 +31,8 @@ class TestRulesFixes:
         # It looks BEFORE the start index.
         # Let's say "of account number: " is in the window.
         idx = text.find("12345")
-        if idx == -1: pytest.fail("setup error")
+        if idx == -1:
+            pytest.fail("setup error")
         assert rules._looks_like_account_context(text, idx, idx+5)
 
     def test_url_punctuation(self):
@@ -47,7 +47,7 @@ class TestRulesFixes:
         
         text2 = "Contact sample123@example.com."
         spans2 = rules.run_rules(text2)
-        email_spans = [s for s in spans2 if s['label'] == 'EMAIL']
+        [s for s in spans2 if s['label'] == 'EMAIL']
         # Email has its own regex, but URL logic is similar. URL regex matches emails too sometimes?
         # Typically EMAIL label comes from EMAIL regex. URL regex handles "sample123@example.com" too if strict?
         # The fix is for URL regex specifically.

@@ -73,7 +73,6 @@ class TestValidateParameters:
         """Create a temporary DOCX file for testing."""
         # Create a minimal valid DOCX (just the minimal zip structure)
         import zipfile
-        from io import BytesIO
         
         fd, path = tempfile.mkstemp(suffix=".docx")
         os.close(fd)

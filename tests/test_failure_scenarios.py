@@ -14,7 +14,6 @@ These tests cover edge cases that can cause redaction failures, including:
 
 import pytest
 import os
-import io
 import tempfile
 import shutil
 import zipfile
@@ -28,7 +27,7 @@ SAMPLE_DIR = REPO_ROOT / ".marcut_artifacts/ignored-resources" / "sample-files"
 # Check if we're in an environment where marcut is available
 try:
     from marcut.model import ollama_extract, get_ollama_base_url, parse_llm_response
-    from marcut.pipeline import run_redaction, RedactionError
+    from marcut.pipeline import run_redaction
     from marcut.docx_io import DocxMap
     MARCUT_AVAILABLE = True
 except ImportError:
@@ -449,7 +448,7 @@ class TestTrackChangesCorruption:
         try:
             dm = DocxMap.load(str(corrupt_path))
             assert "Test content" in dm.text
-        except Exception as e:
+        except Exception:
             # If it fails, that's also acceptable - we're testing error handling
             pass
 

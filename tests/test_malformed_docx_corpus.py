@@ -56,13 +56,13 @@ class TestMalformedDocxCorpusLoad:
 
     def test_variant_fails_to_load(self, corrupt_variant):
         name, path = corrupt_variant
-        with pytest.raises(Exception):
+        with pytest.raises(Exception):  # noqa: B017 -- corpus variants fail with different exception types by design
             DocxMap.load_accepting_revisions(str(path))
 
     def test_variant_never_hangs_on_load(self, corrupt_variant):
         name, path = corrupt_variant
         start = time.perf_counter()
-        with pytest.raises(Exception):
+        with pytest.raises(Exception):  # noqa: B017 -- corpus variants fail with different exception types by design
             DocxMap.load_accepting_revisions(str(path))
         elapsed = time.perf_counter() - start
         assert elapsed < MAX_FAIL_SECONDS, f"{name}: DocxMap.load took {elapsed:.2f}s -- looks hung"

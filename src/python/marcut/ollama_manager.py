@@ -10,9 +10,7 @@ import json
 import subprocess
 import time
 import requests
-import threading
 import signal
-import hashlib
 from pathlib import Path
 from typing import Optional, Dict, Any, Callable, TextIO
 import logging
@@ -164,7 +162,7 @@ class OllamaManager:
             )
 
             # Wait for service to start
-            for i in range(timeout):
+            for _ in range(timeout):
                 if self.is_service_running():
                     self.is_running = True
                     logger.info(f"Ollama service started (PID: {self.process.pid})")
@@ -340,7 +338,7 @@ class OllamaManager:
                         return percent, None
                     except ValueError:
                         pass
-            except:
+            except Exception:
                 pass
 
         # Handle other status messages
@@ -476,7 +474,7 @@ class OllamaManager:
                 # Try Ollama's own registry first (more reliable for our use case)
                 response = requests.head("https://registry.ollama.ai", timeout=5)
                 health["network_ok"] = response.status_code in [200, 301, 302, 403]
-            except:
+            except Exception:
                 # Network might be down, but that's OK if we have cached models
                 health["network_ok"] = False
                 # Only report as error if we don't have the required model

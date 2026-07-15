@@ -33,8 +33,8 @@ except ImportError:
     PSUTIL_AVAILABLE = False
 
 try:
-    from marcut.cli import main as marcut_main
-    from marcut.pipeline import RedactionError
+    from marcut.cli import main as marcut_main  # noqa: F401 -- import itself is the availability probe
+    from marcut.pipeline import RedactionError  # noqa: F401 -- import itself is the availability probe
 except ImportError as e:
     print(f"❌ Failed to import marcut: {e}")
     print("Please install marcut with: pip install -e .")
@@ -440,9 +440,9 @@ class MarcutTestRunner:
         # Print summary
         print(f"   📊 Comparison: {comparison}")
         if validation.get("expected_corrupt"):
-            print(f"   ⚠️  Expected corrupt sample; validation failures ignored")
+            print("   ⚠️  Expected corrupt sample; validation failures ignored")
         elif validation["automated_checks"] == "pass":
-            print(f"   ✅ Automated validation passed")
+            print("   ✅ Automated validation passed")
         else:
             print(f"   ❌ Automated validation failed: {', '.join(validation['issues'])}")
 
@@ -543,7 +543,7 @@ class MarcutTestRunner:
         if not self.args.test_app_bundle:
             return {"app_bundle_tested": False, "reason": "Not requested"}
 
-        print(f"\n🍎 Testing macOS App Bundle...")
+        print("\n🍎 Testing macOS App Bundle...")
 
         # Import the app bundle tester
         try:
@@ -586,7 +586,7 @@ class MarcutTestRunner:
 
     def run(self):
         """Run the complete test suite"""
-        print(f"🚀 Starting Marcut End-to-End Test Suite")
+        print("🚀 Starting Marcut End-to-End Test Suite")
         print(f"📅 Test Run ID: {self.test_run_id}")
         print(f"📁 Output Directory: {self.output_dir}")
         print(f"🤖 AI Available: {self.ollama_available}")
@@ -613,14 +613,14 @@ class MarcutTestRunner:
             if app_bundle_result.get("app_bundle_tested"):
                 report["app_bundle_test"] = app_bundle_result
 
-            report_path = self.save_test_report(report)
+            self.save_test_report(report)
 
             # Print final summary
             self.print_final_summary(report)
 
             # Check app bundle test success
             if app_bundle_result.get("app_bundle_tested") and not app_bundle_result.get("overall_success", True):
-                print(f"\n❌ App bundle tests failed")
+                print("\n❌ App bundle tests failed")
                 return 1
 
             # Return appropriate exit code
@@ -631,11 +631,11 @@ class MarcutTestRunner:
                 print(f"\n⚠️  {failed_validations} files had validation failures")
                 return 1
 
-            print(f"\n✅ All tests completed successfully!")
+            print("\n✅ All tests completed successfully!")
             return 0
 
         except KeyboardInterrupt:
-            print(f"\n⏹️  Test suite interrupted by user")
+            print("\n⏹️  Test suite interrupted by user")
             return 130
         except Exception as e:
             print(f"\n💥 Test suite failed: {e}")
@@ -648,9 +648,9 @@ class MarcutTestRunner:
         """Print final test summary"""
         summary = report["summary"]
 
-        print(f"\n" + "=" * 60)
-        print(f"📊 FINAL TEST SUMMARY")
-        print(f"=" * 60)
+        print("\n" + "=" * 60)
+        print("📊 FINAL TEST SUMMARY")
+        print("=" * 60)
         print(f"📄 Total Files Tested: {summary['total_files_tested']}")
         if summary.get("expected_corrupt_files"):
             print(f"🧪 Expected Corrupt Samples: {summary['expected_corrupt_files']}")
@@ -661,7 +661,7 @@ class MarcutTestRunner:
         print(f"⏱️  Total Time: {summary['total_processing_time']:.1f}s")
 
         # Print pathway comparisons
-        print(f"\n📈 Pathway Comparisons:")
+        print("\n📈 Pathway Comparisons:")
         comparisons = {}
         for result in self.results:
             comparison = result.get("comparison", "unknown")

@@ -9,7 +9,6 @@ import html
 import mimetypes
 import os
 import plistlib
-import stat
 import subprocess
 from typing import Any, Dict, List, Optional
 

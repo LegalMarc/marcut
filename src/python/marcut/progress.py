@@ -3,7 +3,7 @@ Progress tracking and time estimation for Marcut redaction pipeline.
 """
 
 import time
-from typing import Dict, Any, Callable, Optional
+from typing import Callable, Optional
 from dataclasses import dataclass
 from enum import Enum
 

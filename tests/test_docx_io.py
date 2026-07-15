@@ -159,7 +159,7 @@ class TestSafeFromstring:
     def test_malformed_xml_raises(self):
         """Test that malformed XML raises an error."""
         xml = b"<root><unclosed>"
-        with pytest.raises(Exception):
+        with pytest.raises(Exception):  # noqa: B017 -- exact parser error type is intentionally unspecified
             _safe_fromstring(xml)
 
     def test_xxe_prevention(self):
@@ -191,9 +191,7 @@ class TestCliArgMappings:
 
     def test_all_fields_have_cli_args(self):
         """Test that all MetadataCleaningSettings bool fields have CLI args."""
-        from dataclasses import fields
         settings = MetadataCleaningSettings()
-        setting_fields = {f.name for f in fields(settings) if f.type == bool}
         mapped_fields = set(CLI_ARG_MAP.values())
         
         # All mapped fields should be in settings

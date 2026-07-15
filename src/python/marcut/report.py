@@ -9,7 +9,7 @@ import time
 import os
 from typing import Any, Dict, List, Optional
 
-from .report_common import escape_html, get_base_css
+from .report_common import escape_html
 
 
 def write_json_file(path: str, data: Dict[str, Any]) -> None:
@@ -174,7 +174,6 @@ def _generate_html_audit_report(data: Dict[str, Any], input_path: str, html_path
     spans = data.get('spans', [])
     created_at = data.get('created_at', '')
     model = data.get('model', 'Unknown')
-    input_hash = data.get('input_sha256', '')[:16]
     warnings = data.get('warnings') or []
     suppressed = data.get('suppressed') or []
     

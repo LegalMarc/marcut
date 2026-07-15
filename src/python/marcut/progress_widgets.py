@@ -4,9 +4,7 @@ Enhanced progress UI components with pie charts and phase indicators.
 
 import tkinter as tk
 from tkinter import ttk
-import math
 import time
-from typing import Optional
 
 
 class PieProgressWidget(tk.Canvas):

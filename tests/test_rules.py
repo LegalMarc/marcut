@@ -5,12 +5,9 @@ Tests regex patterns for EMAIL, PHONE, SSN, CURRENCY, DATE, URL, ADDRESS,
 and signature block name extraction.
 """
 
-import pytest
 import os
 from marcut.rules import (
-    run_rules, EMAIL, PHONE, SSN, CURRENCY, DATE, URL, IPV4, ADDRESS,
-    SIGNATURE_NAME, INDIVIDUAL_NAME, luhn_ok, COMPANY_SUFFIX, NUMBER_BRACKET,
-    _is_excluded, _is_generic_org_span, _is_excluded_combo, _is_specific_org_span,
+    run_rules, INDIVIDUAL_NAME, luhn_ok, _is_excluded, _is_generic_org_span, _is_excluded_combo, _is_specific_org_span,
     _trim_org_jurisdiction_suffix
 )
 
@@ -376,15 +373,15 @@ class TestLuhnValidation:
     def test_valid_card(self):
         """Test valid credit card number."""
         # Known valid test card number
-        assert luhn_ok("4532015112830366") == True
+        assert luhn_ok("4532015112830366")
     
     def test_invalid_card(self):
         """Test invalid credit card number."""
-        assert luhn_ok("1234567890123456") == False
+        assert not luhn_ok("1234567890123456")
     
     def test_too_short(self):
         """Test number that's too short."""
-        assert luhn_ok("123456789012") == False  # 12 digits
+        assert not luhn_ok("123456789012")  # 12 digits
 
 
 class TestNumberBracketPattern:
@@ -714,38 +711,38 @@ class TestExclusionHelpers:
     """Test exclusion helper behavior for determiners and plurals."""
 
     def test_is_excluded_strips_determiners(self):
-        assert _is_excluded("The Agreement") == True
-        assert _is_excluded("An Agreement") == True
+        assert _is_excluded("The Agreement")
+        assert _is_excluded("An Agreement")
 
     def test_is_excluded_handles_plural_variants(self):
-        assert _is_excluded("Agreements") == True
-        assert _is_excluded("Agreement(s)") == True
+        assert _is_excluded("Agreements")
+        assert _is_excluded("Agreement(s)")
 
     def test_is_excluded_handles_possessive(self):
         """Issue #41: an excluded term's possessive form must also be excluded --
         e.g. if "Company" is excluded, "Company's" must not slip through and get
         redacted just because the apostrophe-s wasn't stripped before lookup."""
-        assert _is_excluded("Company's") == True
-        assert _is_excluded("Company’s") == True  # curly apostrophe
-        assert _is_excluded("the Company's") == True
-        assert _is_excluded("Companies'") == True  # plural possessive
+        assert _is_excluded("Company's")
+        assert _is_excluded("Company’s")  # curly apostrophe
+        assert _is_excluded("the Company's")
+        assert _is_excluded("Companies'")  # plural possessive
 
     def test_is_excluded_possessive_does_not_overmatch(self):
         """Negative test: possessive stripping must not cause non-excluded terms to be
         treated as excluded."""
-        assert _is_excluded("Acme's") == False
-        assert _is_excluded("Foobar's") == False
+        assert not _is_excluded("Acme's")
+        assert not _is_excluded("Foobar's")
 
     def test_is_excluded_combo_all_tokens(self):
-        assert _is_excluded_combo("Company Parties") == True
-        assert _is_excluded_combo("Sample 123 Parties") == False
+        assert _is_excluded_combo("Company Parties")
+        assert not _is_excluded_combo("Sample 123 Parties")
 
     def test_is_generic_org_with_determiners(self):
-        assert _is_generic_org_span("The Company") == True
-        assert _is_generic_org_span("Certain Company") == True
-        assert _is_generic_org_span("Sample 123 Company") == False
-        assert _is_generic_org_span("TIME USA, LLC") == False
-        assert _is_generic_org_span("Limited Liability Company") == True
+        assert _is_generic_org_span("The Company")
+        assert _is_generic_org_span("Certain Company")
+        assert not _is_generic_org_span("Sample 123 Company")
+        assert not _is_generic_org_span("TIME USA, LLC")
+        assert _is_generic_org_span("Limited Liability Company")
 
 
 class TestDocIdPattern:
@@ -776,11 +773,11 @@ class TestSentenceBoundary:
         from marcut.rules import _contains_sentence_boundary
         
         # Should NOT be boundaries
-        assert _contains_sentence_boundary("U.S. Navy") == False
-        assert _contains_sentence_boundary("Mr. Smith") == False
-        assert _contains_sentence_boundary("St. John") == False
-        assert _contains_sentence_boundary("Inc. A") == False
+        assert not _contains_sentence_boundary("U.S. Navy")
+        assert not _contains_sentence_boundary("Mr. Smith")
+        assert not _contains_sentence_boundary("St. John")
+        assert not _contains_sentence_boundary("Inc. A")
         
         # Should BE boundaries
-        assert _contains_sentence_boundary("End. Start") == True
-        assert _contains_sentence_boundary("Company. Then") == True
+        assert _contains_sentence_boundary("End. Start")
+        assert _contains_sentence_boundary("Company. Then")

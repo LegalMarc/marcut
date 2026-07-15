@@ -7,11 +7,9 @@ import json
 import subprocess
 import threading
 from pathlib import Path
-import tempfile
 import webbrowser
 import http.server
 import socketserver
-from urllib.parse import urlparse, parse_qs
 import time
 
 class SetupServer:
@@ -248,7 +246,8 @@ class SetupServer:
                 pass
         
         # Create handler with setup instance
-        handler = lambda *args, **kwargs: SetupHandler(self, *args, **kwargs)
+        def handler(*args, **kwargs):
+            return SetupHandler(self, *args, **kwargs)
         
         # Start server
         self.server = socketserver.TCPServer(("127.0.0.1", 0), handler)

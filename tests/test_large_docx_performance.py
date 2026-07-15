@@ -3,7 +3,6 @@
 import io
 import json
 import os
-import resource
 import struct
 import subprocess
 import sys
@@ -28,7 +27,6 @@ except Exception:
     IMPORTS_SUCCESS = False
 
 try:
-    from marcut.docx_io import DocxMap, MetadataCleaningSettings
     DOCX_IO_IMPORTS_SUCCESS = True
 except Exception:
     DOCX_IO_IMPORTS_SUCCESS = False
@@ -122,7 +120,7 @@ def _build_synthetic_docx(path: Path) -> None:
     table = doc.add_table(rows=36, cols=4)
     for row_idx, row in enumerate(table.rows):
         row.cells[0].text = f"Row {row_idx}"
-        row.cells[1].text = f"Acme Confidential Holdings LLC"
+        row.cells[1].text = "Acme Confidential Holdings LLC"
         row.cells[2].text = f"Client {row_idx} SSN 123-45-{row_idx % 10000:04d}"
         row.cells[3].text = f"https://example.com/client/{row_idx}"
 

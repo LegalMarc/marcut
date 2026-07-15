@@ -58,10 +58,10 @@ sys.path = clean_path
 if os.environ.get("MARCUT_DEBUG_PATH") == "1":
     print("DEBUG sys.path:", sys.path, file=sys.stderr)
 
-import re
+import re  # noqa: E402 -- must follow the sys.path fixup above
 
 # Import the pipeline with strict package import (no fallbacks)
-import marcut.pipeline as pipeline
+import marcut.pipeline as pipeline  # noqa: E402 -- must resolve against the sys.path fixup above, not the system path
 
 
 def validate_model_name(model: str) -> bool:
@@ -391,7 +391,7 @@ Examples:
 
     # Exit with appropriate code
     if result['success']:
-        print(f"✅ Redaction completed successfully")
+        print("✅ Redaction completed successfully")
         print(f"   Input: {result['input_file']}")
         print(f"   Output: {result['output_file']}")
         print(f"   Report: {result['report_file']}")

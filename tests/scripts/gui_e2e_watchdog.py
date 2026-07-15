@@ -22,7 +22,6 @@ Options:
 
 import argparse
 import json
-import os
 import shutil
 import subprocess
 import sys
@@ -184,7 +183,7 @@ def make_input_docx(default_path: Path) -> Path:
         d.save(tmp)
         return tmp
     except Exception:
-        raise SystemExit('No input docx available and python-docx not importable')
+        raise SystemExit('No input docx available and python-docx not importable') from None
 
 
 def run_one(app_bin: Path, input_path: Path, outdir: Path, mode: str, model: str, timeout_sec: int, backend: str = None) -> bool:
