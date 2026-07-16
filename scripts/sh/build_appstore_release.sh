@@ -1730,7 +1730,12 @@ final_validation() {
     hdiutil verify "${FINAL_DMG}"
 
     if [ "${SKIP_NOTARIZATION:-false}" = "true" ]; then
-        if [ "${MARCUT_ALLOW_NOTARIZATION_SKIP:-}" = "1" ]; then
+        if [ "${APPSTORE_IDENTITY_DETECTED:-false}" = "true" ]; then
+            # App Store builds are structurally exempt from notarization (App
+            # Review substitutes for it), so this isn't the unsafe skip the
+            # override below guards against -- don't demand it here.
+            log_warning "Notarization validation skipped (App Store identity; notarization is not applicable for App Store submissions)"
+        elif [ "${MARCUT_ALLOW_NOTARIZATION_SKIP:-}" = "1" ]; then
             log_warning "Notarization validation skipped (SKIP_NOTARIZATION=true; MARCUT_ALLOW_NOTARIZATION_SKIP=1)"
         else
             log_error "Refusing to skip notarization validation without MARCUT_ALLOW_NOTARIZATION_SKIP=1"
@@ -1770,6 +1775,7 @@ clean_app_logs() {
 main() {
     # Parse command line arguments
     SKIP_NOTARIZATION=false
+    APPSTORE_IDENTITY_DETECTED=false
     for arg in "$@"; do
         case $arg in
             --skip-notarization)
@@ -1817,6 +1823,11 @@ main() {
             log_warning "Skipping notarization for App Store identity."
             log_warning "Use scripts/sh/build_devid_release.sh for direct distribution."
             SKIP_NOTARIZATION=true
+            # Distinguishes this structural, App-Store-exempt skip from an
+            # explicit/unsafe direct-distribution skip, so final_validation
+            # doesn't demand MARCUT_ALLOW_NOTARIZATION_SKIP=1 for a build
+            # that was never notarization-eligible in the first place.
+            APPSTORE_IDENTITY_DETECTED=true
         fi
     fi
 
