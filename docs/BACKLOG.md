@@ -25,8 +25,8 @@ All items originally listed here have shipped. See `docs/CHANGELOG.md` for detai
 **Still open (design spikes exist, not yet implemented — see the referenced docs before starting):**
 
 - **Massive View Controllers**: Split `SettingsView.swift` and `DocumentRedactionViewModel.swift` into smaller, single-responsibility components. See `docs/design/view_controller_decomposition.md` for a responsibility inventory, target structure, and a behavior-parity verification plan (required reading before touching either file — this app's redaction correctness is the reason a blind refactor is out of scope for an unattended pass).
-- **God Module in Python**: Refactor `docx_io.py` into a formal python package. See `docs/design/docx_io_package_split.md` for the same kind of behavior-parity analysis.
-- **Fragile Swift-to-Python Bridge**: Transition away from parsing unstructured JSON state files to a stricter schema. See `docs/design/bridge_schema_migration.md`, which also covers interaction with the cancellation/deadline and transactional-write systems.
+- **God Module in Python**: Refactor `docx_io.py` into a formal python package. See `docs/design/docx_io_package_split.md` for the same kind of behavior-parity analysis. Ticketed as [#70](https://github.com/LegalMarc/marcut/issues/70) (golden-file harness, prereq), [#71](https://github.com/LegalMarc/marcut/issues/71) (scan/hardening characterization tests, prereq for slices 4-5), and slices [#72](https://github.com/LegalMarc/marcut/issues/72)–[#76](https://github.com/LegalMarc/marcut/issues/76).
+- **Fragile Swift-to-Python Bridge**: Transition away from parsing unstructured JSON state files to a stricter schema. See `docs/design/bridge_schema_migration.md`, which also covers interaction with the cancellation/deadline and transactional-write systems. Step 1 (Python report-shape pydantic models) ticketed as [#67](https://github.com/LegalMarc/marcut/issues/67); later steps (Swift `Decodable` readers, return-tuple and progress-callback schemas) remain unticketed.
 
 ## 3. Major New Directions (Innovation)
 
@@ -37,7 +37,7 @@ Each of these has a design-spike doc under `docs/design/` — read the linked do
 - **WebAssembly / Browser Deployment**: Compile the deterministic rules engine to WASM for an in-browser fallback. See `docs/design/wasm_browser_deployment.md` (concludes this would be rules-only and changes the threat model — read before pursuing).
 - **Multi-Model Orchestration Workflow**: Fast first-pass model with escalation to a larger model for low-confidence chunks. See `docs/design/multi_model_orchestration.md`.
 - **Incremental Track-Changes Support**: Diff-only redaction of newly-added paragraphs in a revised document. See `docs/design/incremental_track_changes_redaction.md` — flags a real under-redaction risk that needs a mitigation plan before implementation.
-- **Automated "Redaction Rationale" Reporting**: LLM-generated plain-English explanations in the audit log. See `docs/design/redaction_rationale_reporting.md` (covers how to label LLM-generated rationale as inference, not verified fact).
+- **Automated "Redaction Rationale" Reporting**: LLM-generated plain-English explanations in the audit log. See `docs/design/redaction_rationale_reporting.md` (covers how to label LLM-generated rationale as inference, not verified fact). Ticketed as [#68](https://github.com/LegalMarc/marcut/issues/68) (data layer, opt-in, blocked by #67) and [#69](https://github.com/LegalMarc/marcut/issues/69) (HTML rendering).
 
 ## 4. CI / Infrastructure
 
