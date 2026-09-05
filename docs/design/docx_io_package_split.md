@@ -110,6 +110,14 @@ src/python/marcut/docx/
                           # save()/_postprocess_zip() and delegates the rest
 ```
 
+> **Status (decided in #72):** the package was actually created as
+> `marcut/docx_pkg/`, not `marcut/docx/` as named above -- a same-named
+> sibling of the third-party `python-docx` import (`from docx import
+> Document`) used throughout `docx_io.py` is technically safe under Python
+> 3 absolute imports, but is a readability footgun, so `docx_pkg` was
+> picked instead (see `docx_pkg/__init__.py`). Later slices (#73-#76)
+> should read `docx_pkg/` wherever this section says `docx/`.
+
 Module-boundary rules:
 - `settings.py` has no dependency on `python-docx`, `lxml`, or `zipfile` —
   it is pure configuration and can be unit-tested (and imported by `cli.py`)

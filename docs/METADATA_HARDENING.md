@@ -298,7 +298,7 @@ Available `--no-clean-*` / `--clean-*` override flags include:
 - `--no-clean-exif`, `--no-clean-thumbnails`
 - `--no-clean-ext-links`, `--no-clean-unc-paths`
 - `--no-clean-style-names`, `--no-clean-chart-labels`
-- And more, one pair per entry in `docx_io.py`'s `CLI_ARG_PAIRS` (which backs all 104 settings)
+- And more, one pair per entry in `docx_pkg/settings.py`'s `CLI_ARG_PAIRS` (re-exported by `docx_io.py`; backs all 104 settings)
 
 ## Metadata & Report Size Budgets (T9 Remediation)
 

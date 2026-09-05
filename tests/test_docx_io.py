@@ -224,3 +224,62 @@ class TestPresetNone:
         
         args = settings.to_cli_args()
         assert "--preset-none" in args
+
+
+class TestSettingsModuleBoundary:
+    """Lock the docx_io package-split module-boundary invariant.
+
+    docs/design/docx_io_package_split.md Section 2 requires that
+    ``marcut.docx_pkg.settings`` has no dependency on ``python-docx``,
+    ``lxml``, or ``zipfile`` and is importable without touching a real
+    document. Later slices of the split (#73-#76) must not regress this.
+    """
+
+    HEAVY_MODULES = ("docx", "lxml", "zipfile")
+
+    def test_settings_imports_without_docx_lxml_zipfile(self):
+        """Importing settings in a fresh interpreter loads none of the heavy modules.
+
+        Runs in a subprocess because the pytest process already has
+        ``docx``/``lxml`` loaded via ``marcut.docx_io``.
+        """
+        import json
+        import os
+        import subprocess
+        import sys
+        from pathlib import Path
+
+        import marcut
+
+        src_root = Path(marcut.__file__).resolve().parent.parent
+        env = dict(os.environ)
+        env["PYTHONPATH"] = os.pathsep.join(
+            p for p in (str(src_root), env.get("PYTHONPATH", "")) if p
+        )
+        script = (
+            "import sys, json\n"
+            "import marcut.docx_pkg.settings\n"
+            f"heavy = {self.HEAVY_MODULES!r}\n"
+            "loaded = sorted(m for m in sys.modules "
+            "if m.split('.')[0] in heavy)\n"
+            "print(json.dumps(loaded))\n"
+        )
+        result = subprocess.run(
+            [sys.executable, "-c", script],
+            capture_output=True,
+            text=True,
+            env=env,
+            check=True,
+        )
+        loaded = json.loads(result.stdout.strip())
+        assert loaded == [], (
+            f"marcut.docx_pkg.settings pulled in forbidden modules: {loaded}"
+        )
+
+    def test_docx_io_reexports_are_identical_objects(self):
+        """docx_io re-exports the settings objects, not copies."""
+        import marcut.docx_io as docx_io
+        import marcut.docx_pkg.settings as settings
+
+        assert docx_io.MetadataCleaningSettings is settings.MetadataCleaningSettings
+        assert docx_io.CLI_ARG_PAIRS is settings.CLI_ARG_PAIRS
