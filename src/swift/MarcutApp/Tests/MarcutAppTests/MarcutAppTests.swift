@@ -1473,6 +1473,16 @@ final class MarcutAppTests: XCTestCase {
         XCTAssertTrue(ExcludedWordMatcher.match("Companies", entries: iesEntries).matched)
     }
 
+    func testExcludedWordMatcherMatchesPossessives() {
+        let entries = excludedWordEntries(fromLines: ["Party", "Company"])
+        XCTAssertTrue(ExcludedWordMatcher.match("Company's", entries: entries).matched)
+        XCTAssertTrue(ExcludedWordMatcher.match("Company’s", entries: entries).matched)
+        XCTAssertTrue(ExcludedWordMatcher.match("Companies'", entries: entries).matched)
+        XCTAssertTrue(ExcludedWordMatcher.match("Parties'", entries: entries).matched)
+        XCTAssertTrue(ExcludedWordMatcher.match("the Party's", entries: entries).matched)
+        XCTAssertFalse(ExcludedWordMatcher.match("Acme's", entries: entries).matched)
+    }
+
     func testExcludedWordMatcherSupportsRegexEntries() {
         let entries = excludedWordEntries(fromLines: ["Article [A-Z0-9]+"])
         XCTAssertTrue(ExcludedWordMatcher.match("Article IV", entries: entries).matched)

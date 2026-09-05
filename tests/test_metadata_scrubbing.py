@@ -950,6 +950,41 @@ class TestMetadataScrubReport(unittest.TestCase):
         self.assertIn("groups", report)
         self.assertIn("summary", report)
 
+    @unittest.skipUnless(DOCX_AVAILABLE and IMPORTS_SUCCESS, "python-docx or marcut not available")
+    def test_rewrite_docx_zip_cleans_both_lang_and_form_defaults(self):
+        """Verify clean_language_settings does not short-circuit downstream cleaners like clean_form_defaults."""
+        settings = MetadataCleaningSettings.from_preset("none")
+        settings.clean_language_settings = True
+        settings.clean_form_defaults = True
+        test_docx = os.path.join(self.temp_dir, "test_dual_clean.docx")
+        doc_xml = (
+            b'<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n'
+            b'<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">\n'
+            b'  <w:body>\n'
+            b'    <w:p>\n'
+            b'      <w:r>\n'
+            b'        <w:rPr><w:lang w:val="en-US"/></w:rPr>\n'
+            b'        <w:fldSimple><w:ffData><w:default w:val="secret_default"/></w:ffData></w:fldSimple>\n'
+            b'        <w:t>Hello</w:t>\n'
+            b'      </w:r>\n'
+            b'    </w:p>\n'
+            b'  </w:body>\n'
+            b'</w:document>'
+        )
+        with zipfile.ZipFile(test_docx, "w") as zf:
+            zf.writestr("[Content_Types].xml", '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"/>')
+            zf.writestr("word/document.xml", doc_xml)
+
+        from marcut.docx_io import DocxMap
+        DocxMap._rewrite_docx_zip(None, test_docx, settings)
+
+        with zipfile.ZipFile(test_docx, "r") as zf:
+            cleaned_xml = zf.read("word/document.xml")
+
+        self.assertNotIn(b"w:lang", cleaned_xml)
+        self.assertNotIn(b"secret_default", cleaned_xml)
+
 
 if __name__ == "__main__":
     unittest.main()
+

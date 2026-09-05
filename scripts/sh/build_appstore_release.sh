@@ -1816,18 +1816,18 @@ main() {
     echo -e "${CYAN}║                     Version ${VERSION}                          ║${NC}"
     echo -e "${CYAN}╚══════════════════════════════════════════════════════════════╝${NC}"
 
-    if [ "$SKIP_NOTARIZATION" = false ]; then
-        if [[ "${DEVELOPER_ID}" != "Developer ID Application"* ]]; then
+    if [[ "${DEVELOPER_ID}" != "Developer ID Application"* ]]; then
+        # Distinguishes this structural, App-Store-exempt skip from an
+        # explicit/unsafe direct-distribution skip, so final_validation
+        # doesn't demand MARCUT_ALLOW_NOTARIZATION_SKIP=1 for a build
+        # that was never notarization-eligible in the first place.
+        APPSTORE_IDENTITY_DETECTED=true
+        if [ "$SKIP_NOTARIZATION" = false ]; then
             log_warning "Notarization requires a Developer ID Application certificate."
             log_warning "Current signing identity: ${DEVELOPER_ID}"
             log_warning "Skipping notarization for App Store identity."
             log_warning "Use scripts/sh/build_devid_release.sh for direct distribution."
             SKIP_NOTARIZATION=true
-            # Distinguishes this structural, App-Store-exempt skip from an
-            # explicit/unsafe direct-distribution skip, so final_validation
-            # doesn't demand MARCUT_ALLOW_NOTARIZATION_SKIP=1 for a build
-            # that was never notarization-eligible in the first place.
-            APPSTORE_IDENTITY_DETECTED=true
         fi
     fi
 

@@ -25,6 +25,9 @@ def make_chunks(text, max_len=2500, overlap=200):
     Phase 1 optimization: Documents smaller than SMALL_DOC_THRESHOLD
     are returned as a single chunk to avoid splitting overhead.
     """
+    if max_len <= 0:
+        raise ValueError("max_len must be positive")
+
     # Phase 1: Skip chunking for small documents
     # A document under ~2000 words processes faster in a single LLM call
     # than being split/recombined with overlap redundancy

@@ -185,6 +185,37 @@ These are all the entities."""
 
         assert result['entities'][0]['text'] == 'Test Corp'
 
+    def test_parse_json_array_top_level(self):
+        """Test that a raw top-level JSON array is normalized to a dict with 'entities'."""
+        response = '[{"text": "John Doe", "type": "NAME"}]'
+        result = parse_llm_response(response)
+        assert isinstance(result, dict)
+        assert "entities" in result
+        assert len(result["entities"]) == 1
+        assert result["entities"][0]["text"] == "John Doe"
+
+    def test_parse_json_array_in_code_fence(self):
+        """Test that a top-level JSON array inside a markdown code fence is normalized."""
+        response = '```json\n[{"text": "Acme Inc.", "type": "ORG"}]\n```'
+        result = parse_llm_response(response)
+        assert isinstance(result, dict)
+        assert "entities" in result
+        assert result["entities"][0]["text"] == "Acme Inc."
+
+    def test_parse_json_array_truncated_with_repair(self):
+        """Test tolerant repair for truncated top-level JSON array."""
+        response = '[{"text": "Jane Doe", "type": "NAME"}'
+        result = parse_llm_response(response)
+        assert isinstance(result, dict)
+        assert result["entities"][0]["text"] == "Jane Doe"
+
+    def test_parse_json_primitive_raises(self):
+        """Test that a raw JSON primitive (e.g., number or boolean) raises JSONDecodeError."""
+        response = '```json\n42\n```'
+        with pytest.raises(json.JSONDecodeError):
+            parse_llm_response(response)
+
+
 
 class TestMapLabel:
     """Test label normalization function."""

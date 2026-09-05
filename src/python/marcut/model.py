@@ -197,10 +197,18 @@ def parse_llm_response(response_text: str) -> Dict[str, Any]:
     if code_block_match:
         json_str = code_block_match.group(1).strip()
     else:
-        start = cleaned.find('{')
-        if start == -1:
-            raise json.JSONDecodeError("No JSON object found in response", cleaned, 0)
-        end = cleaned.rfind('}') + 1
+        start_brace = cleaned.find('{')
+        start_bracket = cleaned.find('[')
+        if start_brace == -1 and start_bracket == -1:
+            raise json.JSONDecodeError("No JSON object or array found in response", cleaned, 0)
+
+        if start_bracket != -1 and (start_brace == -1 or start_bracket < start_brace):
+            start = start_bracket
+            end = cleaned.rfind(']') + 1
+        else:
+            start = start_brace
+            end = cleaned.rfind('}') + 1
+
         if end <= start:
             # No closing brace anywhere -- likely generation was cut off
             # before any closer was emitted. Take the rest of the string
@@ -214,7 +222,7 @@ def parse_llm_response(response_text: str) -> Dict[str, Any]:
     json_str = re.sub(r',\s*(\]|\})', r'\1', json_str)
 
     try:
-        return json.loads(json_str)
+        loaded = json.loads(json_str)
     except json.JSONDecodeError as decode_error:
         # Tolerant-repair fallback for truncated JSON (e.g. the response hit
         # a token limit mid-object) before giving up: try to balance
@@ -224,10 +232,17 @@ def parse_llm_response(response_text: str) -> Dict[str, Any]:
         repaired = _repair_unbalanced_json(json_str)
         if repaired is not None:
             try:
-                return json.loads(repaired)
+                loaded = json.loads(repaired)
             except json.JSONDecodeError:
-                pass
-        raise decode_error
+                raise decode_error
+        else:
+            raise decode_error
+
+    if isinstance(loaded, list):
+        return {"entities": loaded}
+    if isinstance(loaded, dict):
+        return loaded
+    raise json.JSONDecodeError("Parsed JSON is not an object or array", json_str, 0)
 
 def llama_cpp_extract(
     model_path: str,

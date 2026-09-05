@@ -429,7 +429,7 @@ DOCID = re.compile(
 _DEFINED_TERM_NAME = re.compile(
     r"""
     (?P<full>[A-Z][A-Za-z'\-\.]+(?:\s+[A-Z][A-Za-z'\-\.]+){1,2})   # Full name (2-3 words)
-    \s*\(\s*["“”](?P<short>[A-Z][A-Za-z'\-\.]+)["”]\s*\)          # Short defined term in quotes
+    \s*\(\s*["“”'‘’](?P<short>[A-Z][A-Za-z'\-\.]+)["“”'‘’]\s*\)          # Short defined term in quotes
     """,
     re.VERBOSE,
 )
@@ -1035,15 +1035,11 @@ def run_rules(text: str) -> List[Dict[str,Any]]:
                             break  # Stop at first non-excluded segment
                     
                     if trim_count > 0:
-                        # Calculate actual prefix length in original text
-                        # Find position of the segment we want to keep
-                        trimmed_text = ", ".join(segments[trim_count:])
                         # Find where this trimmed portion starts in the original sub
                         trim_start = sub.find(segments[trim_count])
                         if trim_start > 0:
                             s = s + trim_start
-                            e = s + len(trimmed_text)
-                            sub = trimmed_text
+                            sub = sub[trim_start:]
                         
                         # Re-check if the trimmed result is now generic
                         if _is_generic_org_span(sub) or _is_excluded(sub):
@@ -1055,43 +1051,46 @@ def run_rules(text: str) -> List[Dict[str,Any]]:
                 })
     
     # Defined-term person fallback: Full Name (“Last”) -> emit both full and short NAME spans
-    for m in _DEFINED_TERM_NAME.finditer(scan_text):
-        full = m.group("full")
-        short = m.group("short")
-        if not full or not short:
-            continue
-        full_tokens = full.split()
-        if not full_tokens:
-            continue
-        full_last = full_tokens[-1].strip(".'-")
-        short_clean = short.strip(".'-")
-        if full_last.lower() != short_clean.lower():
-            continue
+    if _rule_enabled("NAME", selected):
+        for m in _DEFINED_TERM_NAME.finditer(scan_text):
+            full = m.group("full")
+            short = m.group("short")
+            if not full or not short:
+                continue
+            full_tokens = full.split()
+            if not full_tokens:
+                continue
+            full_last = full_tokens[-1].strip(".'-")
+            short_clean = short.strip(".'-")
+            if full_last.lower() != short_clean.lower():
+                continue
 
-        fs, fe = m.span("full")
-        ss, se = m.span("short")
-        try:
-            full_text = text[fs:fe]
-            short_text = text[ss:se]
-        except Exception:
-            continue
+            fs, fe = m.span("full")
+            ss, se = m.span("short")
+            try:
+                full_text = text[fs:fe]
+                short_text = text[ss:se]
+            except Exception:
+                continue
 
-        out.append({
-            "start": fs,
-            "end": fe,
-            "label": "NAME",
-            "confidence": 0.90,
-            "source": "rule_defined_term",
-            "text": full_text,
-        })
-        out.append({
-            "start": ss,
-            "end": se,
-            "label": "NAME",
-            "confidence": 0.88,
-            "source": "rule_defined_term",
-            "text": short_text,
-        })
+            if not _is_excluded(full_text):
+                out.append({
+                    "start": fs,
+                    "end": fe,
+                    "label": "NAME",
+                    "confidence": 0.90,
+                    "source": "rule_defined_term",
+                    "text": full_text,
+                })
+            if not _is_excluded(short_text):
+                out.append({
+                    "start": ss,
+                    "end": se,
+                    "label": "NAME",
+                    "confidence": 0.88,
+                    "source": "rule_defined_term",
+                    "text": short_text,
+                })
 
     if _rule_enabled(SIGNATURE_RULE_LABEL, selected):
         # Special handling for signature block name extraction
@@ -1116,10 +1115,16 @@ def run_rules(text: str) -> List[Dict[str,Any]]:
                     # Find the position of this name in the line
                     name_pos = line_text.find(potential_name, current_pos)
                     if name_pos != -1:
+                        current_pos = name_pos + len(potential_name)
+                        if _is_excluded(potential_name):
+                            continue
+
                         # Calculate absolute position in document
                         absolute_start = line_start + name_pos
                         absolute_end = absolute_start + len(potential_name)
                         original_name = text[absolute_start:absolute_end]
+                        if _is_excluded(original_name):
+                            continue
                         
                         out.append({
                             "start": absolute_start,
@@ -1129,7 +1134,5 @@ def run_rules(text: str) -> List[Dict[str,Any]]:
                             "source": "rule_signature",
                             "text": original_name
                         })
-                        
-                        current_pos = name_pos + len(potential_name)
     
     return out

@@ -241,3 +241,12 @@ class TestOverlapGreaterThanOrEqualMaxLen:
 
         for i in range(len(chunks) - 1):
             assert chunks[i]['end'] - chunks[i + 1]['start'] == 1999
+
+    def test_max_len_non_positive_raises(self):
+        """max_len <= 0 must raise ValueError to prevent infinite loops or invalid chunking."""
+        import pytest
+        with pytest.raises(ValueError, match="max_len must be positive"):
+            make_chunks("Hello world", max_len=0)
+        with pytest.raises(ValueError, match="max_len must be positive"):
+            make_chunks("Hello world", max_len=-10)
+

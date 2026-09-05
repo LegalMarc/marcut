@@ -781,3 +781,57 @@ class TestSentenceBoundary:
         # Should BE boundaries
         assert _contains_sentence_boundary("End. Start")
         assert _contains_sentence_boundary("Company. Then")
+
+
+class TestSignatureLineExclusions:
+    """Test signature block name extraction respects exclusion rules."""
+
+    def test_excluded_corporate_titles_not_emitted(self):
+        text = "Name: Authorized Representative\nTitle: Officer"
+        spans = run_rules(text)
+        names = [s for s in spans if s["label"] == "NAME"]
+        assert names == []
+
+    def test_multiple_names_with_one_excluded_title(self):
+        text = "Name: Authorized Representative    John Smith"
+        spans = run_rules(text)
+        names = [s for s in spans if s["label"] == "NAME"]
+        assert len(names) == 1
+        assert names[0]["text"] == "John Smith"
+        assert text[names[0]["start"]:names[0]["end"]] == "John Smith"
+
+
+class TestDefinedTermPersonFallback:
+    """Test defined-term person name fallback pattern."""
+
+    def test_single_quote_and_curly_quote_variants(self):
+        text = "John Doe ('Doe') entered into the contract with Jane Smith (‘Smith’)."
+        spans = run_rules(text)
+        names = [s for s in spans if s["label"] == "NAME"]
+        name_texts = {s["text"] for s in names}
+        assert "John Doe" in name_texts
+        assert "Doe" in name_texts
+        assert "Jane Smith" in name_texts
+        assert "Smith" in name_texts
+        for s in names:
+            assert text[s["start"]:s["end"]] == s["text"]
+
+    def test_excluded_terms_not_emitted(self):
+        text = "The Company (“Company”) agreed to the terms."
+        spans = run_rules(text)
+        names = [s for s in spans if s["label"] == "NAME"]
+        assert names == []
+
+
+class TestOrgPrefixTrimWhitespacePreservation:
+    """Test that trimming excluded prefix preserves exact character offsets."""
+
+    def test_irregular_whitespace_preserves_text_and_bounds(self):
+        text = "FOR VALUE RECEIVED,   Acme Corp hereby promises to pay."
+        spans = run_rules(text)
+        orgs = [s for s in spans if s["label"] == "ORG"]
+        assert len(orgs) >= 1
+        acme_org = next(s for s in orgs if "Acme" in s["text"])
+        assert acme_org["text"] == "Acme Corp"
+        assert text[acme_org["start"]:acme_org["end"]] == acme_org["text"]
+

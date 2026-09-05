@@ -30,6 +30,9 @@ enum ExcludedWordMatcher {
     /// Python's `text.rstrip(".,;:!?\"'")`.
     private static let trailingPunctuation = CharacterSet(charactersIn: ".,;:!?\"'")
 
+    /// Mirrors Python's `_TRAILING_POSSESSIVE_RE = re.compile(r"['’]s\s*$|['’]\s*$")`.
+    private static let trailingPossessiveRegex = try! NSRegularExpression(pattern: "['’]s\\s*$|['’]\\s*$")
+
     private static let whitespaceRunRegex = try! NSRegularExpression(pattern: "\\s+")
 
     /// A single compiled excluded-word entry: either a literal (already normalized
@@ -134,11 +137,13 @@ enum ExcludedWordMatcher {
     }
 
     /// Normalize a phrase for exclusion comparison: strip leading determiner,
-    /// lowercase, strip trailing punctuation, collapse internal whitespace.
+    /// lowercase, strip trailing possessive, strip trailing punctuation, collapse internal whitespace.
     /// Mirrors `marcut.model._normalize_for_exclusion`.
     static func normalizeForExclusion(_ text: String) -> String {
         var result = stripLeadingDeterminer(text)
         result = result.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let possRange = NSRange(result.startIndex..., in: result)
+        result = trailingPossessiveRegex.stringByReplacingMatches(in: result, options: [], range: possRange, withTemplate: "")
         while let last = result.unicodeScalars.last, trailingPunctuation.contains(last) {
             result.removeLast()
         }
