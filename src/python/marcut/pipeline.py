@@ -23,6 +23,8 @@ from .model_enhanced import (
 from .cluster import ClusterTable
 from .confidence import combine, low_conf
 from .report import write_report, write_json_file, make_private_file
+from .report_schema import ScrubReport, FailureReport
+from pydantic import ValidationError
 import regex as re  # For consistency pass boundaries
 
 # Unicode to ASCII mapping for common document characters
@@ -1602,6 +1604,10 @@ def _finalize_and_write(
                 report_dir=os.path.dirname(scrub_report_path),
                 warnings=warnings,
             )
+            # Validate the in-memory shape before it ever reaches the T7
+            # temp write -- a schema-invalid report must never be staged
+            # for atomic promotion. See report_schema.ScrubReport.
+            ScrubReport.model_validate(report)
             write_json_file(scrub_report_temp_path, report)
 
             # Generate HTML report alongside JSON
@@ -1622,6 +1628,7 @@ def _finalize_and_write(
                     "message": "Scrub report HTML generation failed.",
                     "details": str(html_err)
                 })
+                ScrubReport.model_validate(report)
                 write_json_file(scrub_report_temp_path, report)
 
         # Generate audit report
@@ -1647,6 +1654,13 @@ def _finalize_and_write(
                 warnings=warnings,
                 suppressed=suppressed,
             )
+        except ValidationError:
+            # A schema-invalid audit report must not be reclassified as a
+            # generic "report save" error -- let it fall through to this
+            # function's outer handler below, which cleans up temp
+            # artifacts and raises the existing ARTIFACT_FINALIZE_FAILED
+            # code, same as any other finalize-time failure.
+            raise
         except Exception as e:
             raise RedactionError(
                 message="Failed to write audit report",
@@ -1800,6 +1814,13 @@ def _write_failure_report(report_path: str, input_path: str, error: RedactionErr
         "technical_details": details,
     }
     try:
+        # Validate before the write boundary, same as the audit/scrub
+        # reports. message/technical_details stay free-form str on the
+        # model (see report_schema.FailureReport) so the AI_PROCESSING_TIMEOUT
+        # classifier's "timeout"/"deadline" substring match above keeps
+        # working -- this call must never reject a legitimate deadline
+        # message.
+        FailureReport.model_validate(payload)
         write_json_file(report_path, payload)
     except Exception as report_exc:
         print(f"[MARCUT_PIPELINE] Failed to write error report: {report_exc}")
@@ -4332,6 +4353,9 @@ def metadata_report_only(
                 field["after"] = ""
                 field["status"] = "observed"
 
+        # Validate the in-memory shape before it is written to disk -- see
+        # report_schema.ScrubReport and the analogous check in run_redaction().
+        ScrubReport.model_validate(report)
         write_json_file(report_path, report)
 
         try:

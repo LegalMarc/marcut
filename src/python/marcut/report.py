@@ -10,6 +10,7 @@ import os
 from typing import Any, Dict, List, Optional
 
 from .report_common import escape_html
+from .report_schema import AuditReport
 
 
 def write_json_file(path: str, data: Dict[str, Any]) -> None:
@@ -78,10 +79,15 @@ def write_report(
         data['suppressed'] = suppressed
     if settings is not None:
         data['settings'] = settings
-    
+
+    # Validate the in-memory shape before it ever reaches the write
+    # boundary. A malformed report must fail loudly here in Python, not be
+    # silently guessed at on the Swift side -- see report_schema.py.
+    AuditReport.model_validate(data)
+
     # Write JSON report
     write_json_file(report_path, data)
-    
+
     # Generate HTML report alongside JSON
     try:
         html_path = os.path.splitext(report_path)[0] + '.html'
@@ -94,6 +100,7 @@ def write_report(
             "details": str(e)
         })
         try:
+            AuditReport.model_validate(data)
             write_json_file(report_path, data)
         except Exception:
             pass

@@ -951,6 +951,102 @@ class TestMetadataScrubReport(unittest.TestCase):
         self.assertIn("summary", report)
 
     @unittest.skipUnless(DOCX_AVAILABLE and IMPORTS_SUCCESS, "python-docx or marcut not available")
+    def test_scrub_report_validation_failure_finalizes_as_artifact_finalize_failed(self):
+        """Issue #67: a schema-invalid scrub report (report_schema.ScrubReport)
+        must be caught before the T7 temp write, cleaning up every staged
+        temp artifact and leaving no partial file at any final path -- the
+        same ARTIFACT_FINALIZE_FAILED code the transactional-write path
+        already uses for any other finalize-time failure."""
+        from unittest import mock
+
+        output_docx = os.path.join(self.temp_dir, "scrub_invalid_output.docx")
+        audit_report = os.path.join(self.temp_dir, "scrub_invalid_audit_report.json")
+        scrub_report = os.path.join(self.temp_dir, "scrub_invalid_scrub_report.json")
+        prev_args = os.environ.get("MARCUT_METADATA_ARGS")
+        prev_scrub = os.environ.get("MARCUT_SCRUB_REPORT_PATH")
+        os.environ["MARCUT_METADATA_ARGS"] = ""
+        os.environ["MARCUT_SCRUB_REPORT_PATH"] = scrub_report
+
+        try:
+            captured_error = None
+            try:
+                pipeline.ScrubReport.model_validate({})
+            except Exception as real_validation_error:  # genuine pydantic.ValidationError
+                captured_error = real_validation_error
+            self.assertIsNotNone(captured_error, "expected ScrubReport.model_validate({}) to raise")
+
+            with mock.patch.object(
+                pipeline.ScrubReport, "model_validate", side_effect=captured_error
+            ):
+                code, _timings = pipeline.run_redaction(
+                    input_path=self.input_docx,
+                    output_path=output_docx,
+                    report_path=audit_report,
+                    mode="rules",
+                    model_id="mock",
+                    chunk_tokens=200,
+                    overlap=20,
+                    temperature=0.1,
+                    seed=123,
+                    debug=False,
+                    backend="mock",
+                )
+        finally:
+            if prev_args is None:
+                os.environ.pop("MARCUT_METADATA_ARGS", None)
+            else:
+                os.environ["MARCUT_METADATA_ARGS"] = prev_args
+            if prev_scrub is None:
+                os.environ.pop("MARCUT_SCRUB_REPORT_PATH", None)
+            else:
+                os.environ["MARCUT_SCRUB_REPORT_PATH"] = prev_scrub
+
+        self.assertEqual(code, 2)
+        self.assertFalse(os.path.exists(output_docx))
+        self.assertFalse(os.path.exists(scrub_report))
+        # The failure-report writer targets the original report_path.
+        self.assertTrue(os.path.exists(audit_report))
+        payload = json.loads(open(audit_report, encoding="utf-8").read())
+        self.assertEqual(payload["error_code"], "ARTIFACT_FINALIZE_FAILED")
+        leftover_temps = [
+            name for name in os.listdir(self.temp_dir)
+            if name.startswith(".") and "scrub_invalid" in name
+        ]
+        self.assertEqual(leftover_temps, [])
+
+    @unittest.skipUnless(DOCX_AVAILABLE and IMPORTS_SUCCESS, "python-docx or marcut not available")
+    def test_metadata_report_only_validation_failure_writes_no_file(self):
+        """Issue #67: metadata_report_only() must also validate the scrub-shape
+        report (report_schema.ScrubReport) immediately before its write, and
+        must leave no file at report_path if that validation fails."""
+        from unittest import mock
+
+        report_path = os.path.join(self.temp_dir, "report_only_invalid.json")
+        self.assertFalse(os.path.exists(report_path))
+
+        captured_error = None
+        try:
+            pipeline.ScrubReport.model_validate({})
+        except Exception as real_validation_error:  # genuine pydantic.ValidationError
+            captured_error = real_validation_error
+        self.assertIsNotNone(captured_error, "expected ScrubReport.model_validate({}) to raise")
+
+        with mock.patch.object(
+            pipeline.ScrubReport, "model_validate", side_effect=captured_error
+        ) as mock_validate:
+            success, error, report, json_path, html_path = pipeline.metadata_report_only(
+                self.input_docx, report_path,
+            )
+
+        self.assertEqual(mock_validate.call_count, 1)
+        self.assertFalse(success)
+        self.assertTrue(error)
+        self.assertEqual(report, {})
+        self.assertEqual(json_path, "")
+        self.assertEqual(html_path, "")
+        self.assertFalse(os.path.exists(report_path))
+
+    @unittest.skipUnless(DOCX_AVAILABLE and IMPORTS_SUCCESS, "python-docx or marcut not available")
     def test_rewrite_docx_zip_cleans_both_lang_and_form_defaults(self):
         """Verify clean_language_settings does not short-circuit downstream cleaners like clean_form_defaults."""
         settings = MetadataCleaningSettings.from_preset("none")

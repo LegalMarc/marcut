@@ -1124,6 +1124,69 @@ class TestTransactionalArtifacts:
         assert not report_path.exists()
         assert list(tmp_path.glob(".*.tmp*")) == []
 
+    def test_finalize_cleans_up_and_raises_artifact_finalize_failed_when_audit_report_invalid(
+        self, monkeypatch, tmp_path
+    ):
+        """Issue #67: a schema-invalid audit report (report_schema.AuditReport)
+        must be caught before crossing the T7 temp-write boundary, and must
+        surface as the *existing* ARTIFACT_FINALIZE_FAILED code -- not a new,
+        unclassified error, and not the generic REPORT_SAVE_FAILED code that
+        a plain write failure gets."""
+
+        class FakeDocxMap:
+            warnings = []
+
+            def apply_replacements(self, replacements, track_changes=True):
+                self.replacements = replacements
+
+            def scrub_metadata(self, settings):
+                return None
+
+            def harden_document(self, *args, **kwargs):
+                return None
+
+            def save(self, path):
+                with open(path, "wb") as handle:
+                    handle.write(b"staged docx")
+
+        monkeypatch.setenv("MARCUT_METADATA_ARGS", "--preset-none")
+
+        from marcut import report as report_module
+
+        try:
+            report_module.AuditReport.model_validate({})
+        except Exception as real_validation_error:  # a genuine pydantic.ValidationError
+            captured_error = real_validation_error
+        else:
+            raise AssertionError("expected AuditReport.model_validate({}) to raise")
+
+        monkeypatch.setattr(
+            report_module.AuditReport,
+            "model_validate",
+            classmethod(lambda cls, data: (_ for _ in ()).throw(captured_error)),
+        )
+
+        output_path = tmp_path / "output.docx"
+        report_path = tmp_path / "report.json"
+        input_path = tmp_path / "input.docx"
+        input_path.write_bytes(b"input")
+
+        with pytest.raises(pipeline.RedactionError) as exc_info:
+            pipeline._finalize_and_write(
+                FakeDocxMap(),
+                "John Smith",
+                [{"start": 0, "end": 10, "label": "NAME", "text": "John Smith"}],
+                str(output_path),
+                str(report_path),
+                str(input_path),
+                "mock",
+            )
+
+        assert exc_info.value.error_code == "ARTIFACT_FINALIZE_FAILED"
+        assert not output_path.exists()
+        assert not report_path.exists()
+        assert list(tmp_path.glob(".*.tmp*")) == []
+
 
 class TestSafePrint:
     """Test safe_print Unicode handling."""

@@ -36,6 +36,7 @@ All Python sources live under `src/python/marcut/`, all Swift sources under `src
 - **cancellation.py** - Shared processing-deadline primitive (`ProcessingDeadlineExceeded`, `MARCUT_PROCESSING_DEADLINE_MONOTONIC`)
 - **rules.py** - Rule-based structured PII detection (emails, phones, credit cards, dates, money)
 - **docx_io.py** - Microsoft Word track changes writer, metadata scrubbing/hardening using revision elements
+- **report_schema.py** - Pydantic models (`AuditReport`, `ScrubReport`, `FailureReport`) validated immediately before each on-disk report write; step 1 of the bridge-schema migration (`docs/design/bridge_schema_migration.md`)
 - **model_config.py** - Loader for the shared `models.json` model catalog
 - **gui.py** - Tkinter GUI (still used by `bootstrapper.py`/`native_setup.py`, not the primary macOS app UI)
 - **cli.py** - Command-line interface with `marcut` script entry point

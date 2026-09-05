@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## 2026-09-05
+
+### Fix
+- Validate the three on-disk report shapes (audit, scrub, failure) against new Pydantic models in `report_schema.py` immediately before every write -- including `pipeline.metadata_report_only()`'s read-only scrub report, which the ticket's original diff had missed -- so a schema-invalid report fails loudly in Python instead of reaching the Swift bridge. Step 1 of the bridge-schema migration in `docs/design/bridge_schema_migration.md` (#67).
+
 ## 2026-07-14
 
 ### Feature-complete hardening review (issues #36-#54)
