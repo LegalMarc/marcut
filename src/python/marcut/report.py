@@ -55,7 +55,8 @@ def write_report(
     spans: List[Dict],
     settings: Optional[Dict] = None,
     warnings: Optional[List[Dict]] = None,
-    suppressed: Optional[List[Dict]] = None
+    suppressed: Optional[List[Dict]] = None,
+    json_link_path: Optional[str] = None,
 ):
     """
     Write JSON and HTML audit reports.
@@ -66,6 +67,10 @@ def write_report(
         model: Model identifier used for processing
         spans: List of detected entity spans
         settings: Optional processing settings
+        json_link_path: Final on-disk path of the JSON report, used for the
+            HTML report's "View Raw JSON Data" link. Defaults to
+            ``report_path``; pass the final (post-rename) path when writing
+            to a transactional temp file so the link is not left dangling.
     """
     data = {
         'created_at': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime()),
@@ -91,7 +96,9 @@ def write_report(
     # Generate HTML report alongside JSON
     try:
         html_path = os.path.splitext(report_path)[0] + '.html'
-        _generate_html_audit_report(data, input_path, html_path)
+        _generate_html_audit_report(
+            data, input_path, html_path, json_link_path=json_link_path or report_path
+        )
         make_private_file(html_path)
     except Exception as e:
         data.setdefault("warnings", []).append({
@@ -167,7 +174,12 @@ def _render_file_info_block(title: str, info: Dict[str, Any]) -> str:
 '''
 
 
-def _generate_html_audit_report(data: Dict[str, Any], input_path: str, html_path: str):
+def _generate_html_audit_report(
+    data: Dict[str, Any],
+    input_path: str,
+    html_path: str,
+    json_link_path: Optional[str] = None,
+):
     """
     Generate an interactive HTML report for the redaction audit.
     
@@ -377,7 +389,9 @@ def _generate_html_audit_report(data: Dict[str, Any], input_path: str, html_path
         html += suppressed_html
     
     # Footer and JSON link
-    json_basename = os.path.basename(os.path.splitext(html_path)[0] + '.json')
+    json_basename = os.path.basename(
+        os.path.splitext(json_link_path or html_path)[0] + '.json'
+    )
     html += f'''
     <a href="{escape_html(json_basename)}" class="json-link" target="_blank">
         📄 View Raw JSON Data

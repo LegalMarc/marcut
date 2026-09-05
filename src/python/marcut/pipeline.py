@@ -1602,6 +1602,9 @@ def _finalize_and_write(
                 file_path=output_path,
                 input_path=input_path,
                 input_file_info=scrub_input_file_info,
+                output_file_info=_final_output_file_info(
+                    output_temp_path, output_path
+                ),
                 report_dir=os.path.dirname(scrub_report_path),
                 warnings=warnings,
             )
@@ -1614,7 +1617,10 @@ def _finalize_and_write(
             # Generate HTML report alongside JSON
             try:
                 from .report_html import generate_report_from_json_file
-                html_report_path = generate_report_from_json_file(scrub_report_temp_path)
+                html_report_path = generate_report_from_json_file(
+                    scrub_report_temp_path,
+                    json_link_path=scrub_report_path,
+                )
                 if not html_report_path or not os.path.exists(html_report_path):
                     raise RuntimeError("HTML report generation did not produce a file")
                 make_private_file(html_report_path)
@@ -1654,6 +1660,7 @@ def _finalize_and_write(
                 settings=report_settings,
                 warnings=warnings,
                 suppressed=suppressed,
+                json_link_path=report_path,
             )
         except ValidationError:
             # A schema-invalid audit report must not be reclassified as a
@@ -2279,6 +2286,25 @@ def _safe_report_file_info(path: Optional[str]) -> Dict[str, Any]:
     except Exception:
         pass
 
+    return info
+
+
+def _final_output_file_info(temp_path: str, final_path: str) -> Dict[str, Any]:
+    """Describe the delivered output document.
+
+    The redacted DOCX is written to a transactional temp path and only
+    renamed onto ``final_path`` after every report has been produced, so a
+    report built from ``final_path`` would hash either a stale file or
+    nothing at all. Hash and size the bytes that are actually delivered
+    (the staged temp file), but name them by the path the user receives.
+    """
+    info = _safe_report_file_info(temp_path)
+    naming = _safe_report_file_info(final_path)
+    for key in ("file_name", "file_extension", "mime_type"):
+        if key in naming:
+            info[key] = naming[key]
+        else:
+            info.pop(key, None)
     return info
 
 
@@ -3403,6 +3429,7 @@ def _build_scrub_report(
     file_path: Optional[str] = None,
     input_path: Optional[str] = None,
     input_file_info: Optional[Dict[str, Any]] = None,
+    output_file_info: Optional[Dict[str, Any]] = None,
     report_dir: Optional[str] = None,
     warnings: Optional[List[Dict[str, Any]]] = None,
 ) -> dict:
@@ -3935,7 +3962,9 @@ def _build_scrub_report(
 
     # ========== FILE SUMMARY ==========
     input_file_info = dict(input_file_info or _safe_report_file_info(input_path))
-    output_file_info = _safe_report_file_info(file_path or input_path)
+    output_file_info = dict(
+        output_file_info or _safe_report_file_info(file_path or input_path)
+    )
     report["file_info"] = {
         "input": input_file_info,
         "output": output_file_info,

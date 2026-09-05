@@ -2062,7 +2062,10 @@ def generate_html_report(
     return output_path
 
 
-def generate_report_from_json_file(json_path: str) -> str:
+def generate_report_from_json_file(
+    json_path: str,
+    json_link_path: Optional[str] = None,
+) -> str:
     """
     Generate an HTML report from a JSON scrub report file.
     
@@ -2070,6 +2073,10 @@ def generate_report_from_json_file(json_path: str) -> str:
     
     Args:
         json_path: Path to the JSON scrub report file
+        json_link_path: Final on-disk path the HTML's "View Raw JSON Data"
+            link should point at. Defaults to ``json_path``; pass the final
+            (post-rename) path when rendering from a transactional temp file
+            so the link is not left dangling.
         
     Returns:
         Path to the generated HTML file
@@ -2078,4 +2085,4 @@ def generate_report_from_json_file(json_path: str) -> str:
     report_dir = os.path.dirname(json_path)
     with open(json_path, 'r', encoding='utf-8') as f:
         json_data = json.load(f)
-    return generate_html_report(json_data, json_path, html_path, report_dir)
+    return generate_html_report(json_data, json_link_path or json_path, html_path, report_dir)
