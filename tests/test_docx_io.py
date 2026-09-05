@@ -393,3 +393,70 @@ class TestZipPostprocessModuleBoundary:
         settings = MetadataCleaningSettings.from_preset("none")
         # Must not raise -- self is never touched inside the method body.
         DocxMap._rewrite_docx_zip(None, test_docx, settings)
+
+
+class TestScanModuleBoundary:
+    """Lock the docx_io package-split module-boundary invariant for Slice 4.
+
+    docs/design/docx_io_package_split.md Section 4 (Slice 4) requires that
+    the document scanning/indexing layer live in ``marcut.docx_pkg.scan`` as
+    a ``DocumentIndex`` type composed by ``DocxMap`` in ``__init__``, with
+    ``.text``/``.index``/``.detached_parts`` re-exposed onto ``DocxMap`` for
+    backward compatibility -- the identity-chain analogue of the
+    settings/xml_utils/zip_postprocess re-export tests above.
+    """
+
+    def test_docx_io_reexports_document_index_identical_class(self):
+        """docx_io imports the canonical DocumentIndex class, not a copy."""
+        import marcut.docx_io as docx_io
+        import marcut.docx_pkg.scan as scan
+
+        assert docx_io.DocumentIndex is scan.DocumentIndex
+
+    def test_docxmap_composes_document_index_instance(self, tmp_path):
+        """DocxMap.__init__ constructs a real DocumentIndex and re-exposes
+        its .text/.index/.detached_parts as the *same* objects, not copies."""
+        import docx
+        import marcut.docx_pkg.scan as scan
+        from marcut.docx_io import DocxMap
+
+        src = tmp_path / "scan_identity.docx"
+        doc = docx.Document()
+        doc.add_paragraph("hello world")
+        doc.save(str(src))
+
+        docx_map = DocxMap.load(str(src))
+
+        assert isinstance(docx_map._index, scan.DocumentIndex)
+        assert docx_map.text is docx_map._index.text
+        assert docx_map.index is docx_map._index.index
+        assert docx_map.detached_parts is docx_map._index.detached_parts
+        assert "hello world" in docx_map.text
+
+    def test_iter_part_elements_delegates_to_document_index(self, tmp_path):
+        """DocxMap._iter_part_elements/_iter_part_elements_with_parts are
+        thin delegating methods onto the DocumentIndex instance, not a
+        re-implemented copy -- still called directly by the
+        hardening/revision-writing code pending Slice 5."""
+        import docx
+        from marcut.docx_io import DocxMap
+
+        src = tmp_path / "scan_delegate.docx"
+        doc = docx.Document()
+        doc.add_paragraph("hello world")
+        doc.save(str(src))
+
+        docx_map = DocxMap.load(str(src))
+
+        via_docx_map = list(docx_map._iter_part_elements())
+        via_index = list(docx_map._index._iter_part_elements())
+        assert len(via_docx_map) == len(via_index) > 0
+        assert all(a is b for a, b in zip(via_docx_map, via_index))
+
+        via_docx_map_parts = list(docx_map._iter_part_elements_with_parts())
+        via_index_parts = list(docx_map._index._iter_part_elements_with_parts())
+        assert len(via_docx_map_parts) == len(via_index_parts) > 0
+        assert all(
+            a[0] is b[0] and a[1] is b[1]
+            for a, b in zip(via_docx_map_parts, via_index_parts)
+        )
