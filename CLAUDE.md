@@ -38,6 +38,7 @@ All Python sources live under `src/python/marcut/`, all Swift sources under `src
 - **docx_io.py** - Microsoft Word track changes writer, metadata scrubbing/hardening using revision elements
 - **docx_pkg/settings.py** - CLI/settings configuration surface (`MetadataCleaningSettings`, `CLI_ARG_PAIRS`) split out of `docx_io.py`, which re-exports it for backward compatibility (`docs/design/docx_io_package_split.md`, #72)
 - **docx_pkg/xml_utils.py** - XXE-hardened `_safe_fromstring()` (`resolve_entities=False`) split out of `docx_io.py`, which re-exports it (`docs/design/docx_io_package_split.md`, #73)
+- **docx_pkg/zip_postprocess.py** - Raw ZIP/XML post-processing pass (`rewrite_docx_zip()`): relationship-target sanitization, image EXIF stripping, namespace/element pruning, custom-style renaming, chart-label redaction, `.rels`/`[Content_Types].xml` rewriting, orphaned-part removal; split out of `docx_io.py`'s `_rewrite_docx_zip()`, which keeps a thin delegating method (`docs/design/docx_io_package_split.md`, #74)
 - **report_schema.py** - Pydantic models (`AuditReport`, `ScrubReport`, `FailureReport`) validated immediately before each on-disk report write; step 1 of the bridge-schema migration (`docs/design/bridge_schema_migration.md`)
 - **model_config.py** - Loader for the shared `models.json` model catalog
 - **gui.py** - Tkinter GUI (still used by `bootstrapper.py`/`native_setup.py`, not the primary macOS app UI)

@@ -8,6 +8,7 @@ All notable changes to this project will be documented in this file.
 - Validate the three on-disk report shapes (audit, scrub, failure) against new Pydantic models in `report_schema.py` immediately before every write -- including `pipeline.metadata_report_only()`'s read-only scrub report, which the ticket's original diff had missed -- so a schema-invalid report fails loudly in Python instead of reaching the Swift bridge. Step 1 of the bridge-schema migration in `docs/design/bridge_schema_migration.md` (#67).
 - Extract the CLI/settings configuration surface (`MetadataCleaningSettings`, `CLI_ARG_PAIRS` and friends) out of `docx_io.py` into `docx_pkg/settings.py`, moved verbatim with `docx_io.py` re-exporting the same names for backward compatibility. Slice 1 of the package split in `docs/design/docx_io_package_split.md` (#72).
 - Extract the XXE-hardened `_safe_fromstring()` XML parser out of `docx_io.py` into `docx_pkg/xml_utils.py`, moved verbatim with `docx_io.py` re-exporting the same name for backward compatibility. Slice 2 of the package split in `docs/design/docx_io_package_split.md` (#73).
+- Extract `_rewrite_docx_zip()` and its ~20 nested closures out of `docx_io.py` into `docx_pkg/zip_postprocess.py` as explicit-parameter module-level functions, with `DocxMap._rewrite_docx_zip` kept as a thin delegating method so existing call sites are unaffected. Slice 3 of the package split in `docs/design/docx_io_package_split.md` (#74).
 
 ## 2026-07-14
 

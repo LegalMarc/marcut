@@ -310,3 +310,86 @@ class TestSettingsModuleBoundary:
         except Exception:
             # Failing to parse is also acceptable for XXE prevention
             pass
+
+
+class TestZipPostprocessModuleBoundary:
+    """Lock the docx_io package-split module-boundary invariant for Slice 3.
+
+    docs/design/docx_io_package_split.md Section 2 requires that
+    ``marcut.docx_pkg.zip_postprocess`` never imports ``docx.Document`` --
+    it is a raw bytes/``zipfile``/``lxml`` post-processing pass, distinct
+    from everything that runs on the live ``python-docx`` object tree.
+    """
+
+    def test_zip_postprocess_does_not_import_docx_document(self):
+        """Importing the module in a fresh interpreter never binds ``Document``.
+
+        Runs in a subprocess so the assertion reflects only this module's
+        own imports, not whatever the pytest process already loaded via
+        ``marcut.docx_io``.
+        """
+        import json
+        import os
+        import subprocess
+        import sys
+        from pathlib import Path
+
+        import marcut
+
+        src_root = Path(marcut.__file__).resolve().parent.parent
+        env = dict(os.environ)
+        env["PYTHONPATH"] = os.pathsep.join(
+            p for p in (str(src_root), env.get("PYTHONPATH", "")) if p
+        )
+        script = (
+            "import ast, inspect, json\n"
+            "import marcut.docx_pkg.zip_postprocess as mod\n"
+            "src = inspect.getsource(mod)\n"
+            "tree = ast.parse(src)\n"
+            "names = []\n"
+            "for node in ast.walk(tree):\n"
+            "    if isinstance(node, ast.ImportFrom) and node.module == 'docx':\n"
+            "        names.extend(a.name for a in node.names)\n"
+            "print(json.dumps(names))\n"
+        )
+        result = subprocess.run(
+            [sys.executable, "-c", script],
+            capture_output=True,
+            text=True,
+            env=env,
+            check=True,
+        )
+        imported_from_docx = json.loads(result.stdout.strip())
+        assert "Document" not in imported_from_docx, (
+            f"marcut.docx_pkg.zip_postprocess imports from docx: {imported_from_docx}"
+        )
+
+    def test_docx_io_delegates_to_canonical_rewrite_docx_zip(self):
+        """DocxMap._rewrite_docx_zip calls the canonical module function,
+        not a re-implemented copy -- the identity-chain analogue of the
+        settings/xml_utils re-export tests for a delegating method."""
+        import marcut.docx_io as docx_io
+        import marcut.docx_pkg.zip_postprocess as zip_postprocess
+
+        assert docx_io._rewrite_docx_zip_impl is zip_postprocess.rewrite_docx_zip
+
+    def test_rewrite_docx_zip_callable_unbound_with_self_none(self, tmp_path):
+        """DocxMap._rewrite_docx_zip must stay callable as
+        ``DocxMap._rewrite_docx_zip(None, path, settings)`` (self unused),
+        matching the pattern existing tests
+        (test_metadata_scrubbing.py, test_large_docx_performance.py) rely on."""
+        import zipfile
+
+        from marcut.docx_io import DocxMap
+
+        test_docx = str(tmp_path / "test.docx")
+        with zipfile.ZipFile(test_docx, "w") as zf:
+            zf.writestr(
+                "[Content_Types].xml",
+                '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"/>',
+            )
+            zf.writestr("word/document.xml", "<w:document/>")
+
+        settings = MetadataCleaningSettings.from_preset("none")
+        # Must not raise -- self is never touched inside the method body.
+        DocxMap._rewrite_docx_zip(None, test_docx, settings)

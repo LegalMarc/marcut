@@ -70,7 +70,7 @@ User-provided model names could potentially be passed to subprocesses.
 
 ### Zip Slip Prevention
 
-**Files**: `docx_io.py`, `docx_revisions.py`
+**Files**: `docx_io.py`, `docx_pkg/zip_postprocess.py`, `docx_revisions.py`
 
 Malicious ZIP archives can contain paths like `../../../etc/passwd` to overwrite files outside the extraction directory.
 
