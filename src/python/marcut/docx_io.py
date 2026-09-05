@@ -932,43 +932,38 @@ class DocxMap:
                     if settings.clean_language_settings and name.startswith("word/") and name.endswith(".xml"):
                         try:
                             root = _safe_fromstring(data)
+                            if _remove_lang_elements(root):
+                                data = etree.tostring(root, encoding="UTF-8", xml_declaration=True)
+                                any_change = True
                         except Exception:
-                            zout.writestr(item, data)
-                            continue
-                        if _remove_lang_elements(root):
-                            data = etree.tostring(root, encoding="UTF-8", xml_declaration=True)
-                            any_change = True
-                        zout.writestr(item, data)
-                        continue
+                            pass
 
                     if settings.clean_form_defaults and name.startswith("word/") and name.endswith(".xml"):
                         try:
                             root = _safe_fromstring(data)
+                            if _strip_form_defaults(root):
+                                data = etree.tostring(root, encoding="UTF-8", xml_declaration=True)
+                                any_change = True
                         except Exception:
-                            zout.writestr(item, data)
-                            continue
-                        if _strip_form_defaults(root):
-                            data = etree.tostring(root, encoding="UTF-8", xml_declaration=True)
-                            any_change = True
+                            pass
 
                     if (settings.clean_nonstandard_xml or settings.clean_microsoft_extension_xml or settings.clean_alternate_content) and name.endswith(".xml"):
                         try:
                             root = _safe_fromstring(data)
+                            changed = False
+                            if settings.clean_alternate_content:
+                                changed = _strip_alternate_content(root) or changed
+                            if settings.clean_nonstandard_xml or settings.clean_microsoft_extension_xml:
+                                changed = _strip_nonstandard_elements(
+                                    root,
+                                    remove_unknown=settings.clean_nonstandard_xml,
+                                    remove_ms=settings.clean_microsoft_extension_xml,
+                                ) or changed
+                            if changed:
+                                data = etree.tostring(root, encoding="UTF-8", xml_declaration=True)
+                                any_change = True
                         except Exception:
-                            zout.writestr(item, data)
-                            continue
-                        changed = False
-                        if settings.clean_alternate_content:
-                            changed = _strip_alternate_content(root) or changed
-                        if settings.clean_nonstandard_xml or settings.clean_microsoft_extension_xml:
-                            changed = _strip_nonstandard_elements(
-                                root,
-                                remove_unknown=settings.clean_nonstandard_xml,
-                                remove_ms=settings.clean_microsoft_extension_xml,
-                            ) or changed
-                        if changed:
-                            data = etree.tostring(root, encoding="UTF-8", xml_declaration=True)
-                            any_change = True
+                            pass
 
                     zout.writestr(item, data)
 
