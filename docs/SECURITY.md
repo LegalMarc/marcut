@@ -37,7 +37,7 @@ This section documents the security controls implemented in Marcut.
 
 ### XML External Entity (XXE) Protection
 
-**Files**: `docx_io.py`, `docx_revisions.py`
+**Files**: `docx_pkg/xml_utils.py` (re-exported by `docx_io.py`), `docx_revisions.py`
 
 DOCX files are ZIP archives containing XML. Malicious XML can include external entity declarations that read local files or cause denial of service.
 

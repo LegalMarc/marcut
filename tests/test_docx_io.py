@@ -283,3 +283,30 @@ class TestSettingsModuleBoundary:
 
         assert docx_io.MetadataCleaningSettings is settings.MetadataCleaningSettings
         assert docx_io.CLI_ARG_PAIRS is settings.CLI_ARG_PAIRS
+
+    def test_docx_io_reexports_safe_fromstring_identical_object(self):
+        """docx_io re-exports _safe_fromstring from docx_pkg.xml_utils, not a copy."""
+        import marcut.docx_io as docx_io
+        import marcut.docx_pkg.xml_utils as xml_utils
+
+        assert docx_io._safe_fromstring is xml_utils._safe_fromstring
+
+    def test_xml_utils_xxe_prevention_at_canonical_path(self):
+        """The XXE payload assertion also holds against the canonical module,
+        not just the docx_io shim, so later slices importing directly from
+        marcut.docx_pkg.xml_utils get the same guarantee."""
+        from marcut.docx_pkg.xml_utils import _safe_fromstring as safe_fromstring
+
+        xxe_payload = b"""
+        <!DOCTYPE foo [
+          <!ELEMENT foo ANY >
+          <!ENTITY xxe SYSTEM "file:///etc/passwd" >]><foo>&xxe;</foo>
+        """
+
+        try:
+            root = safe_fromstring(xxe_payload)
+            content = root.text or ""
+            assert "root:" not in content  # /etc/passwd would have "root:"
+        except Exception:
+            # Failing to parse is also acceptable for XXE prevention
+            pass

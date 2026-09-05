@@ -27,12 +27,11 @@ from .docx_pkg.settings import (  # noqa: F401
     MetadataCleaningSettings,
 )
 
-
-def _safe_fromstring(xml_bytes: bytes):
-    """Safe XML parsing that disables entity resolution."""
-    from lxml import etree
-    parser = etree.XMLParser(resolve_entities=False)
-    return etree.fromstring(xml_bytes, parser)
+# _safe_fromstring(), extracted verbatim to marcut/docx_pkg/xml_utils.py
+# (docx_io package split, Slice 2 -- see
+# docs/design/docx_io_package_split.md). Re-exported here so existing
+# `from .docx_io import _safe_fromstring` call sites keep working unchanged.
+from .docx_pkg.xml_utils import _safe_fromstring
 
 
 class DocxMap:
