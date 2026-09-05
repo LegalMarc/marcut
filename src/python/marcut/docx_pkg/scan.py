@@ -11,12 +11,16 @@ flat ``text`` + ``index`` pair (plus any ``detached_parts`` picked up along
 the way) that ``DocxMap.apply_replacements()`` depends on for
 character-offset span lookups.
 
-``DocxMap`` composes a ``DocumentIndex`` in ``__init__`` and re-exposes
-``.text``/``.index``/``.detached_parts`` back onto itself for backward
-compatibility. ``_iter_part_elements``/``_iter_part_elements_with_parts``
-are also called by the hardening/revision-writing code that still lives in
-``docx_io.py`` (Slice 5 moves it), so ``DocxMap`` keeps thin delegating
-methods for those two rather than duplicating them here.
+``DocxMap`` (``docx_pkg/document.py``) composes a ``DocumentIndex`` in
+``__init__`` and re-exposes ``.text``/``.index``/``.detached_parts`` back
+onto itself for backward compatibility. ``_iter_part_elements``/
+``_iter_part_elements_with_parts`` are injected directly into
+``MetadataHardener`` (``hardening.py``) and ``RevisionWriter``
+(``revision_writer.py``) at construction time (Slice 5), which is why
+``DocxMap`` keeps thin delegating methods for those two rather than
+duplicating them here -- they remain part of its public/tested surface
+even though the hardening/revision-writing code no longer routes through
+them.
 """
 
 from typing import Any, Dict, Iterable, List, Tuple

@@ -118,6 +118,20 @@ src/python/marcut/docx/
 > picked instead (see `docx_pkg/__init__.py`). Later slices (#73-#76)
 > should read `docx_pkg/` wherever this section says `docx/`.
 
+> **Status (decided in #76):** `docx_pkg/__init__.py` deliberately does
+> *not* re-export `DocxMap`/`MetadataCleaningSettings`/the `CLI_ARG_*`
+> surface as this section specifies -- doing so would import `.document`
+> (and transitively `python-docx`/`lxml`) as a side effect of importing the
+> `docx_pkg` package at all, which would break the Section 2 invariant
+> (enforced by
+> `tests/test_docx_io.py::TestSettingsModuleBoundary::test_settings_imports_without_docx_lxml_zipfile`)
+> that `marcut.docx_pkg.settings` stays importable without those heavy
+> dependencies. "Import from `marcut.docx_pkg` directly" instead means
+> importing the specific submodule (`from marcut.docx_pkg.document import
+> DocxMap`, `from marcut.docx_pkg.settings import MetadataCleaningSettings`)
+> -- the pattern `pipeline.py`/`cli.py` already use -- or going through
+> `marcut.docx_io`'s backward-compatibility shim.
+
 Module-boundary rules:
 - `settings.py` has no dependency on `python-docx`, `lxml`, or `zipfile` —
   it is pure configuration and can be unit-tested (and imported by `cli.py`)

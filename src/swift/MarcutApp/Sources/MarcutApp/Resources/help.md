@@ -1084,7 +1084,9 @@ Rules-only safety
 - `rules.py`: deterministic regex rules and rule filtering.
 - `model.py`: Ollama/llama.cpp extraction helpers and parsing.
 - `model_enhanced.py`: AI extraction + validation pipeline.
-- `docx_io.py`: DOCX I/O, track changes, metadata scrubbing, and hardening.
+- `docx_pkg/document.py`: `DocxMap`, the DOCX load/save coordinator (`docx_io.py` re-exports it).
+- `docx_pkg/revision_writer.py`: track-changes revision authoring.
+- `docx_pkg/hardening.py`: in-memory metadata scrubbing and hardening.
 - `docx_revisions.py`: acceptance of existing revisions.
 - `report.py`: JSON audit report writer.
 - `chunker.py`: text chunking utilities and small-doc threshold.

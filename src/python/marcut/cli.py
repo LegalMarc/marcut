@@ -6,7 +6,7 @@ import shlex
 from .unified_redactor import run_unified_redaction
 from .preflight import ensure_ollama_ready
 from .progress import create_progress_callback, ProgressUpdate
-from .docx_io import CLI_ARG_PAIRS
+from .docx_pkg.settings import CLI_ARG_PAIRS
 from .model_config import default_model_id, default_temperature, default_skip_confidence
 
 

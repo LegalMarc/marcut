@@ -10,7 +10,8 @@ import tempfile
 import logging
 from dataclasses import fields
 from typing import List, Dict, Any, Tuple, Optional, Callable, TypedDict
-from .docx_io import DocxMap, MetadataCleaningSettings
+from .docx_pkg.document import DocxMap
+from .docx_pkg.settings import MetadataCleaningSettings
 from .docx_revisions import accept_revisions_in_docx_bytes
 from .chunker import make_chunks
 from .rules import run_rules, _is_excluded_combo, _is_excluded, _is_specific_org_span, ADDRESS

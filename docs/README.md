@@ -72,7 +72,7 @@ run_redaction_enhanced(
 - src/python/marcut/model_enhanced.py – enhanced two-pass LLM extractor/validator
 - src/python/marcut/model.py – classic LLM integration
 - src/python/marcut/rules.py – structured PII
-- src/python/marcut/docx_io.py – track changes writer
+- src/python/marcut/docx_pkg/revision_writer.py – track changes writer
 - docs/USER_GUIDE.md – operator instructions
 - docs/DEVELOPER_GUIDE.md – architecture and extension notes
 

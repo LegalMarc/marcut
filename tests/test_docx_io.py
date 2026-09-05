@@ -436,8 +436,10 @@ class TestScanModuleBoundary:
     def test_iter_part_elements_delegates_to_document_index(self, tmp_path):
         """DocxMap._iter_part_elements/_iter_part_elements_with_parts are
         thin delegating methods onto the DocumentIndex instance, not a
-        re-implemented copy -- still called directly by the
-        hardening/revision-writing code pending Slice 5."""
+        re-implemented copy -- kept as part of DocxMap's tested surface
+        even though the hardening/revision-writing code (Slice 5) is
+        injected the DocumentIndex methods directly rather than routing
+        through these delegates."""
         import docx
         from marcut.docx_io import DocxMap
 
@@ -460,3 +462,180 @@ class TestScanModuleBoundary:
             a[0] is b[0] and a[1] is b[1]
             for a, b in zip(via_docx_map_parts, via_index_parts)
         )
+
+
+class TestHardeningRevisionModuleBoundary:
+    """Lock the docx_io package-split module-boundary invariant for Slice 5
+    (docs/design/docx_io_package_split.md Section 4, final slice) -- the
+    identity-chain analogue of the settings/xml_utils/zip_postprocess/scan
+    re-export tests above, for `hardening.py`'s `MetadataHardener`,
+    `revision_writer.py`'s `RevisionWriter`, and `document.py`'s `DocxMap`
+    coordinator.
+    """
+
+    def test_docx_io_reexports_docxmap_identical_class(self):
+        """docx_io imports the canonical DocxMap class, not a copy."""
+        import marcut.docx_io as docx_io
+        import marcut.docx_pkg.document as document
+
+        assert docx_io.DocxMap is document.DocxMap
+
+    def test_docx_io_reexports_metadata_hardener_identical_class(self):
+        import marcut.docx_io as docx_io
+        import marcut.docx_pkg.hardening as hardening
+
+        assert docx_io.MetadataHardener is hardening.MetadataHardener
+
+    def test_docx_io_reexports_revision_writer_identical_class(self):
+        import marcut.docx_io as docx_io
+        import marcut.docx_pkg.revision_writer as revision_writer
+
+        assert docx_io.RevisionWriter is revision_writer.RevisionWriter
+
+    def test_docxmap_composes_hardener_and_revision_writer_instances(self, tmp_path):
+        """DocxMap.__init__ constructs real MetadataHardener/RevisionWriter
+        instances, injected with the DocumentIndex's part-iteration
+        methods and sharing the same `.index`/`.warnings` objects -- not
+        copies."""
+        import docx
+        import marcut.docx_pkg.hardening as hardening
+        import marcut.docx_pkg.revision_writer as revision_writer
+        from marcut.docx_io import DocxMap
+
+        src = tmp_path / "hardening_revision_identity.docx"
+        doc = docx.Document()
+        doc.add_paragraph("hello world")
+        doc.save(str(src))
+
+        docx_map = DocxMap.load(str(src))
+
+        assert isinstance(docx_map._hardening, hardening.MetadataHardener)
+        assert isinstance(docx_map._revisions, revision_writer.RevisionWriter)
+
+        # Injected part-iteration callables resolve to the same DocumentIndex
+        # method, not a re-implemented copy.
+        via_hardener = list(docx_map._hardening._iter_part_elements())
+        via_index = list(docx_map._index._iter_part_elements())
+        assert len(via_hardener) == len(via_index) > 0
+        assert all(a is b for a, b in zip(via_hardener, via_index))
+
+        via_revisions = list(docx_map._revisions._iter_part_elements_with_parts())
+        via_index_parts = list(docx_map._index._iter_part_elements_with_parts())
+        assert len(via_revisions) == len(via_index_parts) > 0
+        assert all(
+            a[0] is b[0] and a[1] is b[1]
+            for a, b in zip(via_revisions, via_index_parts)
+        )
+
+        # Same list objects, not copies -- warnings appended on one are
+        # visible via the other, and the RevisionWriter's index is the
+        # DocxMap/DocumentIndex's own character-offset list.
+        assert docx_map._revisions.index is docx_map.index
+        assert docx_map._hardening.warnings is docx_map.warnings
+        assert docx_map._revisions.warnings is docx_map.warnings
+
+    def test_comment_visibility_map_delegates_to_hardener(self, tmp_path):
+        """DocxMap._comment_visibility_map is a thin delegating method onto
+        the MetadataHardener instance, not a re-implemented copy -- it is
+        called directly in tests
+        (test_docx_io_characterization.py::TestCommentVisibilityMap)."""
+        import docx
+        from marcut.docx_io import DocxMap
+
+        src = tmp_path / "comment_visibility_delegate.docx"
+        doc = docx.Document()
+        doc.add_paragraph("hello world")
+        doc.save(str(src))
+
+        docx_map = DocxMap.load(str(src))
+
+        assert docx_map._comment_visibility_map() == docx_map._hardening._comment_visibility_map()
+
+    def test_apply_replacements_delegates_to_revision_writer(self, tmp_path):
+        """DocxMap.apply_replacements calls the canonical RevisionWriter
+        method, not a re-implemented copy."""
+        import docx
+        from unittest import mock
+
+        from marcut.docx_io import DocxMap
+
+        src = tmp_path / "apply_replacements_delegate.docx"
+        doc = docx.Document()
+        doc.add_paragraph("hello world")
+        doc.save(str(src))
+
+        docx_map = DocxMap.load(str(src))
+        spans = [{"start": 0, "end": 5, "replacement": "[X]"}]
+
+        with mock.patch.object(
+            type(docx_map._revisions), "apply_replacements"
+        ) as apply_replacements:
+            docx_map.apply_replacements(spans, track_changes=False)
+
+        apply_replacements.assert_called_once_with(spans, False)
+
+    def test_harden_document_delegates_to_hardener(self, tmp_path):
+        """DocxMap.harden_document calls the canonical MetadataHardener
+        method, not a re-implemented copy."""
+        import docx
+        from unittest import mock
+
+        from marcut.docx_io import DocxMap, MetadataCleaningSettings
+
+        src = tmp_path / "harden_document_delegate.docx"
+        doc = docx.Document()
+        doc.add_paragraph("hello world")
+        doc.save(str(src))
+
+        docx_map = DocxMap.load(str(src))
+        settings = MetadataCleaningSettings()
+
+        with mock.patch.object(
+            type(docx_map._hardening), "harden_document"
+        ) as harden_document:
+            docx_map.harden_document(scrub_all_images=True, settings=settings)
+
+        harden_document.assert_called_once_with(True, settings)
+
+    def test_author_name_set_after_load_is_live_forwarded_to_revision_writer(
+        self, tmp_path
+    ):
+        """A post-construction assignment to ``DocxMap.author_name`` (as
+        ``pipeline.py`` does after ``load_accepting_revisions()``, see
+        ``run_redaction(redaction_author=...)``) must still control the
+        ``w:author`` stamped on emitted ``w:ins``/``w:del`` elements --
+        ``RevisionWriter`` was constructed with a copy of ``author_name``,
+        not a live reference, so ``DocxMap.author_name`` forwards live
+        rather than being shadowed by the copy."""
+        import zipfile
+
+        import docx
+        from lxml import etree
+
+        from marcut.docx_io import DocxMap
+
+        src = tmp_path / "author_name_live_forward.docx"
+        out = tmp_path / "author_name_live_forward_out.docx"
+        doc = docx.Document()
+        doc.add_paragraph("hello world")
+        doc.save(str(src))
+
+        docx_map = DocxMap.load(str(src))
+        docx_map.author_name = "CustomAuthor"
+        assert docx_map._revisions.author_name == "CustomAuthor"
+
+        spans = [{"start": 0, "end": 5, "replacement": "[X]"}]
+        docx_map.apply_replacements(spans, track_changes=True)
+        docx_map.save(str(out))
+
+        with zipfile.ZipFile(out) as zf:
+            document_xml = zf.read("word/document.xml")
+
+        root = etree.fromstring(document_xml)
+        ns = {"w": "http://schemas.openxmlformats.org/wordprocessingml/2006/main"}
+        authors = {
+            el.get("{%s}author" % ns["w"])
+            for el in root.iter()
+            if el.tag in ("{%s}ins" % ns["w"], "{%s}del" % ns["w"])
+        }
+        assert authors == {"CustomAuthor"}
