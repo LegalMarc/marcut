@@ -1,7 +1,30 @@
 # Design Spike: LLM-Generated Plain-English Redaction Rationale in the Audit Log
 
-Status: Design spike (no code changes). Companion to issue #32, item "Automated
+Status: Data layer shipped under #68 (`MARCUT_GENERATE_RATIONALE`, off by
+default -- `rationale.py`, `SpanRationale` in `report_schema.py`,
+`pipeline._annotate_missing_rationale`/`_canonicalize_cluster_rationale`/
+`_sanitize_cross_referenced_rationale`); HTML report rendering is still
+pending, tracked as #69. Companion to issue #32, item "Automated
 'Redaction Rationale' Reporting" in `backlog.md`'s "Major New Directions" section.
+Three resolutions recorded from the #68 review, against the mitigation
+numbering below (the ticket's #1/#2/#3 are this doc's #3/#4/#5):
+(a) Mixed clusters resolve #3 over #4 -- where one `ClusterTable` entity_id
+mixes LLM-path mentions with rule-like ones (`consistency_pass*`/`defined_term`
+re-matches of an LLM-found NAME/ORG), the rule-like mentions keep their
+`rule_deterministic` template and cluster-level canonicalization runs only
+among the LLM-path mentions, so an LLM rationale is never copied onto a span
+the LLM never saw. (b) Placeholder-only cross-referencing (`[LABEL_N]`, #5)
+is infeasible at validation time: entity_ids are assigned in
+`_finalize_and_write`, after batch validation has already run, so no
+placeholder exists when the prompt is built; the shipped prompt therefore
+asks for generic references ("the counterparty") instead, backed by the two
+Python leak checks (`rationale.rationale_mentions_text`, applied once per
+batch in `model_enhanced.ollama_validate_batch` and once per document in
+`_sanitize_cross_referenced_rationale`). (c) `rationale_generation.mode` is
+`validation_extended` only for an Ollama-backed LLM run; a llama.cpp/GGUF
+run reports `unsupported_backend` (`LlamaCppRedactionPipeline`'s validation
+path was not extended, so its LLM spans are all `unavailable`), and a
+rules-only run reports `rule_deterministic_only`.
 
 ## Goal
 

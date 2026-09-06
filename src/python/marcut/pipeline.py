@@ -9,7 +9,7 @@ import os
 import tempfile
 import logging
 from dataclasses import fields
-from typing import List, Dict, Any, Tuple, Optional, Callable, TypedDict
+from typing import List, Dict, Any, Tuple, Optional, Callable, TypedDict, Set
 from .docx_pkg.document import DocxMap
 from .docx_pkg.settings import MetadataCleaningSettings
 from .docx_revisions import accept_revisions_in_docx_bytes
@@ -25,6 +25,14 @@ from .cluster import ClusterTable
 from .confidence import combine, low_conf
 from .report import write_report, write_json_file, make_private_file
 from .report_schema import ScrubReport, FailureReport
+from .rationale import (
+    RationaleOrigin,
+    compile_leak_scanner,
+    is_rule_like_source,
+    rationale_mentions_text,
+    rule_deterministic_rationale_text,
+    scan_leaked_texts,
+)
 from pydantic import ValidationError
 import regex as re  # For consistency pass boundaries
 
@@ -207,6 +215,17 @@ def _merge_overlaps(spans: List[Dict[str,Any]], text: str) -> List[Dict[str,Any]
                 # Also adopt its source if present?
                 if "source" in sp:
                     last["source"] = sp["source"]
+                # `rationale` describes the mechanism named by `source` (see
+                # `_annotate_missing_rationale`), so it must move with it --
+                # otherwise a surviving span can end up with e.g.
+                # source="rule" but an adopted llm_validation rationale dict
+                # (or vice versa) attributing the redaction to the wrong
+                # mechanism. Carry it if the winning span has one, else drop
+                # any stale rationale so it gets re-annotated from scratch.
+                if "rationale" in sp:
+                    last["rationale"] = sp["rationale"]
+                else:
+                    last.pop("rationale", None)
 
             # Update text to cover thefull merged range
             if text:
@@ -1209,6 +1228,7 @@ def _build_report_settings(
     temperature: float,
     seed: int,
     llm_skip_confidence: float,
+    llama_gguf: str = "",
 ) -> Dict[str, Any]:
     settings = {
         "mode": mode,
@@ -1222,6 +1242,27 @@ def _build_report_settings(
         "llm_skip_confidence": llm_skip_confidence,
         "llm_skip_confidence_percent": int(round(llm_skip_confidence * 100)),
     }
+    if llama_gguf:
+        # `--llama-gguf` overrides `model_id` for dispatch (see
+        # `_collect_enhanced_spans`: `model_path = llama_gguf or model_id`)
+        # even when `--backend` is left at its "ollama" default. Record it so
+        # `_finalize_and_write`'s rationale-mode decision sees the same
+        # effective model the run actually used (#68 round-3 finding 2).
+        # Basename only: an absolute GGUF path would put the operator's
+        # home directory and username into an artifact that travels with
+        # the document (#68 round-7 finding). Narrow by design -- this
+        # closes the path this feature introduced, and does NOT claim the
+        # report is path-free overall: `settings["model"]` and the
+        # llama.cpp span `source` can still carry absolute paths from
+        # before this change. Removing those is its own ticket.
+        settings["llama_gguf"] = os.path.basename(llama_gguf)
+        # Basenaming is a privacy measure, so the report must NOT re-derive
+        # dispatch from the truncated value: "/Users/alice/models/qwen2.5"
+        # basenames to "qwen2.5", losing both the leading "/" and any
+        # ".gguf" suffix that `_uses_llama_cpp_backend` keys on, which would
+        # make a llama.cpp run claim "validation_extended" (#68 round-8
+        # finding). Record the decision itself, taken from the full path.
+        settings["llama_cpp_dispatch"] = _uses_llama_cpp_backend(backend, llama_gguf)
 
     advanced_enabled = os.environ.get("MARCUT_ADVANCED_MODE_ENABLED")
     if advanced_enabled is not None:
@@ -1402,6 +1443,197 @@ def _drop_invalid_spans(
     return valid
 
 
+# --- Redaction-rationale reporting (issue #68) ------------------------------
+#
+# The three functions below run only when MARCUT_GENERATE_RATIONALE is
+# enabled (see _finalize_and_write), after every span has its final
+# entity_id assigned. Order matters: annotate first (so every span has
+# *some* rationale object to work with), then canonicalize per cluster
+# (mitigation #2), then sanitize the now-canonical text for cross-entity
+# leaks (mitigation #3) so a leak is only ever checked/fixed once per
+# cluster rather than once per raw mention.
+
+def _annotate_missing_rationale(spans: List[Dict[str, Any]]) -> None:
+    """Ensure every span carries a proper ``{text, origin}`` rationale object.
+
+    `model_enhanced.py`'s Ollama batch-validation path already attaches a
+    real ``llm_validation``/``unavailable`` rationale to the spans it
+    produces when this feature is enabled. This fills in everything else:
+    rule-matched spans (mitigation #1 -- template text only, never routed
+    through an LLM) and any other span the LLM path never annotated at all
+    (e.g. it was never sent to validation, or came from the llama.cpp
+    backend, which this issue does not extend). A non-dict ``rationale``
+    value (the llama.cpp path's plain extraction-time string) is treated as
+    absent and replaced, since it is not a real rationale record.
+
+    ``is_rule_like_source`` is authoritative here: a rule-like span always
+    gets the ``rule_deterministic`` template, even if it already carries a
+    dict rationale (e.g. a stray ``llm_validation`` dict that survived
+    ``_merge_overlaps`` picking a rule span's identity over an LLM span's, or
+    any other future path that could attach a mismatched rationale before
+    this pass runs). Mitigation #1 is about ``source``, not about whether a
+    rationale happens to be present yet.
+    """
+    for sp in spans:
+        source = sp.get("source", "")
+        label = sp.get("label", "")
+        if is_rule_like_source(source):
+            sp["rationale"] = {
+                "text": rule_deterministic_rationale_text(label, source),
+                "origin": RationaleOrigin.RULE_DETERMINISTIC.value,
+            }
+            continue
+        if isinstance(sp.get("rationale"), dict):
+            continue
+        sp["rationale"] = {
+            "text": "No rationale was generated for this entity.",
+            "origin": RationaleOrigin.UNAVAILABLE.value,
+        }
+
+
+_RATIONALE_ORIGIN_RANK = {
+    RationaleOrigin.LLM_VALIDATION.value: 0,
+    RationaleOrigin.RULE_DETERMINISTIC.value: 1,
+    RationaleOrigin.UNAVAILABLE.value: 2,
+}
+
+
+def _canonicalize_cluster_rationale(spans: List[Dict[str, Any]]) -> None:
+    """One rationale per stable ``entity_id``, not per raw span mention.
+
+    Mitigation #2: different mentions of the same clustered entity
+    (`ClusterTable`) can be validated independently and receive different,
+    possibly contradictory rationale text. Pick a single canonical
+    rationale per entity_id -- preferring a genuine llm_validation
+    explanation (highest confidence first), then a rule_deterministic
+    template, then unavailable -- and apply it to every span sharing that
+    entity_id so a reviewer never sees two different explanations for
+    "the same" redacted entity.
+
+    Mixed clusters resolve #1 over #2. A cluster routinely mixes LLM-path
+    mentions with rule-like ones (`consistency_pass*`/`defined_term`
+    re-matches of an LLM-found NAME/ORG share its entity_id). Those
+    rule-like spans are excluded from canonicalization entirely: they keep
+    the ``rule_deterministic`` template `_annotate_missing_rationale` gave
+    them, because copying the LLM's rationale onto a span the LLM never
+    saw is exactly the wrong-mechanism attribution mitigation #1 forbids.
+    Canonicalization therefore runs only among the remaining (LLM-path)
+    spans of each entity_id.
+
+    Note what this deliberately does NOT promise: within those LLM-path
+    spans, a mention that `needs_validation()` skipped still receives the
+    cluster's canonical rationale (and its `model` attribution). That is
+    the design doc's explicit instruction -- "one rationale per stable
+    entity ID, from its first/highest-confidence validated mention" (MVP
+    item 3, closing failure mode 3) -- because per-span rationale is what
+    produces contradictory text across mentions of one entity. The origin
+    describes where the rationale TEXT came from (a real validation call
+    about this entity), not a claim that every mention was independently
+    validated.
+    """
+    groups: Dict[str, List[Dict[str, Any]]] = {}
+    for sp in spans:
+        eid = sp.get("entity_id")
+        if not eid or not isinstance(sp.get("rationale"), dict):
+            continue
+        if is_rule_like_source(sp.get("source")):
+            continue
+        groups.setdefault(eid, []).append(sp)
+
+    for group in groups.values():
+        if len(group) <= 1:
+            continue
+
+        def _rank(sp: Dict[str, Any]) -> Tuple[int, float]:
+            origin = sp["rationale"].get("origin")
+            return (_RATIONALE_ORIGIN_RANK.get(origin, 3), -float(sp.get("confidence") or 0.0))
+
+        canonical = min(group, key=_rank)["rationale"]
+        for sp in group:
+            sp["rationale"] = canonical
+
+
+def _sanitize_cross_referenced_rationale(spans: List[Dict[str, Any]]) -> None:
+    """Discard any llm_validation rationale that restates another entity's
+    literal text (mitigation #5 in the design doc's numbering; #3 in the
+    ticket's -- "placeholder-only cross-referencing"). This is the
+    full-document backstop: `model_enhanced.ollama_validate_batch` already
+    checks this within a single validation batch, but different mentions
+    can be validated in different batches, so the check is repeated here
+    once per canonical (post-clustering) rationale, against every other
+    entity_id's known literal text in the whole document.
+    """
+    texts_by_entity: Dict[str, Set[str]] = {}
+    for sp in spans:
+        eid = sp.get("entity_id")
+        text_value = (sp.get("text") or "").strip()
+        if eid and text_value:
+            texts_by_entity.setdefault(eid, set()).add(text_value)
+
+    # One compile for the whole document, plus a reverse index from matched
+    # text to the entity_ids that own it, so each rationale is scanned once
+    # instead of re-compiling an alternation per rationale.
+    # Nothing to sanitize unless at least one model-authored rationale
+    # exists; a rules-only run with the flag on would otherwise pay to
+    # compile a scanner it can never use (#68 round-6 finding).
+    if not any(
+        isinstance(sp.get("rationale"), dict)
+        and sp["rationale"].get("origin") == RationaleOrigin.LLM_VALIDATION.value
+        for sp in spans
+    ):
+        return
+
+    entity_ids_by_text: Dict[str, Set[str]] = {}
+    for eid, entity_texts in texts_by_entity.items():
+        for text_value in entity_texts:
+            entity_ids_by_text.setdefault(text_value.lower(), set()).add(eid)
+    scanner = compile_leak_scanner(entity_ids_by_text.keys())
+
+    checked_rationale_ids: Set[int] = set()
+    for sp in spans:
+        rationale = sp.get("rationale")
+        if not isinstance(rationale, dict):
+            continue
+        if rationale.get("origin") != RationaleOrigin.LLM_VALIDATION.value:
+            continue
+        if id(rationale) in checked_rationale_ids:
+            continue
+        checked_rationale_ids.add(id(rationale))
+
+        own_eid = sp.get("entity_id")
+        own_text_forms = {t.lower() for t in texts_by_entity.get(own_eid or "", set())}
+
+        # Ownership alone decides this. The scanner prefers the LONGEST
+        # candidate at any position, so an entity naming its own full text
+        # ("Acme Corp Ltd") matches its own entry rather than a shorter
+        # cluster-mate's, and `eid != own_eid` is then False. An earlier
+        # "is it a substring of my own text" shortcut was both redundant
+        # with this and actively harmful: it let ORG "Smith Holdings LLC"
+        # keep a rationale naming the distinct person NAME "Smith"
+        # (#68 round-6 finding).
+        leaked = False
+        for matched in scan_leaked_texts(scanner, rationale.get("text") or ""):
+            # Naming one of THIS entity's own literal forms is explicitly
+            # allowed, even when a different entity_id happens to share the
+            # same literal ("Springfield" as both a NAME and a LOC): the
+            # entity is naming itself, which the prompt permits. This is
+            # exact-form ownership, not the substring shortcut that opened
+            # the round-6 hole (#68 round-7 finding).
+            if matched in own_text_forms:
+                continue
+            if any(eid != own_eid for eid in entity_ids_by_text.get(matched, ())):
+                leaked = True
+                break
+
+        if leaked:
+            rationale["text"] = (
+                "Rationale withheld: the model's explanation referenced "
+                "another entity's literal text."
+            )
+            rationale["origin"] = RationaleOrigin.UNAVAILABLE.value
+            rationale.pop("model", None)
+
+
 def _finalize_and_write(
     dm: DocxMap,
     text: str,
@@ -1420,6 +1652,12 @@ def _finalize_and_write(
         warnings = []
     if suppressed is None:
         suppressed = []
+
+    # Redaction-rationale reporting (issue #68), opt-in and off by default.
+    # Disabling this must leave spans/decisions byte-identical to today's
+    # output (mitigation #5) -- every rationale-related line below is
+    # gated on this single flag for exactly that reason.
+    generate_rationale = _metadata_env_enabled("MARCUT_GENERATE_RATIONALE")
 
     # Defense-in-depth guard (A5): never let a span with corrupted offsets
     # or drifted text reach dm.apply_replacements() below. See
@@ -1451,6 +1689,11 @@ def _finalize_and_write(
 
             seq_id = entity_counters[label][entity_text]
             sp["entity_id"] = f"{label}_{seq_id}"
+
+    if generate_rationale:
+        _annotate_missing_rationale(spans)
+        _canonicalize_cluster_rationale(spans)
+        _sanitize_cross_referenced_rationale(spans)
 
     # Create replacements
     replacements = []
@@ -1639,17 +1882,64 @@ def _finalize_and_write(
                 write_json_file(scrub_report_temp_path, report)
 
         # Generate audit report
-        audit = [{
-            "start": sp["start"],
-            "end": sp["end"],
-            "label": sp["label"],
-            "entity_id": sp.get("entity_id"),
-            "confidence": sp.get("confidence", 0.0),
-            "source": sp.get("source", ""),
-            "text": sp.get("text", "")[:120],
-            "validated": sp.get("validated"),
-            "validation_result": sp.get("validation_result")
-        } for sp in spans]
+        audit = []
+        for sp in spans:
+            entry = {
+                "start": sp["start"],
+                "end": sp["end"],
+                "label": sp["label"],
+                "entity_id": sp.get("entity_id"),
+                "confidence": sp.get("confidence", 0.0),
+                "source": sp.get("source", ""),
+                "text": sp.get("text", "")[:120],
+                "validated": sp.get("validated"),
+                "validation_result": sp.get("validation_result"),
+            }
+            # Only ever set when MARCUT_GENERATE_RATIONALE is enabled (see
+            # the annotate/canonicalize/sanitize calls above) -- disabled
+            # runs must never add this key (mitigation #5, byte-identical
+            # spans when off).
+            if isinstance(sp.get("rationale"), dict):
+                entry["rationale"] = sp["rationale"]
+            audit.append(entry)
+
+        # Report-level disclosure of whether/how rationale was generated for
+        # this run (issue #68 mitigation #7) -- always present, even
+        # disabled, so a report unambiguously distinguishes "not requested"
+        # from "requested and failed for every span".
+        if generate_rationale:
+            run_settings = report_settings or {}
+            run_mode = run_settings.get("mode")
+            if run_mode not in {"rules_override", "constrained_overrides", "llm_overrides"}:
+                # No LLM ran at all: only rule templates were ever possible.
+                rationale_mode = "rule_deterministic_only"
+            elif run_settings.get("llama_cpp_dispatch") or _uses_llama_cpp_backend(
+                run_settings.get("backend") or "",
+                # Fallback for settings dicts built without the explicit
+                # flag above (older callers/tests). Same precedence as
+                # `_collect_enhanced_spans`' dispatch.
+                run_settings.get("llama_gguf") or run_settings.get("model") or "",
+            ):
+                # An LLM ran, but only the Ollama validation path was
+                # extended for rationale (`LlamaCppRedactionPipeline` was
+                # not), so every LLM span is `unavailable` by construction.
+                # Say so, rather than claim "validation_extended" and leave
+                # the report reading as "requested and silently failed".
+                rationale_mode = "unsupported_backend"
+            else:
+                rationale_mode = "validation_extended"
+            rationale_generation = {
+                "enabled": True,
+                # Only name a model when one actually authored rationale.
+                # A rules-only run still carries a model_id ("qwen2.5:14b"
+                # by default), and reporting it here would attribute
+                # template strings to a model that never executed
+                # (#68 round-4 finding).
+                "model": model_info if rationale_mode == "validation_extended" else None,
+                "mode": rationale_mode,
+            }
+        else:
+            rationale_generation = {"enabled": False, "model": None, "mode": None}
 
         try:
             write_report(
@@ -1661,6 +1951,7 @@ def _finalize_and_write(
                 warnings=warnings,
                 suppressed=suppressed,
                 json_link_path=report_path,
+                rationale_generation=rationale_generation,
             )
         except ValidationError:
             # A schema-invalid audit report must not be reclassified as a
@@ -1709,6 +2000,18 @@ def _collect_rule_spans(text: str, debug: bool) -> List[Dict[str, Any]]:
     return rule_spans
 
 
+def _uses_llama_cpp_backend(backend: str, model_path: str) -> bool:
+    """Single definition of "this run goes through `LlamaCppRedactionPipeline`
+    rather than Ollama": an explicit backend, a GGUF file, or an absolute
+    model path. Used by `_collect_enhanced_spans` to dispatch and by
+    `_finalize_and_write` to report `rationale_generation.mode` honestly."""
+    return (
+        backend == "llama_cpp"
+        or model_path.endswith(".gguf")
+        or ("/" in model_path and model_path.startswith("/"))
+    )
+
+
 def _collect_enhanced_spans(
     text: str,
     model_id: str,
@@ -1741,7 +2044,7 @@ def _collect_enhanced_spans(
     chunks = make_chunks(text, max_len=chunk_tokens * 4, overlap=overlap * 4)
 
     model_path = llama_gguf or model_id
-    if backend == "llama_cpp" or model_path.endswith(".gguf") or ("/" in model_path and model_path.startswith("/")):
+    if _uses_llama_cpp_backend(backend, model_path):
         if debug:
             print(f"Using LlamaCpp backend with model: {model_path}")
         pipeline = LlamaCppRedactionPipeline(
@@ -1770,6 +2073,12 @@ def _collect_enhanced_spans(
             suppressed=suppressed,
             think_mode=think_mode,
             format_schema=format_schema,
+            # Opt-in, off by default (issue #68) -- see
+            # _finalize_and_write's matching read of the same env var,
+            # which annotates/canonicalizes rationale for every span
+            # (including rule-matched ones) once the LLM path has attached
+            # its own llm_validation rationale here.
+            generate_rationale=_metadata_env_enabled("MARCUT_GENERATE_RATIONALE"),
         )
 
     if debug:
@@ -1926,6 +2235,7 @@ def run_redaction(
             temperature=temperature,
             seed=seed,
             llm_skip_confidence=llm_skip_confidence,
+            llama_gguf=llama_gguf,
         )
 
         # Enhanced error handling for document loading

@@ -13,7 +13,7 @@ Covers issue #67's acceptance criteria:
 import pytest
 from pydantic import ValidationError
 
-from marcut.report_schema import AuditReport, ScrubReport, FailureReport
+from marcut.report_schema import AuditReport, ScrubReport, FailureReport, SpanRationale
 
 
 VALID_AUDIT = {
@@ -66,6 +66,92 @@ class TestAuditReportSchema:
             settings={"mode": "enhanced"},
         )
         AuditReport.model_validate(full)  # must not raise
+
+
+class TestSpanRationaleSchema:
+    """Issue #68's rationale field: {text, origin, model?} on every span,
+    with `origin` mandatory and enum-constrained -- see
+    docs/design/redaction_rationale_reporting.md's mitigation #1."""
+
+    def test_valid_llm_validation_rationale_round_trips(self):
+        span = {
+            "start": 0, "end": 4, "label": "NAME",
+            "rationale": {
+                "text": "This is the name of a specific individual.",
+                "origin": "llm_validation",
+                "model": "qwen2.5:14b",
+            },
+        }
+        model = AuditReport.model_validate(dict(VALID_AUDIT, spans=[span]))
+        assert model.spans[0]["rationale"]["origin"] == "llm_validation"
+
+    def test_valid_rule_deterministic_rationale_without_model_field(self):
+        """A rule has no model -- `model` is optional and normally omitted
+        for rule_deterministic/unavailable origins."""
+        span = {
+            "start": 0, "end": 4, "label": "SSN",
+            "rationale": {
+                "text": "Matched a deterministic SSN detection rule.",
+                "origin": "rule_deterministic",
+            },
+        }
+        AuditReport.model_validate(dict(VALID_AUDIT, spans=[span]))  # must not raise
+
+    def test_valid_unavailable_rationale(self):
+        span = {
+            "start": 0, "end": 4, "label": "ORG",
+            "rationale": {"text": "No rationale was generated for this entity.", "origin": "unavailable"},
+        }
+        AuditReport.model_validate(dict(VALID_AUDIT, spans=[span]))  # must not raise
+
+    def test_rationale_missing_origin_is_rejected(self):
+        """Acceptance criterion: the pydantic model must reject a rationale
+        object missing `origin` -- `unavailable` must be stated explicitly,
+        never implied by omitting the field."""
+        span = {"start": 0, "end": 4, "label": "NAME", "rationale": {"text": "some text"}}
+        with pytest.raises(ValidationError):
+            AuditReport.model_validate(dict(VALID_AUDIT, spans=[span]))
+
+    def test_rationale_with_invalid_origin_value_is_rejected(self):
+        """`llm_summary` (Option C-lite) was explicitly deferred out of v1 --
+        only the three shipped values are valid."""
+        span = {
+            "start": 0, "end": 4, "label": "NAME",
+            "rationale": {"text": "some text", "origin": "llm_summary"},
+        }
+        with pytest.raises(ValidationError):
+            AuditReport.model_validate(dict(VALID_AUDIT, spans=[span]))
+
+    def test_span_without_rationale_key_still_validates(self):
+        """A disabled-feature run's spans (no `rationale` key at all) must
+        keep validating -- this field is additive, not required."""
+        AuditReport.model_validate(VALID_AUDIT)  # must not raise (no rationale key)
+
+    def test_span_rationale_model_directly_requires_origin(self):
+        with pytest.raises(ValidationError):
+            SpanRationale.model_validate({"text": "x"})
+
+
+class TestRationaleGenerationMetadata:
+    """Issue #68 mitigation #7: report-level disclosure of whether/how
+    rationale was generated, distinguishing "not requested" from "requested
+    and failed for every span"."""
+
+    def test_disabled_metadata_accepted(self):
+        full = dict(VALID_AUDIT, rationale_generation={"enabled": False, "model": None, "mode": None})
+        AuditReport.model_validate(full)  # must not raise
+
+    def test_enabled_metadata_accepted(self):
+        full = dict(
+            VALID_AUDIT,
+            rationale_generation={"enabled": True, "model": "qwen2.5:14b", "mode": "validation_extended"},
+        )
+        AuditReport.model_validate(full)  # must not raise
+
+    def test_absent_metadata_still_validates(self):
+        """A report written before this feature existed has no
+        rationale_generation key at all -- must not be rejected."""
+        AuditReport.model_validate(VALID_AUDIT)  # must not raise
 
 
 class TestScrubReportSchema:

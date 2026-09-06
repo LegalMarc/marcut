@@ -20,7 +20,7 @@ The pre-public-beta remediation stack (T0-T14, see `docs/backlog/pre_public_beta
 
 The feature-complete hardening review (`docs/backlog/feature_complete_hardening_review_2026-07-05.md`, issues #36-#54) is now fully closed — each item validated and shipped via its own independently-reviewed PR. Because the survey's file/line references were approximate, several claims were refuted rather than fixed: DOCX part coverage (A2), address state-code validation (A6), consistency-pass cost (C1), and LLM concurrency tuning (C3) were all already correct or already mitigated, and closed with evidence rather than a code change. Real fixes landed for fail-closed partial-chunk handling across both the Ollama and `llama_cpp` backends (A4), offset-invariant chunk deduplication (A3), LLM span validation (A5), rules-layer accuracy, tolerant JSON repair, a bridge/heartbeat watchdog, pre-flight and system-wake reliability checks, sanitized failure alerts, streamed metadata scrubbing, and true intra-chunk streaming progress (D2). A new PII precision/recall eval harness (A1) is CI-gated.
 
-Two extra bugs surfaced during the review were also fixed: an Ollama empty-response retry bug that had caused a 5-day CI failure streak (retries now perturb the seed, #61) and an overly-tight memory-threshold test that flaked on measurement noise (#63). The Python suite stands at 555 passing tests.
+Two extra bugs surfaced during the review were also fixed: an Ollama empty-response retry bug that had caused a 5-day CI failure streak (retries now perturb the seed, #61) and an overly-tight memory-threshold test that flaked on measurement noise (#63). The Python suite stands at 750 passing tests (6 skipped).
 
 See `docs/CHANGELOG.md` for the full history and `docs/BACKLOG.md` for what's still open (several items have design-spike docs under `docs/design/` that should be read before implementation — a few carry real correctness/privacy risk if built without that analysis).
 
@@ -43,7 +43,8 @@ All Python sources live under `src/python/marcut/`, all Swift sources under `src
 - **docx_pkg/hardening.py** - In-memory XML hardening and metadata scrubbing (`MetadataHardener`: `harden_document()`, `scrub_metadata()` and their private helpers -- comment visibility, mail-merge, hidden text, watermarks, headers/footers); split out of `docx_io.py`, injected with `DocumentIndex`'s part-iteration method rather than duplicating it (`docs/design/docx_io_package_split.md`, #76)
 - **docx_pkg/revision_writer.py** - Track-changes revision authoring (`RevisionWriter`: `apply_replacements()` and the `w:ins`/`w:del` element builders); split out of `docx_io.py`, named to avoid confusion with the existing `docx_revisions.py` (which accepts pre-existing revisions on load, a different concern) (`docs/design/docx_io_package_split.md`, #76)
 - **docx_pkg/document.py** - `DocxMap`: the thin coordinator composing `DocumentIndex` + `MetadataHardener` + `RevisionWriter`, owning `load()`/`load_accepting_revisions()`/`save()`/`_postprocess_zip()` and preserving the full pre-split public method surface; final slice of the docx_io package split, `pipeline.py`/`cli.py` import from `docx_pkg` directly (`docs/design/docx_io_package_split.md`, #76)
-- **report_schema.py** - Pydantic models (`AuditReport`, `ScrubReport`, `FailureReport`) validated immediately before each on-disk report write; step 1 of the bridge-schema migration (`docs/design/bridge_schema_migration.md`)
+- **report_schema.py** - Pydantic models (`AuditReport`, `ScrubReport`, `FailureReport`) validated immediately before each on-disk report write; step 1 of the bridge-schema migration (`docs/design/bridge_schema_migration.md`); also defines `SpanRationale` (mandatory `origin` enum) for the redaction-rationale feature
+- **rationale.py** - Shared `RationaleOrigin` enum (`llm_validation`/`rule_deterministic`/`unavailable`), rule-template helpers, and the single cross-reference leak check (`rationale_mentions_text`) for redaction-rationale reporting (`docs/design/redaction_rationale_reporting.md`, #68), opt-in via `MARCUT_GENERATE_RATIONALE`
 - **model_config.py** - Loader for the shared `models.json` model catalog
 - **gui.py** - Tkinter GUI (still used by `bootstrapper.py`/`native_setup.py`, not the primary macOS app UI)
 - **cli.py** - Command-line interface with `marcut` script entry point
@@ -175,7 +176,7 @@ bash build-scripts/setup_beeware_framework.sh
 
 **Test Execution:**
 ```bash
-# Python test suite (555+ tests)
+# Python test suite (750+ tests)
 PYTHONPATH=src/python python3 -m pytest -q
 
 # Swift test suite

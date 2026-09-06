@@ -57,13 +57,14 @@ def write_report(
     warnings: Optional[List[Dict]] = None,
     suppressed: Optional[List[Dict]] = None,
     json_link_path: Optional[str] = None,
+    rationale_generation: Optional[Dict] = None,
 ):
     """
     Write JSON and HTML audit reports.
-    
+
     Args:
         report_path: Path for the JSON report (HTML will be same name with .html)
-        input_path: Original input document path  
+        input_path: Original input document path
         model: Model identifier used for processing
         spans: List of detected entity spans
         settings: Optional processing settings
@@ -71,12 +72,26 @@ def write_report(
             HTML report's "View Raw JSON Data" link. Defaults to
             ``report_path``; pass the final (post-rename) path when writing
             to a transactional temp file so the link is not left dangling.
+        rationale_generation: Report-level disclosure of whether/how the
+            redaction-rationale feature (#68) ran for this document --
+            ``{"enabled": bool, "model": str|None, "mode": str|None}``.
+            Always written (even when disabled) so a report unambiguously
+            distinguishes "rationale not requested" from "requested and
+            failed for every span"; a caller that never passes it gets an
+            explicit disabled block rather than a missing key, since this
+            report shape predates the feature and older callers should not
+            need to know about it to keep working.
     """
     data = {
         'created_at': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime()),
         'input_sha256': sha256_file(input_path),
         'model': model,
-        'spans': spans
+        'spans': spans,
+        'rationale_generation': rationale_generation or {
+            "enabled": False,
+            "model": None,
+            "mode": None,
+        },
     }
     if warnings:
         data['warnings'] = warnings

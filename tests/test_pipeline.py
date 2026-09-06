@@ -31,10 +31,14 @@ from marcut.pipeline import (
     _drop_invalid_spans,
     _fold_curly_quotes,
     _finalize_and_write,
+    _annotate_missing_rationale,
+    _canonicalize_cluster_rationale,
+    _sanitize_cross_referenced_rationale,
     RedactionError,
     _write_failure_report,
     safe_print,
 )
+from marcut.rationale import RationaleOrigin, is_rule_like_source
 
 
 class TestNormalizeUnicode:
@@ -190,6 +194,42 @@ class TestMergeOverlaps:
         assert len(result) == 1
         # Outer span should encompass inner
         assert result[0]["end"] == 25
+
+    def test_rationale_moves_with_the_winning_spans_source(self):
+        """Regression for issue #68 finding 1: when an overlapping LLM span
+        sorts first (here, because it is longer than the rule span at the
+        same start), it seeds `last` including its `llm_validation`
+        rationale dict. If the shorter, higher-confidence rule span then
+        wins on `is_better` and overwrites label/confidence/entity_id/source
+        but not `rationale`, the survivor ends up with source="rule" while
+        still carrying the LLM's rationale dict -- the exact wrong-mechanism
+        attribution mitigation #1 exists to prevent. `rationale` must move
+        (or be cleared) alongside `source`."""
+        text = "The Acme Corporation of Delaware signed the agreement."
+        spans = [
+            # Longer LLM span, sorts first (same start, same ORG rank, longer).
+            {
+                "start": 4, "end": 33, "label": "ORG",
+                "text": "Acme Corporation of Delaware",
+                "confidence": 0.75, "source": "llm_extract",
+                "rationale": {"text": "Model-authored explanation.",
+                              "origin": "llm_validation", "model": "qwen2.5:14b"},
+            },
+            # Shorter, higher-confidence rule span -- wins on confidence tie-break.
+            {
+                "start": 4, "end": 20, "label": "ORG",
+                "text": "Acme Corporation",
+                "confidence": 0.98, "source": "rule", "entity_id": "ORG_1",
+            },
+        ]
+        result = _merge_overlaps(spans, text)
+        assert len(result) == 1
+        survivor = result[0]
+        assert survivor["source"] == "rule"
+        # The rule span carried no `rationale` of its own, so the LLM's
+        # dict must not survive attached to a rule-sourced span: the key
+        # is popped outright, not left as None or as a stale dict.
+        assert "rationale" not in survivor
 
 
 class TestSnapToBoundaries:
@@ -709,6 +749,628 @@ class TestFinalizeAndWriteDropsInvalidSpans:
         # report's own "spans" list either.
         audited_starts = {sp["start"] for sp in report_payload["spans"]}
         assert audited_starts == {good_start}
+
+
+# --- Issue #68: redaction-rationale data layer (Option B) -------------------
+#
+# rationale: {text, origin, model?} on every span, opt-in via
+# MARCUT_GENERATE_RATIONALE, generated/canonicalized by
+# _annotate_missing_rationale / _canonicalize_cluster_rationale /
+# _sanitize_cross_referenced_rationale inside _finalize_and_write. See
+# docs/design/redaction_rationale_reporting.md for the full design.
+
+class _FakeDocxMapForRationale:
+    """Same minimal stub as TestFinalizeAndWriteDropsInvalidSpans's
+    _FakeDocxMap, reused here so these tests can call _finalize_and_write
+    directly without a real DOCX."""
+
+    def __init__(self):
+        self.replacements = None
+
+    def apply_replacements(self, replacements, track_changes=True):
+        self.replacements = replacements
+
+    def scrub_metadata(self, settings):
+        return None
+
+    def harden_document(self, *args, **kwargs):
+        return None
+
+    def save(self, path):
+        with open(path, "wb") as handle:
+            handle.write(b"stub docx")
+
+
+def _run_finalize_and_write(text, spans, tmp_path, **kwargs):
+    dm = _FakeDocxMapForRationale()
+    output_path = tmp_path / "output.docx"
+    report_path = tmp_path / "report.json"
+    input_path = tmp_path / "input.docx"
+    input_path.write_bytes(b"input")
+
+    code = _finalize_and_write(
+        dm, text, spans, str(output_path), str(report_path), str(input_path), "mock-model", **kwargs
+    )
+    assert code == 0
+    return json.loads(report_path.read_text(encoding="utf-8"))
+
+
+class TestAnnotateMissingRationale:
+    """Unit tests for the template/fallback annotation step."""
+
+    def test_rule_source_gets_rule_deterministic_template(self):
+        spans = [{"label": "SSN", "source": "rule", "text": "123-45-6789"}]
+        _annotate_missing_rationale(spans)
+        assert spans[0]["rationale"]["origin"] == RationaleOrigin.RULE_DETERMINISTIC.value
+        assert spans[0]["rationale"]["text"]
+
+    def test_defined_term_and_extended_address_and_consistency_pass_are_rule_like(self):
+        spans = [
+            {"label": "ORG", "source": "defined_term", "text": "the Company"},
+            {"label": "LOC", "source": "rule_extended_address", "text": "Suite 400"},
+            {"label": "NAME", "source": "consistency_pass_fuzzy", "text": "J. Smith"},
+        ]
+        _annotate_missing_rationale(spans)
+        assert all(sp["rationale"]["origin"] == RationaleOrigin.RULE_DETERMINISTIC.value for sp in spans)
+
+    def test_non_rule_source_without_existing_rationale_gets_unavailable(self):
+        spans = [{"label": "NAME", "source": "llm_extract", "text": "John Smith"}]
+        _annotate_missing_rationale(spans)
+        assert spans[0]["rationale"]["origin"] == RationaleOrigin.UNAVAILABLE.value
+
+    def test_existing_dict_rationale_is_left_untouched(self):
+        """model_enhanced.py already attached a real llm_validation
+        rationale for this span -- must not be overwritten."""
+        existing = {"text": "Real model rationale.", "origin": "llm_validation", "model": "qwen2.5:14b"}
+        spans = [{"label": "ORG", "source": "llm_extract", "text": "Acme", "rationale": existing}]
+        _annotate_missing_rationale(spans)
+        assert spans[0]["rationale"] is existing
+
+    def test_rule_like_source_overwrites_a_pre_existing_llm_rationale(self):
+        """Regression for issue #68 finding 1: `is_rule_like_source` must be
+        authoritative. A rule-like span that somehow still carries a dict
+        rationale from another mechanism (e.g. one that survived
+        `_merge_overlaps` picking the rule span's identity over an LLM
+        span's) must have it overwritten with the rule_deterministic
+        template, not left as-is."""
+        leaked = {"text": "Model-authored explanation.", "origin": "llm_validation", "model": "qwen2.5:14b"}
+        spans = [{"label": "ORG", "source": "rule", "text": "Acme Corporation", "rationale": leaked}]
+        _annotate_missing_rationale(spans)
+        assert spans[0]["rationale"]["origin"] == RationaleOrigin.RULE_DETERMINISTIC.value
+        assert spans[0]["rationale"] is not leaked
+
+    def test_non_dict_rationale_value_is_replaced_not_shipped_as_is(self):
+        """The llama.cpp backend's raw entity.rationale is a plain string
+        (e.g. "Extracted by model"), not a {text, origin} object -- it must
+        be normalized rather than shipped as-is, which would fail the
+        AuditReport schema (a str is not a valid rationale object)."""
+        spans = [{"label": "NAME", "source": "llm_extract", "text": "John Smith", "rationale": "Extracted by model"}]
+        _annotate_missing_rationale(spans)
+        assert isinstance(spans[0]["rationale"], dict)
+        assert spans[0]["rationale"]["origin"] == RationaleOrigin.UNAVAILABLE.value
+
+
+class TestCanonicalizeClusterRationale:
+    """Mitigation #2: one rationale per stable entity_id."""
+
+    def test_multiple_mentions_of_same_entity_id_get_one_canonical_rationale(self):
+        spans = [
+            {"entity_id": "ORG_1", "confidence": 0.7,
+             "rationale": {"text": "A", "origin": RationaleOrigin.UNAVAILABLE.value}},
+            {"entity_id": "ORG_1", "confidence": 0.9,
+             "rationale": {"text": "B", "origin": RationaleOrigin.LLM_VALIDATION.value}},
+            {"entity_id": "ORG_1", "confidence": 0.99,
+             "rationale": {"text": "C", "origin": RationaleOrigin.RULE_DETERMINISTIC.value}},
+        ]
+        _canonicalize_cluster_rationale(spans)
+        # llm_validation beats rule_deterministic beats unavailable, regardless of confidence.
+        assert all(sp["rationale"]["text"] == "B" for sp in spans)
+
+    def test_highest_confidence_llm_validation_wins_among_ties(self):
+        spans = [
+            {"entity_id": "NAME_1", "confidence": 0.6,
+             "rationale": {"text": "low-conf", "origin": RationaleOrigin.LLM_VALIDATION.value}},
+            {"entity_id": "NAME_1", "confidence": 0.95,
+             "rationale": {"text": "high-conf", "origin": RationaleOrigin.LLM_VALIDATION.value}},
+        ]
+        _canonicalize_cluster_rationale(spans)
+        assert all(sp["rationale"]["text"] == "high-conf" for sp in spans)
+
+    def test_single_span_entity_is_left_alone(self):
+        spans = [{"entity_id": "ORG_2", "confidence": 0.8,
+                  "rationale": {"text": "only one", "origin": RationaleOrigin.UNAVAILABLE.value}}]
+        _canonicalize_cluster_rationale(spans)
+        assert spans[0]["rationale"]["text"] == "only one"
+
+    def test_different_entity_ids_are_not_mixed(self):
+        spans = [
+            {"entity_id": "ORG_1", "confidence": 0.9,
+             "rationale": {"text": "org one", "origin": RationaleOrigin.LLM_VALIDATION.value}},
+            {"entity_id": "ORG_2", "confidence": 0.9,
+             "rationale": {"text": "org two", "origin": RationaleOrigin.LLM_VALIDATION.value}},
+        ]
+        _canonicalize_cluster_rationale(spans)
+        assert spans[0]["rationale"]["text"] == "org one"
+        assert spans[1]["rationale"]["text"] == "org two"
+
+    @pytest.mark.parametrize("rule_like_source", ["consistency_pass", "consistency_pass_ci", "defined_term"])
+    def test_rule_like_span_in_mixed_cluster_is_excluded_from_canonicalization(self, rule_like_source):
+        """Mixed cluster: #1 (rule-like spans get only the template) wins
+        over #2 (one rationale per entity_id). The rule-like mention keeps
+        its own rule_deterministic template; canonicalization runs only
+        among the remaining LLM-path spans."""
+        rule_template = {"text": "Matched via the document consistency pass.",
+                         "origin": RationaleOrigin.RULE_DETERMINISTIC.value}
+        spans = [
+            {"entity_id": "ORG_1", "confidence": 0.7, "source": "llm_extract",
+             "rationale": {"text": "unvalidated", "origin": RationaleOrigin.UNAVAILABLE.value}},
+            {"entity_id": "ORG_1", "confidence": 0.9, "source": "llm_extract",
+             "rationale": {"text": "model text", "origin": RationaleOrigin.LLM_VALIDATION.value, "model": "qwen2.5:14b"}},
+            {"entity_id": "ORG_1", "confidence": 0.99, "source": rule_like_source,
+             "rationale": rule_template},
+        ]
+        _canonicalize_cluster_rationale(spans)
+        assert spans[0]["rationale"]["text"] == "model text"
+        assert spans[1]["rationale"]["text"] == "model text"
+        assert spans[2]["rationale"] is rule_template
+
+
+class TestSanitizeCrossReferencedRationale:
+    """Mitigation #3 (placeholder-only cross-referencing), full-document
+    backstop layered on top of model_enhanced.py's same-batch check."""
+
+    def test_leaking_another_entitys_literal_text_is_withheld(self):
+        spans = [
+            {"entity_id": "ORG_1", "text": "Acme Corp",
+             "rationale": {"text": "Signed alongside Widget LLC.", "origin": RationaleOrigin.LLM_VALIDATION.value,
+                           "model": "qwen2.5:14b"}},
+            {"entity_id": "ORG_2", "text": "Widget LLC",
+             "rationale": {"text": "A specific counterparty.", "origin": RationaleOrigin.LLM_VALIDATION.value}},
+        ]
+        _sanitize_cross_referenced_rationale(spans)
+        assert spans[0]["rationale"]["origin"] == RationaleOrigin.UNAVAILABLE.value
+        assert "Widget LLC" not in spans[0]["rationale"]["text"]
+        assert "model" not in spans[0]["rationale"]
+        # The other span, which didn't leak, is unaffected.
+        assert spans[1]["rationale"]["origin"] == RationaleOrigin.LLM_VALIDATION.value
+
+    def test_non_llm_validation_rationale_is_never_checked_or_modified(self):
+        """rule_deterministic/unavailable text is our own template, never
+        model-authored -- no need to scan it, and scanning it could produce
+        false positives on a short shared word."""
+        spans = [
+            {"entity_id": "ORG_1", "text": "Acme",
+             "rationale": {"text": "Matched a deterministic ORG detection rule.", "origin": RationaleOrigin.RULE_DETERMINISTIC.value}},
+            {"entity_id": "ORG_2", "text": "Acme Holdings",
+             "rationale": {"text": "irrelevant", "origin": RationaleOrigin.UNAVAILABLE.value}},
+        ]
+        before = spans[0]["rationale"]["text"]
+        _sanitize_cross_referenced_rationale(spans)
+        assert spans[0]["rationale"]["text"] == before
+
+    def test_own_entitys_own_text_does_not_count_as_a_leak(self):
+        spans = [
+            {"entity_id": "ORG_1", "text": "Acme Corp",
+             "rationale": {"text": "Acme Corp is a party to this agreement.", "origin": RationaleOrigin.LLM_VALIDATION.value}},
+        ]
+        _sanitize_cross_referenced_rationale(spans)
+        assert spans[0]["rationale"]["origin"] == RationaleOrigin.LLM_VALIDATION.value
+
+
+class TestFinalizeAndWriteRationaleIntegration:
+    """End-to-end (via _finalize_and_write) coverage of the opt-in flag,
+    the report-level rationale_generation metadata, and the byte-identical-
+    when-disabled guarantee."""
+
+    def _rule_span(self, text, needle, label="SSN", source="rule"):
+        start = text.index(needle)
+        return {
+            "start": start, "end": start + len(needle), "label": label,
+            "text": needle, "confidence": 0.95, "source": source, "needs_redaction": True,
+        }
+
+    def test_disabled_by_default_no_rationale_key_and_metadata_disabled(self, monkeypatch, tmp_path):
+        monkeypatch.delenv("MARCUT_GENERATE_RATIONALE", raising=False)
+        monkeypatch.setenv("MARCUT_METADATA_ARGS", "--preset-none")
+        text = "Contact SSN 123-45-6789 today."
+        spans = [self._rule_span(text, "123-45-6789")]
+
+        report = _run_finalize_and_write(text, spans, tmp_path)
+
+        assert all("rationale" not in sp for sp in report["spans"])
+        assert report["rationale_generation"] == {"enabled": False, "model": None, "mode": None}
+
+    def test_enabled_rule_span_gets_rule_deterministic_rationale_and_metadata_enabled(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("MARCUT_GENERATE_RATIONALE", "1")
+        monkeypatch.setenv("MARCUT_METADATA_ARGS", "--preset-none")
+        text = "Contact SSN 123-45-6789 today."
+        spans = [self._rule_span(text, "123-45-6789")]
+
+        report = _run_finalize_and_write(text, spans, tmp_path)
+
+        assert report["spans"][0]["rationale"]["origin"] == "rule_deterministic"
+        assert report["rationale_generation"]["enabled"] is True
+        # No report_settings passed (direct _finalize_and_write call) -> not
+        # one of the LLM modes -> rule-only mode label. #68 round-4: because
+        # no model authored anything on this path, `model` must be null --
+        # naming the configured model here would attribute template strings
+        # to a model that never executed.
+        assert report["rationale_generation"]["mode"] == "rule_deterministic_only"
+        assert report["rationale_generation"]["model"] is None
+
+    def test_enabled_and_disabled_runs_produce_identical_decisions(self, monkeypatch, tmp_path):
+        """Mitigation #5: disabling must be byte-identical to today's
+        output for the fields that actually drive redaction -- same spans
+        redacted, same entity_id/confidence/text/label/source."""
+        text = "Contact SSN 123-45-6789 today."
+        spans = [self._rule_span(text, "123-45-6789")]
+        monkeypatch.setenv("MARCUT_METADATA_ARGS", "--preset-none")
+
+        off_dir = tmp_path / "off"
+        on_dir = tmp_path / "on"
+        off_dir.mkdir()
+        on_dir.mkdir()
+
+        monkeypatch.setenv("MARCUT_GENERATE_RATIONALE", "0")
+        report_off = _run_finalize_and_write(text, [dict(s) for s in spans], off_dir)
+
+        monkeypatch.setenv("MARCUT_GENERATE_RATIONALE", "1")
+        report_on = _run_finalize_and_write(text, [dict(s) for s in spans], on_dir)
+
+        decision_fields = ("start", "end", "label", "entity_id", "confidence", "source", "text", "validated", "validation_result")
+        off_decisions = [{k: sp.get(k) for k in decision_fields} for sp in report_off["spans"]]
+        on_decisions = [{k: sp.get(k) for k in decision_fields} for sp in report_on["spans"]]
+        assert off_decisions == on_decisions
+
+    def test_multiple_mentions_of_same_llm_entity_get_one_canonical_rationale_end_to_end(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("MARCUT_GENERATE_RATIONALE", "1")
+        monkeypatch.setenv("MARCUT_METADATA_ARGS", "--preset-none")
+        text = "Acme Corp signed first. Later, Acme Corp signed again."
+        first = text.index("Acme Corp")
+        second = text.index("Acme Corp", first + 1)
+        spans = [
+            {
+                "start": first, "end": first + len("Acme Corp"), "label": "ORG",
+                "text": "Acme Corp", "confidence": 0.7, "source": "llm_extract", "needs_redaction": True,
+                "rationale": {"text": "Real model rationale for mention one.", "origin": "llm_validation", "model": "qwen2.5:14b"},
+            },
+            {
+                "start": second, "end": second + len("Acme Corp"), "label": "ORG",
+                "text": "Acme Corp", "confidence": 0.95, "source": "llm_extract", "needs_redaction": True,
+                # Second mention was never validated at all.
+            },
+        ]
+
+        report = _run_finalize_and_write(text, spans, tmp_path)
+
+        rationales = {sp["rationale"]["text"] for sp in report["spans"]}
+        assert rationales == {"Real model rationale for mention one."}
+
+    @pytest.mark.parametrize("rule_like_source", ["consistency_pass", "defined_term", "rule_defined_term", "rule_signature"])
+    def test_mixed_cluster_rule_like_mention_keeps_template_not_llm_rationale(self, monkeypatch, tmp_path, rule_like_source):
+        """Regression for issue #68 round-2 finding 1: an LLM-validated ORG
+        mention and a rule-like re-match of the same text (consistency
+        pass / defined term) share one ClusterTable entity_id. Mitigation
+        #1 wins over #2 for the mixed cluster -- the rule-like span must be
+        written as rule_deterministic with no `model` key, never with the
+        LLM's rationale copied onto it, while the LLM span keeps its own
+        llm_validation rationale."""
+        monkeypatch.setenv("MARCUT_GENERATE_RATIONALE", "1")
+        monkeypatch.setenv("MARCUT_METADATA_ARGS", "--preset-none")
+        text = "Acme Corp signed first. Later, Acme Corp signed again."
+        first = text.index("Acme Corp")
+        second = text.index("Acme Corp", first + 1)
+        spans = [
+            {
+                "start": first, "end": first + len("Acme Corp"), "label": "ORG",
+                "text": "Acme Corp", "confidence": 0.7, "source": "llm_extract", "needs_redaction": True,
+                "rationale": {"text": "A specific named company party to the agreement.",
+                              "origin": "llm_validation", "model": "qwen2.5:14b"},
+            },
+            {
+                "start": second, "end": second + len("Acme Corp"), "label": "ORG",
+                "text": "Acme Corp", "confidence": 0.95, "source": rule_like_source, "needs_redaction": True,
+            },
+        ]
+
+        report = _run_finalize_and_write(text, spans, tmp_path)
+
+        by_source = {sp["source"]: sp for sp in report["spans"]}
+        assert len(report["spans"]) == 2
+        # Same cluster -- this is the mixed-source case, not two entities.
+        assert by_source["llm_extract"]["entity_id"] == by_source[rule_like_source]["entity_id"]
+        rule_like = by_source[rule_like_source]["rationale"]
+        assert rule_like["origin"] == "rule_deterministic"
+        assert "model" not in rule_like
+        assert rule_like["text"] != "A specific named company party to the agreement."
+        llm = by_source["llm_extract"]["rationale"]
+        assert llm["origin"] == "llm_validation"
+        assert llm["text"] == "A specific named company party to the agreement."
+
+    @pytest.mark.parametrize("mode, backend, model_id, llama_gguf, expected", [
+        ("rules_override", "ollama", "qwen2.5:14b", "", "validation_extended"),
+        ("llm_overrides", "ollama", "qwen2.5:14b", "", "validation_extended"),
+        # llama.cpp validation was not extended (LlamaCppRedactionPipeline
+        # untouched), so every LLM span is `unavailable` -- the report must
+        # say so instead of claiming validation_extended (mitigation #7).
+        ("rules_override", "llama_cpp", "qwen2.5:14b", "", "unsupported_backend"),
+        ("llm_overrides", "ollama", "/models/qwen2.5-14b.gguf", "", "unsupported_backend"),
+        # `marcut redact --llama-gguf x.gguf` with the default `--backend
+        # ollama`: cli.py passes them separately, dispatch uses
+        # `llama_gguf or model_id`, so the mode decision must too
+        # (issue #68 round-3 finding 2).
+        ("llm_overrides", "ollama", "qwen2.5:14b", "/models/qwen2.5-14b.gguf", "unsupported_backend"),
+        # Rules-only never ran an LLM at all, whatever backend was configured.
+        ("rules", "llama_cpp", "rules", "", "rule_deterministic_only"),
+    ])
+    def test_rationale_generation_mode_reflects_backend(self, monkeypatch, tmp_path, mode, backend, model_id, llama_gguf, expected):
+        """Regression for issue #68 round-2 finding 3 and round-3 finding 2."""
+        monkeypatch.setenv("MARCUT_GENERATE_RATIONALE", "1")
+        monkeypatch.setenv("MARCUT_METADATA_ARGS", "--preset-none")
+        text = "Contact SSN 123-45-6789 today."
+        spans = [self._rule_span(text, "123-45-6789")]
+        report_settings = pipeline._build_report_settings(
+            mode=mode, mode_requested=mode, backend=backend, model_id=model_id,
+            chunk_tokens=250, overlap=50, temperature=0.1, seed=42, llm_skip_confidence=0.95,
+            llama_gguf=llama_gguf,
+        )
+
+        report = _run_finalize_and_write(text, spans, tmp_path, report_settings=report_settings)
+
+        assert report["rationale_generation"]["enabled"] is True
+        assert report["rationale_generation"]["mode"] == expected
+        # #68 round-4: only name a model that actually authored rationale.
+        # A rules-only run still carries a model_id, and reporting it here
+        # would attribute template strings to a model that never executed.
+        if expected == "validation_extended":
+            assert report["rationale_generation"]["model"]
+        else:
+            assert report["rationale_generation"]["model"] is None
+
+    def test_rule_span_overlapping_llm_span_never_reports_llm_rationale_end_to_end(self, monkeypatch, tmp_path):
+        """Regression for issue #68 finding 1, run through the real
+        `_merge_overlaps` -> `_finalize_and_write` sequence: an LLM span
+        carrying an `llm_validation` rationale dict overlaps a shorter,
+        higher-confidence rule span. The rule span must win the merge, and
+        the written report must attribute the survivor to
+        `rule_deterministic`, never to the LLM."""
+        monkeypatch.setenv("MARCUT_GENERATE_RATIONALE", "1")
+        monkeypatch.setenv("MARCUT_METADATA_ARGS", "--preset-none")
+        text = "The Acme Corporation of Delaware signed the agreement."
+        llm_span = {
+            "start": 4, "end": 33, "label": "ORG", "text": "Acme Corporation of Delaware",
+            "confidence": 0.75, "source": "llm_extract", "needs_redaction": True,
+            "rationale": {"text": "Model-authored explanation.", "origin": "llm_validation", "model": "qwen2.5:14b"},
+        }
+        rule_span = {
+            "start": 4, "end": 20, "label": "ORG", "text": "Acme Corporation",
+            "confidence": 0.98, "source": "rule", "entity_id": "ORG_1", "needs_redaction": True,
+        }
+        merged = _merge_overlaps([llm_span, rule_span], text)
+        assert len(merged) == 1
+
+        report = _run_finalize_and_write(text, merged, tmp_path)
+
+        assert len(report["spans"]) == 1
+        survivor = report["spans"][0]
+        assert survivor["source"] == "rule"
+        assert survivor["rationale"]["origin"] == "rule_deterministic"
+
+
+class TestRulesOnlyRunNeverCallsLLMForRationale:
+    """Mitigation #1, exercised at the real run_redaction() entry point
+    (not just _finalize_and_write in isolation): a rule-matched span must
+    never trigger an LLM call to explain itself. Enforced here via a mock
+    call-count assertion, not just output inspection, per the ticket."""
+
+    class _FakeDocxMap:
+        def __init__(self, text):
+            self.text = text
+            self.author_name = ""
+            self.replacements = None
+
+        def apply_replacements(self, replacements, track_changes=True):
+            self.replacements = replacements
+
+        def scrub_metadata(self, settings):
+            return None
+
+        def harden_document(self, *args, **kwargs):
+            return None
+
+        def save(self, path):
+            with open(path, "wb") as handle:
+                handle.write(b"stub docx")
+
+    def test_rules_mode_with_rationale_enabled_never_touches_the_llm(self, monkeypatch, tmp_path):
+        import marcut.model_enhanced as model_enhanced
+
+        text = "Contact SSN 123-45-6789 for verification."
+        fake_dm = self._FakeDocxMap(text)
+        monkeypatch.setattr(
+            pipeline.DocxMap,
+            "load_accepting_revisions",
+            staticmethod(lambda input_path, debug=False: fake_dm),
+        )
+        monkeypatch.setenv("MARCUT_METADATA_ARGS", "--preset-none")
+        monkeypatch.setenv("MARCUT_GENERATE_RATIONALE", "1")
+
+        def fail_if_called(*args, **kwargs):
+            raise AssertionError("rule-matched spans must never trigger an LLM call for rationale")
+
+        monkeypatch.setattr(pipeline, "run_enhanced_model", fail_if_called)
+        monkeypatch.setattr(model_enhanced, "ollama_validate_batch", fail_if_called)
+        monkeypatch.setattr(model_enhanced.requests, "post", fail_if_called)
+
+        input_path = tmp_path / "input.docx"
+        input_path.write_bytes(b"input")
+        output_path = tmp_path / "output.docx"
+        report_path = tmp_path / "report.json"
+
+        code, _timings = pipeline.run_redaction(
+            str(input_path), str(output_path), str(report_path),
+            mode="rules", model_id="rules", chunk_tokens=250, overlap=50,
+            temperature=0.1, seed=42, debug=False,
+        )
+
+        assert code == 0
+        report = json.loads(report_path.read_text(encoding="utf-8"))
+        assert report["rationale_generation"]["enabled"] is True
+        ssn_spans = [sp for sp in report["spans"] if sp["label"] == "SSN"]
+        assert ssn_spans
+        assert all(sp["rationale"]["origin"] == "rule_deterministic" for sp in ssn_spans)
+
+
+class TestLLMModeRuleLikeSpansNeverGetLLMRationale:
+    """Mitigation #1, exercised in the two modes where it is actually
+    reachable (`rules_override`, `llm_overrides`) -- unlike mode="rules"
+    above, these run `run_enhanced_model` and (for `llm_overrides`)
+    `apply_llm_overrides_to_rule_spans` -> `ollama_validate_batch`, so a
+    regression that routes rule-like spans through an LLM call or lets an
+    LLM rationale attach to a rule-sourced span is actually observable
+    here. Regression test for issue #68 finding 2."""
+
+    class _FakeDocxMap:
+        def __init__(self, text):
+            self.text = text
+            self.author_name = ""
+            self.replacements = None
+
+        def apply_replacements(self, replacements, track_changes=True):
+            self.replacements = replacements
+
+        def scrub_metadata(self, settings):
+            return None
+
+        def harden_document(self, *args, **kwargs):
+            return None
+
+        def save(self, path):
+            with open(path, "wb") as handle:
+                handle.write(b"stub docx")
+
+    @pytest.mark.parametrize("mode", ["rules_override", "llm_overrides"])
+    def test_llm_mode_never_taints_rule_spans_with_llm_rationale(self, monkeypatch, mode, tmp_path):
+        import marcut.model_enhanced as model_enhanced
+
+        text = "The Acme Corporation of Delaware, SSN 123-45-6789, signed the agreement."
+        fake_dm = self._FakeDocxMap(text)
+        monkeypatch.setattr(
+            pipeline.DocxMap,
+            "load_accepting_revisions",
+            staticmethod(lambda input_path, debug=False: fake_dm),
+        )
+        monkeypatch.setenv("MARCUT_METADATA_ARGS", "--preset-none")
+        monkeypatch.setenv("MARCUT_GENERATE_RATIONALE", "1")
+
+        # An LLM span that overlaps the rule-matched SSN with a longer span
+        # and a lower confidence -- the finding-1 repro shape: it sorts
+        # first in _merge_overlaps (longer, same start) and carries an
+        # `llm_validation` rationale dict, but the rule span (higher
+        # confidence) must win the merge and the final rationale.
+        ssn_start = text.index("123-45-6789")
+        llm_span = {
+            "start": ssn_start, "end": ssn_start + len("123-45-6789 signed"),
+            "label": "SSN", "text": text[ssn_start:ssn_start + len("123-45-6789 signed")],
+            "confidence": 0.75, "source": "llm_extract", "needs_redaction": True,
+            "rationale": {"text": "Model-authored explanation.", "origin": "llm_validation", "model": "qwen2.5:14b"},
+        }
+        monkeypatch.setattr(pipeline, "run_enhanced_model", lambda **kwargs: [dict(llm_span)])
+
+        validate_batch_calls = []
+
+        def fake_ollama_validate_batch(model_id, entities, *args, **kwargs):
+            validate_batch_calls.append({"generate_rationale": kwargs.get("generate_rationale", False)})
+            return [{"needs_redaction": True} for _ in entities]
+
+        monkeypatch.setattr(model_enhanced, "ollama_validate_batch", fake_ollama_validate_batch)
+
+        input_path = tmp_path / "input.docx"
+        input_path.write_bytes(b"input")
+        output_path = tmp_path / "output.docx"
+        report_path = tmp_path / "report.json"
+
+        code, _timings = pipeline.run_redaction(
+            str(input_path), str(output_path), str(report_path),
+            mode=mode, model_id="qwen2.5:14b", backend="ollama", chunk_tokens=250, overlap=50,
+            temperature=0.1, seed=42, debug=False,
+        )
+
+        assert code == 0
+        report = json.loads(report_path.read_text(encoding="utf-8"))
+        assert report["rationale_generation"]["enabled"] is True
+
+        # (a) the apply_llm_overrides_to_rule_spans call site (model_enhanced.py:~818)
+        # must never ask for a rationale -- that would be an LLM call made
+        # solely to explain a rule-matched entity.
+        assert all(call["generate_rationale"] is not True for call in validate_batch_calls)
+
+        # (b) every rule-like span in the written report is attributed to
+        # rule_deterministic, never to the LLM, regardless of what
+        # overlapped it during extraction.
+        rule_like_spans = [sp for sp in report["spans"] if is_rule_like_source(sp.get("source"))]
+        assert rule_like_spans
+        assert all(sp["rationale"]["origin"] == "rule_deterministic" for sp in rule_like_spans)
+
+    def test_signature_block_name_clustered_with_llm_mention_stays_rule_deterministic(self, monkeypatch, tmp_path):
+        """Regression for issue #68 round-3 finding 1, reproduced through the
+        real run_redaction() path: `rules.py` emits `rule_signature` for a
+        "Name: John Smith" signature line, an LLM-validated mention of the
+        same name later in the body lands in the same ClusterTable
+        entity_id, and cluster canonicalization must NOT copy the LLM's
+        rationale onto the span the LLM never saw. `rule_signature` and
+        `rule_defined_term` were missing from the rule-like set, so the
+        signature span was written as `llm_validation` with a `model` key."""
+        import marcut.model_enhanced as model_enhanced
+
+        text = "Name: John Smith\n\nJohn Smith agreed to the terms."
+        fake_dm = self._FakeDocxMap(text)
+        monkeypatch.setattr(
+            pipeline.DocxMap,
+            "load_accepting_revisions",
+            staticmethod(lambda input_path, debug=False: fake_dm),
+        )
+        monkeypatch.setenv("MARCUT_METADATA_ARGS", "--preset-none")
+        monkeypatch.setenv("MARCUT_GENERATE_RATIONALE", "1")
+
+        body_start = text.index("John Smith", text.index("\n\n"))
+        llm_span = {
+            "start": body_start, "end": body_start + len("John Smith"),
+            "label": "NAME", "text": "John Smith",
+            "confidence": 0.8, "source": "llm_extract", "needs_redaction": True,
+            "rationale": {"text": "The individual party agreeing to the terms.",
+                          "origin": "llm_validation", "model": "qwen2.5:14b"},
+        }
+        monkeypatch.setattr(pipeline, "run_enhanced_model", lambda **kwargs: [dict(llm_span)])
+        monkeypatch.setattr(
+            model_enhanced, "ollama_validate_batch",
+            lambda model_id, entities, *a, **k: [{"needs_redaction": True} for _ in entities],
+        )
+
+        input_path = tmp_path / "input.docx"
+        input_path.write_bytes(b"input")
+        output_path = tmp_path / "output.docx"
+        report_path = tmp_path / "report.json"
+
+        code, _timings = pipeline.run_redaction(
+            str(input_path), str(output_path), str(report_path),
+            mode="rules_override", model_id="qwen2.5:14b", backend="ollama",
+            chunk_tokens=250, overlap=50, temperature=0.1, seed=42, debug=False,
+        )
+        assert code == 0
+        report = json.loads(report_path.read_text(encoding="utf-8"))
+
+        sig = [sp for sp in report["spans"] if sp.get("source") == "rule_signature"]
+        assert sig, "rules.py should have emitted a rule_signature span for the Name: line"
+        llm = [sp for sp in report["spans"] if sp.get("source") == "llm_extract"]
+        assert llm
+        # Same entity cluster -- this is the mixed case the finding reproduced.
+        assert sig[0]["entity_id"] == llm[0]["entity_id"]
+        for sp in sig:
+            assert sp["rationale"]["origin"] == "rule_deterministic"
+            assert "model" not in sp["rationale"]
+            assert sp["rationale"]["text"] != llm_span["rationale"]["text"]
+        assert llm[0]["rationale"]["origin"] == "llm_validation"
 
 
 class TestRedactionError:

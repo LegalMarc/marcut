@@ -33,6 +33,7 @@ import threading
 import concurrent.futures
 from dataclasses import dataclass
 from .cancellation import ProcessingDeadlineExceeded, check_processing_deadline, remaining_seconds
+from .rationale import RationaleOrigin, rationale_mentions_text
 from .model import (
     parse_llm_response,
     _valid_candidate,
@@ -78,17 +79,44 @@ class Entity:
     source: str = "model"
     validated: bool = False
     validation_result: Optional[str] = None
+    # Set from ollama_validate_batch()'s result dict (issue #68) when
+    # MARCUT_GENERATE_RATIONALE is enabled -- a RationaleOrigin value, or
+    # None if this entity was never routed through rationale-aware
+    # validation at all (e.g. it skipped validation entirely). Never read
+    # for redaction decisions; only pipeline.py's audit-report assembly
+    # consumes it.
+    rationale_origin: Optional[str] = None
 
 
 class ValidationCache:
-    """Cache validation decisions to avoid redundant LLM calls."""
+    """Cache validation decisions to avoid redundant LLM calls.
+
+    Scope, stated plainly because the mitigation it serves is easy to
+    over-read: this cache is a plain dict on the instance and is **never
+    persisted**. `IntelligentRedactionPipeline` is constructed fresh per
+    `run_enhanced_model` call, so entries never outlive a single run and
+    `generate_rationale` is fixed for that run's lifetime -- meaning no
+    in-process cache hit can currently pair a fresh decision with a
+    rationale captured under a different setting.
+
+    ``SCHEMA_VERSION`` is folded into every cache key anyway, as the
+    forward guard for issue #68 mitigation #4: if this cache is ever made
+    persistent (across runs or processes), entries written before the
+    rationale field existed must not be reusable, and a version bump makes
+    that impossible by construction because the old key never matches. It
+    is deliberately a no-op today rather than a safeguard that is already
+    load-bearing (#68 round-5 finding: the previous wording claimed the
+    latter).
+    """
+
+    SCHEMA_VERSION = "v2"
 
     def __init__(self):
         self.cache = {}
 
     def get_key(self, text: str, label: str) -> str:
         """Generate cache key for entity."""
-        return f"{text.lower().strip()}:{label}"
+        return f"{self.SCHEMA_VERSION}:{text.lower().strip()}:{label}"
 
     def get(self, text: str, label: str) -> Optional[Dict]:
         """Get cached validation if exists."""
@@ -430,8 +458,23 @@ def needs_validation(entity: Entity, doc_context: DocumentContext) -> bool:
     return True
 
 
-def get_batch_validation_prompt(entities: List[Entity], full_text: str, doc_context: DocumentContext) -> str:
-    """Build validation prompt for a batch of entities."""
+def get_batch_validation_prompt(
+    entities: List[Entity],
+    full_text: str,
+    doc_context: DocumentContext,
+    generate_rationale: bool = False,
+) -> str:
+    """Build validation prompt for a batch of entities.
+
+    ``generate_rationale`` (issue #68, MARCUT_GENERATE_RATIONALE, off by
+    default) adds a "rationale" field to the requested JSON shape, asking
+    the model to state *why* it classified each item -- reusing this
+    already-budgeted call rather than adding a new one (Option B in
+    docs/design/redaction_rationale_reporting.md). The extra instruction
+    against restating another item's literal text is the prompt-level half
+    of mitigation #3; `ollama_validate_batch` below enforces it again in
+    Python as a backstop.
+    """
 
     doc_info = ""
     if doc_context.primary_entities.get('company'):
@@ -460,7 +503,39 @@ Item {idx + 1}:
 - Context: "...{surrounding}..."
 """
 
-    prompt = f"""You are validating potential redactions in a legal document.
+    if generate_rationale:
+        prompt = f"""You are validating potential redactions in a legal document.
+{doc_info}
+
+Review the following list of extracted items. For each, determine if it is a SPECIFIC confidential entity (REDACT) or a GENERIC reference/boilerplate (SKIP).
+
+Items to validate:{items_str}
+
+Respond with a JSON object containing a "results" array.
+Each result must have:
+- "id": The item number (1, 2, etc.)
+- "classification": "FULL_REDACT" (specific entity) or "SKIP" (generic)
+- "confidence": 0.0 to 1.0 (how sure are you?)
+- "rationale": one short sentence stating plainly why this item was classified that way
+
+Crucial Rules:
+1. "The Company", "The Board", "The Parties" -> SKIP (Generic)
+2. Specific Names ("John Smith", "Sample 123 Corp") -> FULL_REDACT
+3. If unsure, classify as FULL_REDACT.
+4. In "rationale", never restate the specific name/text of any OTHER item in this list or any other person/organization mentioned in the context -- refer to other parties only generically (e.g. "the counterparty", "another named individual"), never by their literal name.
+
+Example Response:
+{{
+  "results": [
+    {{ "id": 1, "classification": "FULL_REDACT", "confidence": 0.98, "rationale": "This is the name of a specific individual signing the agreement." }},
+    {{ "id": 2, "classification": "SKIP", "confidence": 0.99, "rationale": "This is a generic reference to a defined role, not a specific entity." }}
+  ]
+}}
+
+Return ONLY valid JSON.
+"""
+    else:
+        prompt = f"""You are validating potential redactions in a legal document.
 {doc_info}
 
 Review the following list of extracted items. For each, determine if it is a SPECIFIC confidential entity (REDACT) or a GENERIC reference/boilerplate (SKIP).
@@ -491,6 +566,36 @@ Return ONLY valid JSON.
     return prompt
 
 
+
+_RATIONALE_WARNING_LOCK = threading.Lock()
+
+
+def _schema_allowing_rationale(format_schema: Dict) -> Dict:
+    """Return `format_schema` with a `rationale` string property allowed on
+    each result item, so constrained decoding cannot make the field the
+    prompt asks for impossible to emit.
+
+    Conservative: only the recognised
+    ``properties.results.items.properties`` shape is rewritten, and the
+    input is never mutated. Returns ``None`` when the shape is not
+    recognised (e.g. ``$ref``-based items), so the caller can say so rather
+    than let every span degrade to `unavailable` while the report still
+    claims the extension was active (#68 round-6 finding).
+    """
+    try:
+        items = format_schema["properties"]["results"]["items"]
+        props = items["properties"]
+    except (KeyError, TypeError):
+        return None
+    if "rationale" in props:
+        return format_schema
+    import copy
+    patched = copy.deepcopy(format_schema)
+    patched_items = patched["properties"]["results"]["items"]
+    patched_items["properties"]["rationale"] = {"type": "string"}
+    return patched
+
+
 def ollama_validate_batch(
     model_id: str,
     entities: List[Entity],
@@ -502,13 +607,26 @@ def ollama_validate_batch(
     warnings: Optional[List[Dict[str, Any]]] = None,
     think_mode: bool = False,
     format_schema: Optional[Dict] = None,
+    generate_rationale: bool = False,
 ) -> List[Dict]:
-    """Validate a batch of entities. Returns a list of results corresponding to input entities."""
+    """Validate a batch of entities. Returns a list of results corresponding to input entities.
+
+    ``generate_rationale`` (MARCUT_GENERATE_RATIONALE, issue #68) asks the
+    model for a short rationale per item and, on success, returns it with
+    ``rationale_origin: "llm_validation"``. When the model omits the field,
+    the response fails to parse, or the returned text restates another
+    item's literal name (mitigation #3), the result falls back to today's
+    synthetic placeholder string labeled ``rationale_origin: "unavailable"``
+    -- never mislabeled as ``llm_validation``. When ``generate_rationale``
+    is False, behavior is byte-identical to before this feature existed
+    (mitigation #5): no rationale is requested, and no ``rationale_origin``
+    key is added.
+    """
 
     if not entities:
         return []
 
-    prompt = get_batch_validation_prompt(entities, full_text, doc_context)
+    prompt = get_batch_validation_prompt(entities, full_text, doc_context, generate_rationale=generate_rationale)
 
     # Build request
     url = f"{get_ollama_base_url()}/api/generate"
@@ -520,17 +638,76 @@ def ollama_validate_batch(
         "options": {
             "temperature": temperature,
             "top_p": 0.9,
-            "num_predict": 2048 # Increased for batch response
+            # Batch response budget. With `generate_rationale` the model
+            # also writes a sentence per item, so a batch that fits in 2048
+            # today can truncate; a truncated array fails `parse_llm_response`
+            # and every item in it falls to UNKNOWN -> FULL_REDACT at
+            # confidence 0, which would make an opt-in reporting flag change
+            # redaction decisions (#68 round-4 finding).
+            "num_predict": 2048 + (96 * len(entities) if generate_rationale else 0)
         }
     }
     if seed is not None:
         body["options"]["seed"] = seed
     if format_schema is not None:
-        body["format"] = format_schema
+        # Ollama constrains the reply to the schema. A schema written before
+        # this feature (or any schema with additionalProperties:false) makes
+        # `rationale` structurally impossible to emit, so every span would
+        # silently degrade to `unavailable` while the report still claims
+        # mode "validation_extended" -- the exact ambiguity mitigation #7
+        # exists to remove (#68 round-4 finding).
+        adjusted_schema = format_schema
+        if generate_rationale:
+            adjusted_schema = _schema_allowing_rationale(format_schema)
+            if adjusted_schema is None:
+                # Cannot guarantee the model is even able to emit the field
+                # the prompt asks for. Say so in the report's warnings
+                # instead of shipping a run whose every span is
+                # `unavailable` under a "validation_extended" banner.
+                # `code`, matching every other warning in this codebase --
+                # report.py renders `w.get('code', 'WARNING')`, so a `type`
+                # key would silently render as a generic "WARNING". Emitted
+                # once per run, not once per batch, so it cannot crowd real
+                # LLM_CHUNK_FAILED entries out of the report's 50-warning cap.
+                # Guarded: validation runs on up to `llm_concurrency`
+                # workers sharing one `warnings` list, so an unlocked
+                # check-then-append can still emit duplicates and eat slots
+                # in the report's 50-warning cap (#68 round-9 finding).
+                if warnings is not None:
+                    with _RATIONALE_WARNING_LOCK:
+                        already_warned = any(
+                            w.get("code") == "RATIONALE_SCHEMA_UNSUPPORTED"
+                            for w in warnings
+                        )
+                        if not already_warned:
+                            warnings.append({
+                                "code": "RATIONALE_SCHEMA_UNSUPPORTED",
+                                "message": (
+                                    "--format-schema shape not recognised, so "
+                                    "a 'rationale' property could not be "
+                                    "added; model-authored rationale may be "
+                                    "impossible for this run."
+                                ),
+                            })
+                adjusted_schema = format_schema
+        body["format"] = adjusted_schema
 
+    # Wall-clock budget must scale with the response the model is being
+    # asked for, not just the token cap: with rationale on, a 20-item batch
+    # generates roughly twice the output, and a timeout leaves
+    # `response_json` empty, which lands every item on UNKNOWN ->
+    # FULL_REDACT at confidence 0 exactly like a truncated response would
+    # (#68 round-5 finding -- fixing the token budget alone just moved the
+    # same failure from tokens to seconds).
+    # Scale with the ACTUAL token ask, not a flat multiplier: num_predict
+    # grows linearly with batch size, so a flat 2x still leaves a large
+    # batch timing out -- and a timeout empties `response_json`, landing
+    # every item on UNKNOWN -> FULL_REDACT exactly like truncation would
+    # (#68 round-7 finding).
+    _timeout_scale = max(1.0, body["options"]["num_predict"] / 2048)
     retry_plan = [
-        {"timeout": 30, "wait": 2},
-        {"timeout": 60, "wait": 2},
+        {"timeout": int(30 * _timeout_scale), "wait": 2},
+        {"timeout": int(60 * _timeout_scale), "wait": 2},
     ]
 
     response_json = {}
@@ -597,12 +774,56 @@ def ollama_validate_batch(
             needs_redaction = True
             final_classification = "FULL_REDACT" if classification != "SKIP" else "keep (low conf)"
 
-        final_results.append({
+        result = {
             "classification": final_classification,
             "needs_redaction": needs_redaction,
             "confidence": confidence,
-            "rationale": f"Batch Validation: {final_classification} ({confidence})"
-        })
+        }
+
+        if not generate_rationale:
+            # Unchanged from before this feature existed -- see mitigation
+            # #5 (disabling must be byte-identical to today's output).
+            result["rationale"] = f"Batch Validation: {final_classification} ({confidence})"
+        else:
+            synthetic_fallback = (
+                f"Batch validation classified this as {final_classification} "
+                f"(confidence {confidence:.2f}); no model-authored rationale was available."
+            )
+            model_rationale = res.get("rationale")
+            model_rationale = model_rationale.strip() if isinstance(model_rationale, str) else ""
+
+            # Same-batch leak check (mitigation #3): any OTHER item's literal
+            # text inside this item's rationale withholds it. A same-text
+            # duplicate is not "other" -- the prompt only forbids naming
+            # other items, so the model will naturally name this item's own
+            # text, and duplicates are routine in one batch because
+            # ValidationCache is only populated after the batch returns
+            # (every mention extracted from one chunk lands together).
+            own_text = (entity.text or "").strip().lower()
+            other_texts = [
+                e.text for j, e in enumerate(entities)
+                if j != idx and (e.text or "").strip().lower() != own_text
+            ]
+            if model_rationale and not rationale_mentions_text(
+                model_rationale, other_texts, own_text=entity.text
+            ):
+                result["rationale"] = model_rationale
+                result["rationale_origin"] = RationaleOrigin.LLM_VALIDATION.value
+            elif model_rationale:
+                # The model's rationale leaked another item's literal text
+                # (mitigation #3) -- withhold it rather than ship a leak,
+                # never silently reuse it and never mislabel it as
+                # llm_validation.
+                result["rationale"] = (
+                    "Rationale withheld: the model's explanation referenced "
+                    "another entity's literal text."
+                )
+                result["rationale_origin"] = RationaleOrigin.UNAVAILABLE.value
+            else:
+                result["rationale"] = synthetic_fallback
+                result["rationale_origin"] = RationaleOrigin.UNAVAILABLE.value
+
+        final_results.append(result)
 
     return final_results
 
@@ -924,7 +1145,7 @@ class LLMChunkExtractionFailed(RuntimeError):
 class IntelligentRedactionPipeline:
     """Main pipeline for intelligent entity extraction and validation."""
 
-    def __init__(self, model_id: str = "qwen2.5:14b", temperature: float = 0.1, seed: Optional[int] = None, skip_confidence: float = 0.95, llm_concurrency: int = 2, think_mode: bool = False, format_schema: Optional[Dict] = None):
+    def __init__(self, model_id: str = "qwen2.5:14b", temperature: float = 0.1, seed: Optional[int] = None, skip_confidence: float = 0.95, llm_concurrency: int = 2, think_mode: bool = False, format_schema: Optional[Dict] = None, generate_rationale: bool = False):
         self.model_id = model_id
         self.temperature = temperature
         self.seed = seed
@@ -936,6 +1157,9 @@ class IntelligentRedactionPipeline:
         self.llm_concurrency = max(1, min(5, requested_concurrency))
         self.think_mode = think_mode
         self.format_schema = format_schema
+        # Opt-in, off by default (MARCUT_GENERATE_RATIONALE, issue #68) --
+        # see ollama_validate_batch's docstring for what this changes.
+        self.generate_rationale = bool(generate_rationale)
         self.validation_cache = ValidationCache()
         self.doc_context = DocumentContext()
 
@@ -1057,6 +1281,7 @@ class IntelligentRedactionPipeline:
                         warnings=warnings,
                         think_mode=self.think_mode,
                         format_schema=self.format_schema,
+                        generate_rationale=self.generate_rationale,
                     )
 
                     # Apply results via lock
@@ -1065,6 +1290,9 @@ class IntelligentRedactionPipeline:
                             entity.validated = True
                             entity.validation_result = result.get("classification")
                             entity.needs_redaction = result.get("needs_redaction", True) # Default True
+                            if self.generate_rationale:
+                                entity.rationale = result.get("rationale")
+                                entity.rationale_origin = result.get("rationale_origin")
 
                             # Cache result for future
                             self.validation_cache.set(entity.text, entity.label, result)
@@ -1295,6 +1523,9 @@ class IntelligentRedactionPipeline:
                         entity.validated = True
                         entity.needs_redaction = cached.get("needs_redaction", True)
                         entity.validation_result = cached.get("classification")
+                        if self.generate_rationale:
+                            entity.rationale = cached.get("rationale")
+                            entity.rationale_origin = cached.get("rationale_origin")
                     elif needs_validation(entity, self.doc_context):
                         to_validate_buffer.append(entity)
 
@@ -1401,6 +1632,30 @@ class IntelligentRedactionPipeline:
             if entity.validation_result:
                 span["validation_result"] = entity.validation_result
 
+            if self.generate_rationale:
+                if entity.rationale_origin == RationaleOrigin.LLM_VALIDATION.value and entity.rationale:
+                    span["rationale"] = {
+                        "text": entity.rationale,
+                        "origin": RationaleOrigin.LLM_VALIDATION.value,
+                        "model": self.model_id,
+                    }
+                elif entity.rationale_origin == RationaleOrigin.UNAVAILABLE.value and entity.rationale:
+                    span["rationale"] = {
+                        "text": entity.rationale,
+                        "origin": RationaleOrigin.UNAVAILABLE.value,
+                    }
+                else:
+                    # Never validated at all (e.g. needs_validation() skipped
+                    # it) -- Option B only covers the validated subset, so
+                    # this is an honest "unavailable", not a fabricated
+                    # explanation of a decision the LLM never made. See
+                    # docs/design/redaction_rationale_reporting.md's
+                    # Option B coverage-gap discussion.
+                    span["rationale"] = {
+                        "text": "No rationale was generated for this entity.",
+                        "origin": RationaleOrigin.UNAVAILABLE.value,
+                    }
+
             output_spans.append(span)
 
         output_spans.sort(key=lambda span: (span["start"], span["end"], span["label"], span["text"]))
@@ -1422,6 +1677,7 @@ def run_enhanced_model(
     suppressed: Optional[List[Dict[str, Any]]] = None,
     think_mode: bool = False,
     format_schema: Optional[Dict] = None,
+    generate_rationale: bool = False,
     **kwargs
 ) -> List[Dict]:
     """Main entry point for enhanced model extraction."""
@@ -1436,7 +1692,8 @@ def run_enhanced_model(
             skip_confidence=skip_confidence,
             llm_concurrency=llm_concurrency,
             think_mode=think_mode,
-            format_schema=format_schema
+            format_schema=format_schema,
+            generate_rationale=generate_rationale,
         )
         return pipeline.process_document(
             text,

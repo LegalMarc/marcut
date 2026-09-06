@@ -35,7 +35,28 @@ Interaction" in the design doc first):
 """
 from typing import Any, Dict, List, Optional
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, field_validator
+
+from .rationale import RationaleOrigin
+
+
+class SpanRationale(BaseModel):
+    """Shape of a span's ``rationale`` object (issue #68).
+
+    ``origin`` is mandatory and enum-constrained on purpose -- per
+    docs/design/redaction_rationale_reporting.md's mitigation #1, "no
+    rationale object may omit its origin" is enforced at the schema level,
+    not left to report-rendering code to infer. ``model`` is optional and
+    should only be set when ``origin`` is ``llm_validation`` (a rule has no
+    model); ``extra="forbid"`` catches an ad-hoc field slipping into this
+    object undetected.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    text: str
+    origin: RationaleOrigin
+    model: Optional[str] = None
 
 
 class AuditReport(BaseModel):
@@ -50,6 +71,29 @@ class AuditReport(BaseModel):
     warnings: Optional[List[Dict[str, Any]]] = None
     suppressed: Optional[List[Dict[str, Any]]] = None
     settings: Optional[Dict[str, Any]] = None
+    # Report-level disclosure of whether/how rationale was generated for this
+    # run (issue #68, mitigation #7) -- present on every report once this
+    # feature ships (enabled or not) so an older/disabled-run report is
+    # unambiguously "not requested" rather than "requested and silently
+    # failed for every span". Kept as a loose dict (not a nested model)
+    # since it is only ever written by report.write_report(), never by a
+    # caller assembling ad-hoc span data.
+    rationale_generation: Optional[Dict[str, Any]] = None
+
+    @field_validator("spans")
+    @classmethod
+    def _validate_span_rationale(cls, spans: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """Every span's ``rationale`` object, if present, must validate as a
+        ``SpanRationale`` -- in particular, ``origin`` may never be missing.
+        Spans overall stay loosely typed (see module docstring); this is the
+        one nested shape this feature requires enforcing."""
+        for span in spans:
+            if not isinstance(span, dict):
+                continue
+            rationale = span.get("rationale")
+            if rationale is not None:
+                SpanRationale.model_validate(rationale)
+        return spans
 
 
 class ScrubReport(BaseModel):

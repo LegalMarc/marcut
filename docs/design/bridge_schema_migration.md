@@ -132,7 +132,9 @@ temp-then-`os.replace()` pattern (`_sibling_temp_path()` /
 below):
 
 - **Audit report** — `write_report()` (`report.py:50-100`) builds an ad-hoc
-  dict (`created_at`, `input_sha256`, `model`, `spans`, optionally `warnings`/
+  dict (`created_at`, `input_sha256`, `model`, `spans`, `rationale_generation`
+  (added by the redaction-rationale feature, #68 -- always present, even
+  when the feature is disabled), optionally `warnings`/
   `suppressed`/`settings`) and hands it to `write_json_file()`
   (`report.py:15-31`), which does a raw `json.dumps(data, indent=2)` with no
   schema validation before the `os.open(..., 0o600)` write.

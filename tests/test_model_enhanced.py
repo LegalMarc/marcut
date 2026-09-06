@@ -12,7 +12,16 @@ import pytest
 import marcut.model_enhanced as model_enhanced
 import marcut.model as model_module
 from marcut.cancellation import ProcessingDeadlineExceeded
-from marcut.model_enhanced import ollama_validate, Entity, DocumentContext, LlamaCppRedactionPipeline
+from marcut.model_enhanced import (
+    ollama_validate,
+    ollama_validate_batch,
+    get_batch_validation_prompt,
+    Entity,
+    DocumentContext,
+    LlamaCppRedactionPipeline,
+    ValidationCache,
+)
+from marcut.rationale import RationaleOrigin
 
 
 class DummyResponse:
@@ -788,3 +797,316 @@ def test_llama_cpp_process_document_succeeds_without_failures(monkeypatch):
     assert spans[0]["text"] == "John Smith"
     assert text[spans[0]["start"]:spans[0]["end"]] == "John Smith"
     assert warnings == []
+
+
+# --- Issue #68: redaction-rationale data layer (Option B) -------------------
+#
+# `get_batch_validation_prompt`/`ollama_validate_batch` extend the existing
+# batch-validation call to optionally carry a genuine rationale string,
+# gated entirely by `generate_rationale` (MARCUT_GENERATE_RATIONALE at the
+# pipeline.py layer). See docs/design/redaction_rationale_reporting.md.
+
+class _FakeJsonResponse:
+    """Minimal stand-in for requests.Response as ollama_validate_batch uses
+    it: only `.status_code` and `.json()` are ever called."""
+
+    def __init__(self, payload: dict, status_code: int = 200):
+        self.status_code = status_code
+        self._payload = payload
+
+    def json(self):
+        return self._payload
+
+
+def _batch_response(results):
+    return _FakeJsonResponse({"response": json.dumps({"results": results})})
+
+
+def _two_org_entities():
+    return [
+        Entity(text="Acme Corp", label="ORG", start=0, end=9, confidence=0.8, needs_redaction=True),
+        Entity(text="Widget LLC", label="ORG", start=50, end=60, confidence=0.8, needs_redaction=True),
+    ]
+
+
+class TestBatchValidationPromptRationale:
+    def test_prompt_omits_rationale_request_when_disabled(self):
+        """Off by default: no extra output field requested, no token-cost
+        increase, no prompt-text change from before this feature existed."""
+        prompt = get_batch_validation_prompt(_two_org_entities(), "text", DocumentContext(), generate_rationale=False)
+        assert '"rationale"' not in prompt
+
+    def test_prompt_requests_rationale_and_placeholder_only_instruction_when_enabled(self):
+        prompt = get_batch_validation_prompt(_two_org_entities(), "text", DocumentContext(), generate_rationale=True)
+        assert '"rationale"' in prompt
+        # Mitigation #3: prompt-level instruction against restating another
+        # item's literal text (Python-side enforcement is the backstop).
+        assert "never restate" in prompt.lower() or "generically" in prompt.lower()
+
+
+class TestOllamaValidateBatchRationale:
+    def test_disabled_produces_legacy_placeholder_with_no_rationale_origin_key(self, monkeypatch):
+        """Mitigation #5: disabling must be byte-identical to today's
+        output, even if the (mocked) model response happens to include a
+        rationale field -- it must be ignored entirely when disabled."""
+        entities = _two_org_entities()
+
+        def fake_post(url, json=None, timeout=None):
+            return _batch_response([
+                {"id": 1, "classification": "FULL_REDACT", "confidence": 0.98, "rationale": "Ignored when disabled."},
+                {"id": 2, "classification": "SKIP", "confidence": 0.99, "rationale": "Ignored when disabled."},
+            ])
+
+        monkeypatch.setattr(model_enhanced.requests, "post", fake_post)
+
+        results = ollama_validate_batch(
+            "test-model", entities, "text", DocumentContext(), skip_confidence=0.95,
+            generate_rationale=False,
+        )
+
+        assert results[0]["rationale"] == "Batch Validation: FULL_REDACT (0.98)"
+        assert "rationale_origin" not in results[0]
+        assert "rationale_origin" not in results[1]
+
+    def test_enabled_uses_model_authored_rationale(self, monkeypatch):
+        entities = _two_org_entities()
+
+        def fake_post(url, json=None, timeout=None):
+            return _batch_response([
+                {"id": 1, "classification": "FULL_REDACT", "confidence": 0.98,
+                 "rationale": "This is a specific named company that is a party to the agreement."},
+                {"id": 2, "classification": "SKIP", "confidence": 0.99, "rationale": "Generic role reference."},
+            ])
+
+        monkeypatch.setattr(model_enhanced.requests, "post", fake_post)
+
+        results = ollama_validate_batch(
+            "test-model", entities, "text", DocumentContext(), skip_confidence=0.95,
+            generate_rationale=True,
+        )
+
+        assert results[0]["rationale_origin"] == RationaleOrigin.LLM_VALIDATION.value
+        assert "specific named company" in results[0]["rationale"]
+
+    def test_enabled_falls_back_to_unavailable_when_model_omits_rationale_field(self, monkeypatch):
+        """Acceptance criterion: unavailable fallback exercised when the
+        model's response omits the field."""
+        entities = _two_org_entities()
+
+        def fake_post(url, json=None, timeout=None):
+            return _batch_response([
+                {"id": 1, "classification": "FULL_REDACT", "confidence": 0.98},  # no "rationale" key
+                {"id": 2, "classification": "SKIP", "confidence": 0.99},
+            ])
+
+        monkeypatch.setattr(model_enhanced.requests, "post", fake_post)
+
+        results = ollama_validate_batch(
+            "test-model", entities, "text", DocumentContext(), skip_confidence=0.95,
+            generate_rationale=True,
+        )
+
+        assert results[0]["rationale_origin"] == RationaleOrigin.UNAVAILABLE.value
+        assert results[1]["rationale_origin"] == RationaleOrigin.UNAVAILABLE.value
+
+    def test_enabled_falls_back_to_unavailable_on_unparseable_response(self, monkeypatch):
+        """Acceptance criterion: unavailable fallback exercised when the
+        response fails to parse at all (never mislabeled llm_validation)."""
+        entities = _two_org_entities()
+
+        def fake_post(url, json=None, timeout=None):
+            return _FakeJsonResponse({"response": "not valid json at all"})
+
+        monkeypatch.setattr(model_enhanced.requests, "post", fake_post)
+
+        results = ollama_validate_batch(
+            "test-model", entities, "text", DocumentContext(), skip_confidence=0.95,
+            generate_rationale=True,
+        )
+
+        assert all(r["rationale_origin"] == RationaleOrigin.UNAVAILABLE.value for r in results)
+        # Bias towards retention still applies even though nothing parsed.
+        assert all(r["needs_redaction"] for r in results)
+
+    def test_enabled_withholds_rationale_that_leaks_another_items_literal_text(self, monkeypatch):
+        """Mitigation #3 backstop: even though the prompt instructs the
+        model not to restate another item's name, a rationale that does so
+        anyway must be discarded (never shipped as llm_validation), not
+        merely trusted."""
+        entities = _two_org_entities()
+
+        def fake_post(url, json=None, timeout=None):
+            return _batch_response([
+                {
+                    "id": 1, "classification": "FULL_REDACT", "confidence": 0.98,
+                    "rationale": "This is the counterparty alongside Widget LLC in the same section.",
+                },
+                {"id": 2, "classification": "FULL_REDACT", "confidence": 0.9, "rationale": "A specific named entity."},
+            ])
+
+        monkeypatch.setattr(model_enhanced.requests, "post", fake_post)
+
+        results = ollama_validate_batch(
+            "test-model", entities, "text", DocumentContext(), skip_confidence=0.95,
+            generate_rationale=True,
+        )
+
+        # Item 1's rationale leaked item 2's literal text ("Widget LLC") --
+        # must be withheld, not shipped as a real llm_validation rationale.
+        assert results[0]["rationale_origin"] == RationaleOrigin.UNAVAILABLE.value
+        assert "Widget LLC" not in results[0]["rationale"]
+        # Item 2's own rationale is unaffected.
+        assert results[1]["rationale_origin"] == RationaleOrigin.LLM_VALIDATION.value
+
+    def test_same_text_duplicates_in_one_batch_may_name_their_own_text(self, monkeypatch):
+        """Regression for issue #68 round-2 finding 2: every mention of one
+        entity extracted from a chunk lands in the same validation batch
+        (ValidationCache is only populated after the batch returns), and
+        the prompt only forbids naming OTHER items, so a rationale that
+        names the item's own text must not be withheld just because a
+        same-text duplicate sits beside it in the batch."""
+        entities = [
+            Entity(text="Acme Corp", label="ORG", start=0, end=9, confidence=0.8, needs_redaction=True),
+            Entity(text="Acme Corp", label="ORG", start=40, end=49, confidence=0.8, needs_redaction=True),
+        ]
+        own_name_rationale = "Acme Corp is a specific named company party to the agreement."
+
+        def fake_post(url, json=None, timeout=None):
+            return _batch_response([
+                {"id": 1, "classification": "FULL_REDACT", "confidence": 0.98, "rationale": own_name_rationale},
+                {"id": 2, "classification": "FULL_REDACT", "confidence": 0.97, "rationale": own_name_rationale},
+            ])
+
+        monkeypatch.setattr(model_enhanced.requests, "post", fake_post)
+
+        results = ollama_validate_batch(
+            "test-model", entities, "text", DocumentContext(), skip_confidence=0.95,
+            generate_rationale=True,
+        )
+
+        assert [r["rationale_origin"] for r in results] == [RationaleOrigin.LLM_VALIDATION.value] * 2
+        assert [r["rationale"] for r in results] == [own_name_rationale] * 2
+
+
+class TestValidationCacheSchemaVersion:
+    """Mitigation #4: bump the cache key/schema version so a hit from
+    before this feature cannot pair a fresh decision with a stale or
+    missing rationale."""
+
+    def test_cache_key_includes_schema_version(self):
+        cache = ValidationCache()
+        key = cache.get_key("Acme Corp", "ORG")
+        assert cache.SCHEMA_VERSION in key
+
+    def test_pre_feature_shaped_entry_under_the_old_key_is_a_cache_miss(self):
+        """Simulate a cache entry written before the version bump (the old,
+        unversioned key format) and confirm a lookup through the current
+        (versioned) get_key() treats it as absent rather than reusing it."""
+        cache = ValidationCache()
+        old_unversioned_key = "acme corp:org"
+        cache.cache[old_unversioned_key] = {"classification": "FULL_REDACT", "needs_redaction": True}
+
+        assert cache.get("Acme Corp", "ORG") is None
+
+    def test_fresh_entry_round_trips_through_versioned_key(self):
+        cache = ValidationCache()
+        cache.set("Acme Corp", "ORG", {"classification": "FULL_REDACT", "needs_redaction": True, "rationale_origin": "llm_validation"})
+        assert cache.get("Acme Corp", "ORG")["rationale_origin"] == "llm_validation"
+
+
+class TestRationaleRequestShaping:
+    """#68 round-4: enabling an opt-in *reporting* flag must not change what
+    gets redacted, and must not let the report claim a rationale extension
+    that constrained decoding made impossible."""
+
+    def _entities(self, n):
+        from marcut.model_enhanced import Entity
+        return [
+            Entity(text=f"Entity {i}", label="ORG", start=i * 20, end=i * 20 + 8,
+                   confidence=0.5, needs_redaction=True)
+            for i in range(n)
+        ]
+
+    def _capture_body(self, monkeypatch, entities, **kwargs):
+        import marcut.model_enhanced as me
+        captured = {}
+
+        class _Resp:
+            status_code = 200
+            def json(self):
+                return {"response": "{\"results\": []}"}
+            def raise_for_status(self):
+                return None
+
+        def fake_post(url, json=None, timeout=None, **_kw):
+            captured.update(json or {})
+            return _Resp()
+
+        monkeypatch.setattr(me.requests, "post", fake_post)
+        me.ollama_validate_batch(
+            "qwen2.5:14b", entities, "full text", me.DocumentContext(), **kwargs
+        )
+        return captured
+
+    def test_num_predict_grows_with_batch_size_when_rationale_enabled(self, monkeypatch):
+        """A truncated batch array fails to parse; the retry uses the same cap
+        and every item then falls to UNKNOWN -> FULL_REDACT at confidence 0,
+        i.e. the flag would silently change redaction decisions."""
+        entities = self._entities(20)
+        off = self._capture_body(monkeypatch, entities, generate_rationale=False)
+        on = self._capture_body(monkeypatch, entities, generate_rationale=True)
+        assert off["options"]["num_predict"] == 2048
+        assert on["options"]["num_predict"] > off["options"]["num_predict"]
+
+    def test_num_predict_is_unchanged_when_rationale_disabled(self, monkeypatch):
+        for n in (1, 20, 50):
+            body = self._capture_body(monkeypatch, self._entities(n), generate_rationale=False)
+            assert body["options"]["num_predict"] == 2048
+
+    def test_constrained_format_schema_gains_a_rationale_property(self, monkeypatch):
+        schema = {
+            "type": "object",
+            "properties": {"results": {"type": "array", "items": {
+                "type": "object",
+                "properties": {"id": {"type": "integer"}, "classification": {"type": "string"}},
+                "additionalProperties": False,
+            }}},
+        }
+        body = self._capture_body(
+            monkeypatch, self._entities(2), format_schema=schema, generate_rationale=True
+        )
+        item_props = body["format"]["properties"]["results"]["items"]["properties"]
+        assert item_props["rationale"] == {"type": "string"}
+        # The caller's schema object must not be mutated.
+        assert "rationale" not in schema["properties"]["results"]["items"]["properties"]
+
+    def test_format_schema_is_untouched_when_rationale_disabled(self, monkeypatch):
+        schema = {"type": "object", "properties": {"results": {"type": "array", "items": {
+            "type": "object", "properties": {"id": {"type": "integer"}}}}}}
+        body = self._capture_body(
+            monkeypatch, self._entities(2), format_schema=schema, generate_rationale=False
+        )
+        assert body["format"] == schema
+
+    def test_unrecognised_schema_shape_is_passed_through_unchanged(self, monkeypatch):
+        schema = {"type": "object", "properties": {"something_else": {"type": "string"}}}
+        body = self._capture_body(
+            monkeypatch, self._entities(1), format_schema=schema, generate_rationale=True
+        )
+        assert body["format"] == schema
+
+    def test_unpatchable_schema_warns_once_with_a_code_key(self, monkeypatch):
+        """#68 round-7: the warning must use `code` (report.py renders
+        `w.get('code', 'WARNING')`) and must not repeat per batch, or it
+        crowds real LLM_CHUNK_FAILED entries out of the 50-warning cap."""
+        ref_schema = {"type": "object", "properties": {
+            "results": {"type": "array", "items": {"$ref": "#/$defs/Item"}}}}
+        warnings = []
+        for _ in range(3):
+            self._capture_body(
+                monkeypatch, self._entities(2), format_schema=ref_schema,
+                generate_rationale=True, warnings=warnings,
+            )
+        codes = [w.get("code") for w in warnings]
+        assert codes == ["RATIONALE_SCHEMA_UNSUPPORTED"]
+        assert all("type" not in w for w in warnings)
