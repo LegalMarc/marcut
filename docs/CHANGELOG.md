@@ -25,6 +25,7 @@ All notable changes to this project will be documented in this file.
   `--format-schema` gains a `rationale` property instead of silently making
   the field impossible; and `rationale_generation.model` is null unless a
   model actually authored rationale.
+- Render each entity-table row's `rationale` in the HTML audit report (#69, the rendering half of #68's data layer): an origin-appropriate badge (`AI-inferred` / `Rule match` / `No rationale`, reusing the existing `.source-badge` CSS) plus the explanation text, with a persistent "AI-inferred, not verified" caveat rendered as real text -- not a CSS-only cue -- next to any non-`rule_deterministic`, non-`unavailable` rationale, so the caveat survives copy/print/export and fails safe on an unrecognized or future `llm_*` origin rather than silently dropping the label. `unavailable` and a missing/malformed `rationale` field (a pre-#68 report, or the feature disabled) both render an explicit "No rationale recorded for this entity." state instead of a blank cell. Also replaces the Source column's exact `source == 'rule'` badge predicate with `rationale.is_rule_like_source()`, fixing a `consistency_pass*`/`rule_signature` span rendering a contradictory `llm` source badge next to a `rule_deterministic` rationale in the same row.
 
 ## 2026-07-14
 

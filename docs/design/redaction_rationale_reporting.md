@@ -3,8 +3,10 @@
 Status: Data layer shipped under #68 (`MARCUT_GENERATE_RATIONALE`, off by
 default -- `rationale.py`, `SpanRationale` in `report_schema.py`,
 `pipeline._annotate_missing_rationale`/`_canonicalize_cluster_rationale`/
-`_sanitize_cross_referenced_rationale`); HTML report rendering is still
-pending, tracked as #69. Companion to issue #32, item "Automated
+`_sanitize_cross_referenced_rationale`); HTML report rendering shipped under
+#69 (`report._render_rationale_cell`, origin-appropriate badges, the
+persistent "AI-inferred, not verified" caveat, and the `is_rule_like_source`
+Source-badge correction). Companion to issue #32, item "Automated
 'Redaction Rationale' Reporting" in `backlog.md`'s "Major New Directions" section.
 Three resolutions recorded from the #68 review, against the mitigation
 numbering below (the ticket's #1/#2/#3 are this doc's #3/#4/#5):
