@@ -1850,6 +1850,7 @@ def _finalize_and_write(
                 ),
                 report_dir=os.path.dirname(scrub_report_path),
                 warnings=warnings,
+                content_path=output_temp_path,
             )
             # Validate the in-memory shape before it ever reaches the T7
             # temp write -- a schema-invalid report must never be staged
@@ -3742,13 +3743,24 @@ def _build_scrub_report(
     output_file_info: Optional[Dict[str, Any]] = None,
     report_dir: Optional[str] = None,
     warnings: Optional[List[Dict[str, Any]]] = None,
+    content_path: Optional[str] = None,
 ) -> dict:
     """
     Build comprehensive forensic report with before/after values grouped like UI.
 
     Handles list and dict values from enhanced _read_metadata_values,
     exports binary parts to structured binaries/ subdirectory.
+
+    ``file_path`` names the delivered output for display purposes (e.g. the
+    final, not-yet-renamed destination on a transactional write) while
+    ``content_path`` -- defaulting to ``file_path`` -- is the path actually
+    read from disk for post-scrub content inspection (deep explorer,
+    encryption detection). Callers on a staged/rename write path should pass
+    the staged temp path as ``content_path`` so inspection reads the bytes
+    that will actually be delivered, not whatever (possibly stale or
+    nonexistent) file currently sits at the final path.
     """
+    content_path = content_path if content_path is not None else file_path
 
     def _perform_forensic_analysis(before_values: dict, after_values: dict) -> List[Dict[str, Any]]:
         """Run heuristic checks to flag suspicious metadata inconsistencies."""
@@ -4461,7 +4473,7 @@ def _build_scrub_report(
         if pre_explorer:
             deep_explorer["pre"] = pre_explorer
         if report["summary"].get("report_type") != "metadata_only":
-            post_explorer = _build_deep_explorer(file_path or input_path, "post_scrub")
+            post_explorer = _build_deep_explorer(content_path or input_path, "post_scrub")
             if post_explorer:
                 deep_explorer["post"] = post_explorer
     elif report_dir:
@@ -4489,7 +4501,7 @@ def _build_scrub_report(
     if "encryption" not in before:
         before["encryption"] = _detect_encryption(input_path)
     if "encryption" not in after:
-        after["encryption"] = _detect_encryption(file_path or input_path)
+        after["encryption"] = _detect_encryption(content_path or input_path)
 
     # ========== PROCESS GROUPS ==========
     for group_name, group_fields in groups.items():
