@@ -33,6 +33,7 @@ import threading
 import concurrent.futures
 from dataclasses import dataclass
 from .cancellation import ProcessingDeadlineExceeded, check_processing_deadline, remaining_seconds
+from .model_config import uses_llama_cpp_backend
 from .rationale import RationaleOrigin, rationale_mentions_text
 from .model import (
     parse_llm_response,
@@ -839,13 +840,25 @@ def apply_llm_overrides_to_rule_spans(
     allowed_labels: Optional[Set[str]] = None,
     suppressed: Optional[List[Dict[str, Any]]] = None,
     debug: bool = False,
+    llama_gguf: str = "",
     **kwargs
 ) -> List[Dict[str, Any]]:
-    """Use LLM validation to drop rule spans marked as SKIP with high confidence."""
+    """Use LLM validation to drop rule spans marked as SKIP with high confidence.
+
+    `llama_gguf`, when set, overrides `model_id` for backend dispatch --
+    matching `_collect_enhanced_spans` (#87) so `--llama-gguf x.gguf` with
+    the default `--backend ollama` dispatches the same way in both places.
+    """
     if not rule_spans:
         return rule_spans
 
-    if not model_id or model_id == "mock" or backend == "mock":
+    # Key the "is there an LLM to call at all" guard on the same value the
+    # dispatch below uses (#87). Keying it on `model_id` alone would return
+    # early when `llama_gguf` is set with an empty or "mock" `model_id`,
+    # while `_collect_enhanced_spans` dispatched that same run to llama.cpp.
+    model_path = llama_gguf or model_id
+
+    if not model_path or model_path == "mock" or backend == "mock":
         return rule_spans
 
     if allowed_labels is not None and not allowed_labels:
@@ -901,8 +914,8 @@ def apply_llm_overrides_to_rule_spans(
 
     results: List[Dict[str, Any]] = []
     try:
-        if backend == "llama_cpp" or (model_id.endswith(".gguf") or model_id.startswith("/")):
-            pipeline = LlamaCppRedactionPipeline(model_id, temperature, seed)
+        if uses_llama_cpp_backend(backend, model_path):
+            pipeline = LlamaCppRedactionPipeline(model_path, temperature, seed)
             for _, entity in candidates:
                 results.append(pipeline.validate_entity(entity, text, doc_context))
         else:
@@ -923,7 +936,7 @@ def apply_llm_overrides_to_rule_spans(
         return rule_spans
 
     drop_indices: Set[int] = set()
-    if backend == "llama_cpp" or (model_id.endswith(".gguf") or model_id.startswith("/")):
+    if uses_llama_cpp_backend(backend, model_path):
         for (idx, _), res in zip(candidates, results):
             classification = res.get("classification", "")
             try:

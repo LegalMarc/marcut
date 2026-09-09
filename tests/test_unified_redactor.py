@@ -102,6 +102,28 @@ class TestValidateParameters:
                 backend="llama_cpp",
             )
 
+    def test_llama_cpp_backend_accepts_relative_path_without_gguf_suffix(
+        self, temp_docx, tmp_path
+    ):
+        """A relative model path with a separator but no `.gguf` suffix must still
+        pass the pre-flight guard (#87): the guard call site keeps the
+        `os.path.sep in model` arm on top of `is_gguf_model_path`, matching
+        `validate_model_name`'s broader path-permissive handling above it.
+        """
+        result = run_unified_redaction(
+            input_path=temp_docx,
+            output_path=str(tmp_path / "out.docx"),
+            report_path=str(tmp_path / "report.json"),
+            mode="enhanced",
+            model="models/qwen2.5-14b-q4",
+            backend="llama_cpp",
+        )
+        # The guard must not be what rejected this call; any failure past
+        # this point is unrelated (e.g. the temp DOCX fixture being a
+        # minimal/invalid document) and is caught internally as a non-raising
+        # failure result rather than propagating.
+        assert "llama_cpp backend requires" not in (result.get("error") or "")
+
     def test_missing_input_file(self):
         """Test that missing input file raises error."""
         with pytest.raises(ValueError, match="Input file not found"):

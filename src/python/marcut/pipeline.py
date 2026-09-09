@@ -14,6 +14,7 @@ from .docx_pkg.document import DocxMap
 from .docx_pkg.settings import MetadataCleaningSettings
 from .docx_revisions import accept_revisions_in_docx_bytes
 from .chunker import make_chunks
+from .model_config import is_gguf_model_path, uses_llama_cpp_backend
 from .rules import run_rules, _is_excluded_combo, _is_excluded, _is_specific_org_span, ADDRESS
 from .model_enhanced import (
     LlamaCppRedactionPipeline,
@@ -2028,16 +2029,12 @@ def _collect_rule_spans(text: str, debug: bool) -> List[Dict[str, Any]]:
     return rule_spans
 
 
-def _uses_llama_cpp_backend(backend: str, model_path: str) -> bool:
-    """Single definition of "this run goes through `LlamaCppRedactionPipeline`
-    rather than Ollama": an explicit backend, a GGUF file, or an absolute
-    model path. Used by `_collect_enhanced_spans` to dispatch and by
-    `_finalize_and_write` to report `rationale_generation.mode` honestly."""
-    return (
-        backend == "llama_cpp"
-        or model_path.endswith(".gguf")
-        or ("/" in model_path and model_path.startswith("/"))
-    )
+# Thin re-export (#87): the actual predicate now lives in `model_config.py`
+# -- a leaf module `model_enhanced.py` can also import without a cycle -- so
+# every module that needs "does this run dispatch to llama.cpp" answers it
+# the same way. Kept under this name since `_collect_enhanced_spans` and
+# `_finalize_and_write` (both in this module) call it as `_uses_llama_cpp_backend`.
+_uses_llama_cpp_backend = uses_llama_cpp_backend
 
 
 def _sanitize_model_for_report(model_value: str) -> str:
@@ -2045,9 +2042,11 @@ def _sanitize_model_for_report(model_value: str) -> str:
     file on disk, so a report travelling with the document never carries the
     operator's home directory or username (#85).
 
-    "Names a file on disk" is decided with the same two path arms
-    `_uses_llama_cpp_backend` dispatches on -- an absolute path or a ".gguf"
-    file -- so a *relative* GGUF path ("models/mine/qwen2.5-14b.gguf") is
+    "Names a file on disk" is decided by calling the shared
+    `is_gguf_model_path()` rather than re-deriving it (#87), so this
+    display-side test cannot drift from the same two path arms
+    `uses_llama_cpp_backend` dispatches on: an absolute path or a ".gguf"
+    file. A *relative* GGUF path ("models/mine/qwen2.5-14b.gguf") is
     sanitised exactly like an absolute one, while a namespaced registry id
     ("hf.co/bartowski/Qwen2.5-14B-GGUF:Q4_K_M") keeps the namespace that
     distinguishes it from another model. Using a narrower test than dispatch
@@ -2059,7 +2058,7 @@ def _sanitize_model_for_report(model_value: str) -> str:
     """
     if not model_value:
         return model_value
-    if os.path.isabs(model_value) or model_value.endswith(".gguf"):
+    if is_gguf_model_path(model_value):
         return os.path.basename(model_value)
     return model_value
 
@@ -2475,6 +2474,7 @@ def run_redaction(
                     allowed_labels=allowed_labels,
                     suppressed=suppressed,
                     debug=debug,
+                    llama_gguf=llama_gguf,
                     think_mode=think_mode,
                     format_schema=format_schema,
                 )

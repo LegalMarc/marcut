@@ -130,3 +130,38 @@ def default_temperature() -> float:
 
 def default_skip_confidence() -> float:
     return default_model().skip_confidence
+
+
+def is_gguf_model_path(model_path: str) -> bool:
+    """True if `model_path` names a local file on disk that llama.cpp would
+    load directly: an absolute path or a `.gguf` file. A namespaced Ollama
+    registry id such as `hf.co/bartowski/Qwen2.5-14B-GGUF:Q4_K_M` contains a
+    "/" but is neither absolute nor a `.gguf` file, so it does NOT match
+    here -- it is still an Ollama model, just one fetched from a registry
+    namespace.
+
+    This is the narrower building block `uses_llama_cpp_backend()` is built
+    from, exposed separately for the two call sites (`unified_redactor.py`)
+    that already know or have already fixed the backend and only need the
+    "does this string look like a local GGUF path" half of the question.
+    """
+    return model_path.endswith(".gguf") or model_path.startswith("/")
+
+
+def uses_llama_cpp_backend(backend: str, model_path: str) -> bool:
+    """Single definition of "this run dispatches to llama.cpp rather than
+    Ollama": an explicit `backend="llama_cpp"`, or a `model_path` that names
+    a local GGUF file/path (see `is_gguf_model_path`).
+
+    `model_path` should be `llama_gguf or model_id` when the caller has
+    both -- `--llama-gguf` overrides the plain model id for dispatch
+    purposes even when `--backend` is left at its "ollama" default (#68).
+
+    This mirrors what `pipeline._collect_enhanced_spans` actually dispatches
+    on, and what `pipeline._sanitize_model_for_report` classifies "is a
+    path" the same way (#85) so a namespaced registry id keeps the
+    namespace that distinguishes it from another model. Everything in this
+    codebase that needs to answer "will this run use llama.cpp" should call
+    this, not re-derive the check.
+    """
+    return backend == "llama_cpp" or is_gguf_model_path(model_path)

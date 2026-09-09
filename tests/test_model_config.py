@@ -23,7 +23,9 @@ from marcut.model_config import (
     default_skip_confidence,
     default_temperature,
     get_model,
+    is_gguf_model_path,
     list_models,
+    uses_llama_cpp_backend,
 )
 
 REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
@@ -174,6 +176,62 @@ class TestMalformedCatalog:
         )
         with pytest.raises(ModelCatalogError):
             model_config._load_catalog(str(bad_path))
+
+
+class TestUsesLlamaCppBackend:
+    """The single shared definition of "this run dispatches to llama.cpp
+    rather than Ollama" (#87), unifying what used to be five separately
+    drifted copies across model_enhanced.py, pipeline.py, and
+    unified_redactor.py."""
+
+    def test_explicit_llama_cpp_backend(self):
+        # An explicit backend dispatches to llama.cpp regardless of the
+        # model string's shape.
+        assert uses_llama_cpp_backend("llama_cpp", "qwen2.5:14b") is True
+
+    def test_gguf_suffix(self):
+        assert uses_llama_cpp_backend("ollama", "model.gguf") is True
+        assert uses_llama_cpp_backend("ollama", "models/mine/qwen2.5-14b.gguf") is True
+
+    def test_absolute_path_without_gguf_suffix(self):
+        assert uses_llama_cpp_backend("ollama", "/Users/alice/models/mine") is True
+
+    def test_plain_ollama_tag(self):
+        assert uses_llama_cpp_backend("ollama", "qwen2.5:14b") is False
+
+    def test_namespaced_registry_id_is_not_a_local_path(self):
+        # Contains "/" but is neither absolute nor a .gguf file -- an
+        # Ollama registry namespace, not a local llama.cpp path (#85).
+        assert uses_llama_cpp_backend("ollama", "hf.co/bartowski/Qwen2.5-14B-GGUF:Q4_K_M") is False
+
+    def test_llama_gguf_set_with_backend_ollama(self):
+        # --llama-gguf overrides the plain model id for dispatch even when
+        # --backend is left at its "ollama" default (#68); callers pass
+        # `llama_gguf or model_id` as `model_path`.
+        model_id = "qwen2.5:14b"
+        llama_gguf = "/Users/alice/models/mine.gguf"
+        assert uses_llama_cpp_backend("ollama", llama_gguf or model_id) is True
+
+    def test_relative_gguf_path_no_leading_slash(self):
+        assert uses_llama_cpp_backend("ollama", "relative/model.gguf") is True
+
+
+class TestIsGgufModelPath:
+    """The narrower building block `uses_llama_cpp_backend` is built from,
+    used directly at call sites that already know or have already fixed
+    the backend (unified_redactor.py)."""
+
+    def test_gguf_suffix(self):
+        assert is_gguf_model_path("model.gguf") is True
+
+    def test_absolute_path(self):
+        assert is_gguf_model_path("/Users/alice/models/mine") is True
+
+    def test_plain_ollama_tag_is_not_a_path(self):
+        assert is_gguf_model_path("qwen2.5:14b") is False
+
+    def test_namespaced_registry_id_is_not_a_path(self):
+        assert is_gguf_model_path("hf.co/bartowski/Qwen2.5-14B-GGUF:Q4_K_M") is False
 
 
 class TestBundledCopiesStaySynced:

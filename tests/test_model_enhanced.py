@@ -13,6 +13,7 @@ import marcut.model_enhanced as model_enhanced
 import marcut.model as model_module
 from marcut.cancellation import ProcessingDeadlineExceeded
 from marcut.model_enhanced import (
+    apply_llm_overrides_to_rule_spans,
     ollama_validate,
     ollama_validate_batch,
     get_batch_validation_prompt,
@@ -1149,3 +1150,126 @@ class TestRationaleRequestShaping:
         codes = [w.get("code") for w in warnings]
         assert codes == ["RATIONALE_SCHEMA_UNSUPPORTED"]
         assert all("type" not in w for w in warnings)
+
+
+class TestApplyLlmOverridesLlamaGgufPrecedence:
+    """#87: `apply_llm_overrides_to_rule_spans` used to ignore `llama_gguf`
+    entirely and dispatch on `model_id` alone, so `--llama-gguf x.gguf`
+    with the default `--backend ollama` could dispatch to llama.cpp in
+    `_collect_enhanced_spans` but to Ollama here. It must now honor
+    `llama_gguf or model_id`, the same precedence real dispatch uses."""
+
+    def _rule_span(self, text):
+        return {
+            "start": 0,
+            "end": len(text),
+            "text": text,
+            "label": "NAME",
+            "confidence": 0.5,
+        }
+
+    def test_llama_gguf_set_with_backend_ollama_dispatches_to_llama_cpp(self, monkeypatch):
+        text = "John Smith"
+        rule_spans = [self._rule_span(text)]
+
+        captured_model_paths = []
+
+        class FakeLlamaCppPipeline:
+            def __init__(self, model_path, temperature, seed):
+                captured_model_paths.append(model_path)
+
+            def validate_entity(self, entity, full_text, doc_context):
+                return {"classification": "KEEP", "confidence": 0.0}
+
+        monkeypatch.setattr(model_enhanced, "LlamaCppRedactionPipeline", FakeLlamaCppPipeline)
+
+        def _fail_ollama_validate_batch(*args, **kwargs):
+            raise AssertionError("must not call Ollama when llama_gguf is set")
+
+        monkeypatch.setattr(model_enhanced, "ollama_validate_batch", _fail_ollama_validate_batch)
+
+        result = apply_llm_overrides_to_rule_spans(
+            text=text,
+            rule_spans=rule_spans,
+            model_id="qwen2.5:14b",
+            backend="ollama",
+            llama_gguf="/Users/alice/models/mine.gguf",
+        )
+
+        assert captured_model_paths == ["/Users/alice/models/mine.gguf"]
+        assert result == rule_spans
+
+    def test_plain_ollama_model_id_without_llama_gguf_uses_ollama(self, monkeypatch):
+        text = "John Smith"
+        rule_spans = [self._rule_span(text)]
+
+        def _fail_llama_cpp(*args, **kwargs):
+            raise AssertionError("must not dispatch to llama.cpp for a plain Ollama tag")
+
+        monkeypatch.setattr(model_enhanced, "LlamaCppRedactionPipeline", _fail_llama_cpp)
+        monkeypatch.setattr(
+            model_enhanced,
+            "ollama_validate_batch",
+            lambda *args, **kwargs: [{"needs_redaction": False}],
+        )
+
+        result = apply_llm_overrides_to_rule_spans(
+            text=text,
+            rule_spans=rule_spans,
+            model_id="qwen2.5:14b",
+            backend="ollama",
+        )
+
+        # The Ollama path (not llama.cpp) was used, and its "drop" verdict
+        # (needs_redaction=False) was honored.
+        assert result == []
+
+    def test_empty_model_id_with_llama_gguf_still_validates(self, monkeypatch):
+        """The early "is there an LLM to call at all" guard keys on
+        `llama_gguf or model_id` too (#87). Keyed on `model_id` alone it
+        returned early here while `_collect_enhanced_spans` dispatched the
+        same run to llama.cpp -- the residual half of the divergence."""
+        text = "John Smith"
+        rule_spans = [self._rule_span(text)]
+
+        captured_model_paths = []
+
+        class FakeLlamaCppPipeline:
+            def __init__(self, model_path, temperature, seed):
+                captured_model_paths.append(model_path)
+
+            def validate_entity(self, entity, full_text, doc_context):
+                return {"classification": "KEEP", "confidence": 0.0}
+
+        monkeypatch.setattr(model_enhanced, "LlamaCppRedactionPipeline", FakeLlamaCppPipeline)
+
+        result = apply_llm_overrides_to_rule_spans(
+            text=text,
+            rule_spans=rule_spans,
+            model_id="",
+            backend="ollama",
+            llama_gguf="/Users/alice/models/mine.gguf",
+        )
+
+        assert captured_model_paths == ["/Users/alice/models/mine.gguf"]
+        assert result == rule_spans
+
+    def test_mock_backend_still_short_circuits(self, monkeypatch):
+        """Broadening the guard's key must not weaken it: `backend="mock"`
+        still returns the rule spans untouched, even with a GGUF path set."""
+
+        def _fail_llama_cpp(*args, **kwargs):
+            raise AssertionError("must not dispatch any LLM for backend='mock'")
+
+        monkeypatch.setattr(model_enhanced, "LlamaCppRedactionPipeline", _fail_llama_cpp)
+
+        text = "John Smith"
+        rule_spans = [self._rule_span(text)]
+        result = apply_llm_overrides_to_rule_spans(
+            text=text,
+            rule_spans=rule_spans,
+            model_id="mock",
+            backend="mock",
+            llama_gguf="/Users/alice/models/mine.gguf",
+        )
+        assert result == rule_spans

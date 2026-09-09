@@ -62,6 +62,7 @@ import re  # noqa: E402 -- must follow the sys.path fixup above
 
 # Import the pipeline with strict package import (no fallbacks)
 import marcut.pipeline as pipeline  # noqa: E402 -- must resolve against the sys.path fixup above, not the system path
+from marcut.model_config import is_gguf_model_path  # noqa: E402 -- must follow the sys.path fixup above
 
 
 def validate_model_name(model: str) -> bool:
@@ -72,8 +73,13 @@ def validate_model_name(model: str) -> bool:
     if not model or model == "mock":
         return True
     # Allow simple file paths for GGUF models (e.g., /path/to/model.gguf)
-    # but still restrict characters to safe set
-    if model.endswith(".gguf") or "/" in model:
+    # but still restrict characters to safe set. Deliberately broader than
+    # `is_gguf_model_path` alone (#87): a relative path with no `.gguf`
+    # suffix ("../relative/model") must still get the path-permissive
+    # character set below, even though it wouldn't trigger llama.cpp
+    # dispatch on its own -- so this keeps the pre-existing `"/" in model`
+    # clause on top of the shared predicate rather than narrowing to it.
+    if is_gguf_model_path(model) or "/" in model:
         # Tighter check: Allow only valid path characters
         return bool(re.match(r"^[a-zA-Z0-9_.\-/:~\\]+$", model))
     
@@ -202,7 +208,12 @@ def run_unified_redaction(
     elif backend == "llama_cpp":
         if llama_gguf:
             model = llama_gguf
-        elif not (model and (model.endswith(".gguf") or os.path.sep in model)):
+        # Deliberately broader than `is_gguf_model_path` alone (#87): a
+        # relative/absolute path with no `.gguf` suffix is still a legitimate
+        # model path for this backend, so keep the pre-existing
+        # `os.path.sep in model` clause on top of the shared predicate rather
+        # than narrowing to it (mirrors the same rationale at validate_model_name above).
+        elif not (model and (is_gguf_model_path(model) or os.path.sep in model)):
             raise ValueError("llama_cpp backend requires --llama-gguf or a GGUF model path")
 
     # Initialize logging
