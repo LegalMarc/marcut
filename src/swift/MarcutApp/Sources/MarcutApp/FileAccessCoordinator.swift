@@ -31,14 +31,13 @@ class FileAccessCoordinator: ObservableObject {
 
     private var hasRequestedPermissionsThisSession = false
     private var sessionPermissionsEstablished = false
-    private let permissionSessionKey = "MarcutApp_PermissionSessionUUID"
     private var hasAttemptedRestoration = false
     private var downloadsAccessDeclinedThisSession = false
     private var downloadsPromptInProgress = false
 
     private init() {
         initializePermissionState() // Initialize state first
-        initializeSessionTracking() // Track new app session
+        logSessionStart() // One session per launch: this type is a singleton
         // DEFERRED: restoreAuthorizedDirectories() // Then restore bookmarks (may update state)
     }
 
@@ -54,26 +53,20 @@ class FileAccessCoordinator: ObservableObject {
         )
     }
 
-    /// Initializes session-based permission tracking to detect new app launches
-    private func initializeSessionTracking() {
-        let currentSessionUUID = UUID().uuidString
-        let storedSessionUUID = userDefaults.string(forKey: permissionSessionKey)
-
-        if storedSessionUUID != currentSessionUUID {
-            // New app session - reset permission request tracking
-            hasRequestedPermissionsThisSession = false
-            sessionPermissionsEstablished = false
-            userDefaults.set(currentSessionUUID, forKey: permissionSessionKey)
-            DebugLogger.shared.log(
-                "🆔 New app session detected: \(currentSessionUUID)",
-                component: "FileAccessCoordinator"
-            )
-        } else {
-            DebugLogger.shared.log(
-                "🆔 Continuing existing session: \(currentSessionUUID)",
-                component: "FileAccessCoordinator"
-            )
-        }
+    /// Logs the start of a new app session.
+    ///
+    /// This type is a `private init()` singleton, so it is constructed exactly
+    /// once per process launch and `hasRequestedPermissionsThisSession` /
+    /// `sessionPermissionsEstablished` already start `false`. An earlier version
+    /// compared a freshly generated UUID against one persisted in UserDefaults to
+    /// "detect" a new launch; because the UUID was minted immediately before the
+    /// comparison the two could never be equal, so the else branch was
+    /// unreachable and the persisted key served no purpose.
+    private func logSessionStart() {
+        DebugLogger.shared.log(
+            "🆔 New app session: \(UUID().uuidString)",
+            component: "FileAccessCoordinator"
+        )
     }
 
     /// Checks if permissions should be requested based on version and state

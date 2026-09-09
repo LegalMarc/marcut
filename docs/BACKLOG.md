@@ -21,11 +21,11 @@ All items originally listed here have shipped. See `docs/CHANGELOG.md` for detai
 - ~~Stringly-Typed Defaults~~ — shipped (centralized `DefaultsKey` enum, `DefaultsKey.swift`).
 - ~~Mixed Subprocess Logics~~ — shipped (unified model-name-parsing between `gui.py` and `PythonBridge.swift`).
 - ~~Hardcoded Model Data~~ — shipped (`models.json` catalog, `model_config.py`/`ModelCatalog.swift`/`BundleResourceLocator.swift`).
+- ~~God Module in Python~~ — shipped. `docx_io.py` is now a thin re-export shim over the `docx_pkg/` package (`settings.py`, `xml_utils.py`, `zip_postprocess.py`, `scan.py`, `hardening.py`, `revision_writer.py`, `document.py`), landed across #72-#76 against the behavior-parity plan in `docs/design/docx_io_package_split.md`.
 
 **Still open (design spikes exist, not yet implemented — see the referenced docs before starting):**
 
 - **Massive View Controllers**: Split `SettingsView.swift` and `DocumentRedactionViewModel.swift` into smaller, single-responsibility components. See `docs/design/view_controller_decomposition.md` for a responsibility inventory, target structure, and a behavior-parity verification plan (required reading before touching either file — this app's redaction correctness is the reason a blind refactor is out of scope for an unattended pass).
-- **God Module in Python**: Refactor `docx_io.py` into a formal python package. See `docs/design/docx_io_package_split.md` for the same kind of behavior-parity analysis.
 - **Fragile Swift-to-Python Bridge**: Transition away from parsing unstructured JSON state files to a stricter schema. See `docs/design/bridge_schema_migration.md`, which also covers interaction with the cancellation/deadline and transactional-write systems.
 
 ## 3. Major New Directions (Innovation)
