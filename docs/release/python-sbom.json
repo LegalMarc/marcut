@@ -52,12 +52,12 @@
       "properties": [
         {
           "name": "marcut:source",
-          "value": "src/swift/MarcutApp/Sources/MarcutApp/python_site/charset_normalizer-3.4.7.dist-info/METADATA"
+          "value": "src/swift/MarcutApp/Sources/MarcutApp/python_site/charset_normalizer-3.4.9.dist-info/METADATA"
         }
       ],
-      "purl": "pkg:pypi/charset-normalizer@3.4.7",
+      "purl": "pkg:pypi/charset-normalizer@3.4.9",
       "type": "library",
-      "version": "3.4.7"
+      "version": "3.4.9"
     },
     {
       "name": "dateparser",
@@ -301,9 +301,9 @@
         "value": "SwiftPM Git revisions, BeeWare Python framework, and embedded Ollama require manual release review unless external scanner support is added."
       }
     ],
-    "timestamp": "2026-07-14T11:49:47.970933Z"
+    "timestamp": "2026-09-09T21:33:05.740742Z"
   },
-  "serialNumber": "urn:uuid:0dee1cab-6cf9-4792-8dd1-94cf5bb81843",
+  "serialNumber": "urn:uuid:ba52866f-5a5e-4fc3-9f94-04eae70578cb",
   "specVersion": "1.5",
   "version": 1
 }
