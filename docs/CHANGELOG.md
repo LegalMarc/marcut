@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## 2026-09-09
+
+### Feature
+- Make `MARCUT_GENERATE_RATIONALE` a first-class `run_redaction()` setting instead of a process-global env var read independently at two points in the run (`_finalize_and_write` and `_collect_enhanced_spans`). `run_redaction()` gains an optional `generate_rationale` parameter, resolved exactly once (falling back to the env var only when the caller leaves it `None`), recorded in `report_settings["generate_rationale"]`, and threaded to both former read sites so a report's spans and its `rationale_generation.enabled` flag can no longer disagree with each other -- a real hazard for the macOS app, which runs Python in-process via PythonKit and reuses the interpreter across batch jobs. `_finalize_and_write` still falls back to reading the env var directly when called without a `report_settings` dict carrying the key, preserving existing direct-call test behavior. Adds a `--rationale` CLI flag (defaulting to `None`, not `False`, so omitting it still defers to the env var) and a matching `unified_redactor.run_unified_redaction()` passthrough (#88).
+
 ## 2026-09-05
 
 ### Fix

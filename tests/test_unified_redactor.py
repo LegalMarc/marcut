@@ -213,6 +213,58 @@ class TestValidateParameters:
             shutil.rmtree(temp_dir)
 
 
+class TestGenerateRationalePassthrough:
+    """#88: run_unified_redaction must forward generate_rationale to
+    pipeline.run_redaction unchanged, including the default None (so an
+    operator relying on MARCUT_GENERATE_RATIONALE isn't silently
+    overridden to False by a CLI/app layer that never mentioned rationale)."""
+
+    def _fake_run_redaction(self, captured):
+        def fake(*args, **kwargs):
+            captured.update(kwargs)
+            return (0, {})
+        return fake
+
+    def test_default_is_none_not_false(self, monkeypatch, tmp_path):
+        import marcut.unified_redactor as unified_redactor
+
+        captured = {}
+        monkeypatch.setattr(unified_redactor.pipeline, "run_redaction", self._fake_run_redaction(captured))
+        input_path = tmp_path / "in.docx"
+        input_path.write_bytes(b"input")
+        report_path = tmp_path / "report.json"
+        report_path.write_text('{"spans": []}', encoding="utf-8")
+
+        run_unified_redaction(
+            input_path=str(input_path),
+            output_path=str(tmp_path / "out.docx"),
+            report_path=str(report_path),
+            mode="rules",
+        )
+
+        assert captured["generate_rationale"] is None
+
+    def test_explicit_value_is_forwarded(self, monkeypatch, tmp_path):
+        import marcut.unified_redactor as unified_redactor
+
+        captured = {}
+        monkeypatch.setattr(unified_redactor.pipeline, "run_redaction", self._fake_run_redaction(captured))
+        input_path = tmp_path / "in.docx"
+        input_path.write_bytes(b"input")
+        report_path = tmp_path / "report.json"
+        report_path.write_text('{"spans": []}', encoding="utf-8")
+
+        run_unified_redaction(
+            input_path=str(input_path),
+            output_path=str(tmp_path / "out.docx"),
+            report_path=str(report_path),
+            mode="rules",
+            generate_rationale=True,
+        )
+
+        assert captured["generate_rationale"] is True
+
+
 class TestSetupLogging:
     """Test setup_logging function."""
 

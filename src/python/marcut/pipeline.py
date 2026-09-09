@@ -1230,6 +1230,7 @@ def _build_report_settings(
     seed: int,
     llm_skip_confidence: float,
     llama_gguf: str = "",
+    generate_rationale: bool = False,
 ) -> Dict[str, Any]:
     # `_collect_enhanced_spans` dispatches on `llama_gguf or model_id` (the
     # full, un-sanitised path). Decide `llama_cpp_dispatch` from that exact
@@ -1268,6 +1269,14 @@ def _build_report_settings(
         "llm_skip_confidence": llm_skip_confidence,
         "llm_skip_confidence_percent": int(round(llm_skip_confidence * 100)),
         "llama_cpp_dispatch": llama_cpp_dispatch,
+        # Resolved once, at the `run_redaction` entry point, from the
+        # `generate_rationale` parameter (falling back to the
+        # MARCUT_GENERATE_RATIONALE env var only when the caller leaves it
+        # unset) -- recorded here so `_finalize_and_write` can read the same
+        # decision `_collect_enhanced_spans` already used, instead of both
+        # re-reading the environment independently at different points in
+        # the run (#88).
+        "generate_rationale": bool(generate_rationale),
     }
     if llama_gguf:
         # `--llama-gguf` overrides `model_id` for dispatch (see
@@ -1673,7 +1682,18 @@ def _finalize_and_write(
     # Disabling this must leave spans/decisions byte-identical to today's
     # output (mitigation #5) -- every rationale-related line below is
     # gated on this single flag for exactly that reason.
-    generate_rationale = _metadata_env_enabled("MARCUT_GENERATE_RATIONALE")
+    #
+    # `run_redaction` resolves MARCUT_GENERATE_RATIONALE exactly once and
+    # records the decision in `report_settings["generate_rationale"]` (see
+    # `_build_report_settings`); read it from there so this function and
+    # `_collect_enhanced_spans` can never observe two different values for
+    # one run (#88). A caller that invokes this function directly without a
+    # `report_settings` carrying that key (unit tests, older callers) falls
+    # back to reading the environment itself, same as before #88.
+    if report_settings is not None and "generate_rationale" in report_settings:
+        generate_rationale = bool(report_settings["generate_rationale"])
+    else:
+        generate_rationale = _metadata_env_enabled("MARCUT_GENERATE_RATIONALE")
 
     # Defense-in-depth guard (A5): never let a span with corrupted offsets
     # or drifted text reach dm.apply_replacements() below. See
@@ -2081,6 +2101,7 @@ def _collect_enhanced_spans(
     threads: int = 4,
     think_mode: bool = False,
     format_schema: Optional[Dict] = None,
+    generate_rationale: bool = False,
 ) -> List[Dict[str, Any]]:
     """Run the enhanced extraction pipeline (Ollama or llama.cpp)."""
     from .progress import ProgressTracker, ProcessingPhase
@@ -2124,12 +2145,14 @@ def _collect_enhanced_spans(
             suppressed=suppressed,
             think_mode=think_mode,
             format_schema=format_schema,
-            # Opt-in, off by default (issue #68) -- see
-            # _finalize_and_write's matching read of the same env var,
-            # which annotates/canonicalizes rationale for every span
+            # Opt-in, off by default (issue #68). The value is resolved once
+            # by `run_redaction` and threaded through as a parameter (#88)
+            # rather than read from the environment here -- see
+            # `_finalize_and_write`'s matching use of the same resolved
+            # value, which annotates/canonicalizes rationale for every span
             # (including rule-matched ones) once the LLM path has attached
             # its own llm_validation rationale here.
-            generate_rationale=_metadata_env_enabled("MARCUT_GENERATE_RATIONALE"),
+            generate_rationale=generate_rationale,
         )
 
     if debug:
@@ -2218,11 +2241,28 @@ def run_redaction(
     llm_concurrency: int = 2,
     think_mode: bool = False,
     format_schema: Optional[Dict] = None,
+    generate_rationale: Optional[bool] = None,
 ) -> Tuple[int, Dict[str, float]]:
     """
     Unified pipeline entry point. Dispatches between rule-only and Rules + AI
     modes based on the supplied mode value.
+
+    ``generate_rationale`` (issue #68/#88): when left at the default
+    ``None``, resolves the ``MARCUT_GENERATE_RATIONALE`` env var exactly
+    once, here, for this run. Pass an explicit ``True``/``False`` (the CLI's
+    ``--rationale`` flag and the ``unified_redactor`` passthrough do) to
+    override the environment entirely. The resolved value is recorded in
+    ``report_settings["generate_rationale"]`` and threaded to both
+    ``_collect_enhanced_spans`` and ``_finalize_and_write`` so a single run
+    can never observe two different values for this flag, even when the
+    interpreter is long-lived and reused across jobs (the PythonKit/batch
+    scenario this issue exists to close).
     """
+    resolved_generate_rationale = (
+        _metadata_env_enabled("MARCUT_GENERATE_RATIONALE")
+        if generate_rationale is None
+        else bool(generate_rationale)
+    )
     rules_only_modes = {"rules", "strict", "rules_only"}
     llm_modes = {"rules_override", "constrained_overrides", "llm_overrides"}
     try:
@@ -2287,6 +2327,7 @@ def run_redaction(
             seed=seed,
             llm_skip_confidence=llm_skip_confidence,
             llama_gguf=llama_gguf,
+            generate_rationale=resolved_generate_rationale,
         )
 
         # Enhanced error handling for document loading
@@ -2395,6 +2436,7 @@ def run_redaction(
                         threads=threads,
                         think_mode=think_mode,
                         format_schema=format_schema,
+                        generate_rationale=resolved_generate_rationale,
                     )
                     if llm_detail:
                         llm_timing_detail = {

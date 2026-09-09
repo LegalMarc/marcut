@@ -115,6 +115,7 @@ class TestBuildParser:
         assert args.llm_concurrency == 2
         assert args.think is False
         assert args.format_schema is None
+        assert args.rationale is None
         assert args.debug is False
         assert args.no_qa is False
         assert args.metadata_preset is None
@@ -289,3 +290,72 @@ class TestEdgeCases:
             "--no-qa"
         ])
         assert args.no_qa is True
+
+    def test_rationale_flag_defaults_to_none_and_is_settable(self):
+        """--rationale (#88): omitted means "defer to the
+        MARCUT_GENERATE_RATIONALE env var", not an implicit False."""
+        parser = build()
+        args = parser.parse_args([
+            "redact",
+            "--in", "/input.docx",
+            "--out", "/output.docx",
+            "--report", "/report.json",
+        ])
+        assert args.rationale is None
+
+        args = parser.parse_args([
+            "redact",
+            "--in", "/input.docx",
+            "--out", "/output.docx",
+            "--report", "/report.json",
+            "--rationale",
+        ])
+        assert args.rationale is True
+
+    def test_main_forwards_rationale_flag(self, monkeypatch):
+        """--rationale (#88) must reach run_unified_redaction as
+        generate_rationale, and stay None (not False) when omitted so an
+        operator relying on MARCUT_GENERATE_RATIONALE isn't silently
+        overridden."""
+        captured = {}
+
+        def fake_run_unified_redaction(**kwargs):
+            captured.update(kwargs)
+            return {
+                "success": True,
+                "exit_code": 0,
+                "duration": 0.1,
+                "entity_count": 0,
+                "phase_timings": {},
+                "llm_timing": {},
+            }
+
+        monkeypatch.setattr(cli, "run_unified_redaction", fake_run_unified_redaction)
+        monkeypatch.setattr(cli, "ensure_ollama_ready", lambda **kwargs: None)
+        monkeypatch.setattr(sys, "argv", [
+            "marcut",
+            "redact",
+            "--in", "/input.docx",
+            "--out", "/output.docx",
+            "--report", "/report.json",
+            "--rationale",
+        ])
+
+        with pytest.raises(SystemExit) as exc:
+            cli.main()
+
+        assert exc.value.code == 0
+        assert captured["generate_rationale"] is True
+
+        monkeypatch.setattr(sys, "argv", [
+            "marcut",
+            "redact",
+            "--in", "/input.docx",
+            "--out", "/output.docx",
+            "--report", "/report.json",
+        ])
+        with pytest.raises(SystemExit) as exc:
+            cli.main()
+
+        assert exc.value.code == 0
+        assert captured["generate_rationale"] is None

@@ -48,6 +48,16 @@ def build():
     r.add_argument("--llm-concurrency", type=int, default=2)
     r.add_argument("--think", action="store_true", help="Enable Ollama thinking mode when the selected model supports it.")
     r.add_argument("--format-schema", default=None, help="JSON schema path or inline JSON for Ollama structured output.")
+    r.add_argument(
+        "--rationale",
+        action="store_true",
+        default=None,
+        help=(
+            "Generate a redaction rationale for each entity in the audit report. "
+            "Omit to fall back to the MARCUT_GENERATE_RATIONALE environment variable "
+            "(default: off)."
+        ),
+    )
     r.add_argument("--no-qa", action="store_true")
     r.add_argument("--debug", action="store_true")
     r.add_argument("--timing", action="store_true", help="Show detailed phase timing breakdown")
@@ -183,6 +193,7 @@ def main():
             progress_callback=progress_callback,
             think_mode=a.think,
             format_schema=format_schema,
+            generate_rationale=a.rationale,
         )
 
         if result['success']:

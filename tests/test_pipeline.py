@@ -1120,7 +1120,7 @@ class TestFinalizeAndWriteRationaleIntegration:
         report_settings = pipeline._build_report_settings(
             mode=mode, mode_requested=mode, backend=backend, model_id=model_id,
             chunk_tokens=250, overlap=50, temperature=0.1, seed=42, llm_skip_confidence=0.95,
-            llama_gguf=llama_gguf,
+            llama_gguf=llama_gguf, generate_rationale=True,
         )
 
         report = _run_finalize_and_write(text, spans, tmp_path, report_settings=report_settings)
@@ -1315,6 +1315,136 @@ class TestRulesOnlyRunNeverCallsLLMForRationale:
         ssn_spans = [sp for sp in report["spans"] if sp["label"] == "SSN"]
         assert ssn_spans
         assert all(sp["rationale"]["origin"] == "rule_deterministic" for sp in ssn_spans)
+
+
+class TestGenerateRationaleResolvedOnceAcrossRun:
+    """Regression for #88: MARCUT_GENERATE_RATIONALE must be resolved
+    exactly once per run_redaction() call and threaded to both
+    _collect_enhanced_spans and _finalize_and_write, rather than each
+    reading the environment independently. A long-lived interpreter
+    (PythonKit in-process runs, reused batch-job processes) that flips the
+    env var between those two former read points must not be able to
+    produce a report whose spans and rationale_generation.enabled
+    disagree."""
+
+    class _FakeDocxMap:
+        def __init__(self, text):
+            self.text = text
+            self.author_name = ""
+            self.replacements = None
+
+        def apply_replacements(self, replacements, track_changes=True):
+            self.replacements = replacements
+
+        def scrub_metadata(self, settings):
+            return None
+
+        def harden_document(self, *args, **kwargs):
+            return None
+
+        def save(self, path):
+            with open(path, "wb") as handle:
+                handle.write(b"stub docx")
+
+    def test_env_flip_between_collect_and_finalize_cannot_desync_report(self, monkeypatch, tmp_path):
+        text = "Acme Corporation signed the agreement."
+        fake_dm = self._FakeDocxMap(text)
+        monkeypatch.setattr(
+            pipeline.DocxMap,
+            "load_accepting_revisions",
+            staticmethod(lambda input_path, debug=False: fake_dm),
+        )
+        monkeypatch.setenv("MARCUT_METADATA_ARGS", "--preset-none")
+        # Resolved to True once, at run_redaction's entry (generate_rationale
+        # left at its default None, so it falls back to this env var).
+        monkeypatch.setenv("MARCUT_GENERATE_RATIONALE", "1")
+
+        captured = {}
+
+        def fake_collect(text, model_id, chunk_tokens, overlap, temperature, seed,
+                          llm_skip_confidence, debug, **kwargs):
+            captured["generate_rationale_seen"] = kwargs.get("generate_rationale")
+            # Simulate a batch job / long-lived interpreter flipping the env
+            # var mid-run -- the exact scenario #88 exists to close -- in the
+            # gap between the two former independent read points.
+            monkeypatch.setenv("MARCUT_GENERATE_RATIONALE", "0")
+            return [{
+                "start": 0, "end": len("Acme Corporation"), "label": "ORG",
+                "text": "Acme Corporation", "confidence": 0.9, "source": "llm_extract",
+                "needs_redaction": True,
+            }]
+
+        monkeypatch.setattr(pipeline, "_collect_enhanced_spans", fake_collect)
+
+        input_path = tmp_path / "input.docx"
+        input_path.write_bytes(b"input")
+        output_path = tmp_path / "output.docx"
+        report_path = tmp_path / "report.json"
+
+        code, _timings = pipeline.run_redaction(
+            str(input_path), str(output_path), str(report_path),
+            mode="rules_override", model_id="qwen2.5:14b", chunk_tokens=250, overlap=50,
+            temperature=0.1, seed=42, debug=False,
+        )
+
+        assert code == 0
+        # _collect_enhanced_spans received the value resolved once at entry
+        # (the env var was "1" at that point), never a later-flipped value.
+        assert captured["generate_rationale_seen"] is True
+
+        report = json.loads(report_path.read_text(encoding="utf-8"))
+        # Even though the env var read "0" by the time _finalize_and_write
+        # ran, the rationale annotation and the report-level
+        # rationale_generation.enabled flag must both still reflect the ONE
+        # value resolved at entry -- never the environment's live state at
+        # whatever moment each function happens to check it.
+        assert report["rationale_generation"]["enabled"] is True
+        assert all(sp.get("rationale") for sp in report["spans"])
+
+    def test_explicit_parameter_overrides_a_mid_run_env_flip_too(self, monkeypatch, tmp_path):
+        """Same hazard, but exercised via the explicit `generate_rationale`
+        parameter (as the CLI's --rationale flag and the unified_redactor
+        passthrough use it) rather than the env-var fallback, with the env
+        var left disabled the whole time."""
+        text = "Acme Corporation signed the agreement."
+        fake_dm = self._FakeDocxMap(text)
+        monkeypatch.setattr(
+            pipeline.DocxMap,
+            "load_accepting_revisions",
+            staticmethod(lambda input_path, debug=False: fake_dm),
+        )
+        monkeypatch.setenv("MARCUT_METADATA_ARGS", "--preset-none")
+        monkeypatch.delenv("MARCUT_GENERATE_RATIONALE", raising=False)
+
+        def fake_collect(text, model_id, chunk_tokens, overlap, temperature, seed,
+                          llm_skip_confidence, debug, **kwargs):
+            # An env flip here must have no effect: the run explicitly
+            # passed generate_rationale=True below.
+            monkeypatch.setenv("MARCUT_GENERATE_RATIONALE", "0")
+            return [{
+                "start": 0, "end": len("Acme Corporation"), "label": "ORG",
+                "text": "Acme Corporation", "confidence": 0.9, "source": "llm_extract",
+                "needs_redaction": True,
+            }]
+
+        monkeypatch.setattr(pipeline, "_collect_enhanced_spans", fake_collect)
+
+        input_path = tmp_path / "input.docx"
+        input_path.write_bytes(b"input")
+        output_path = tmp_path / "output.docx"
+        report_path = tmp_path / "report.json"
+
+        code, _timings = pipeline.run_redaction(
+            str(input_path), str(output_path), str(report_path),
+            mode="rules_override", model_id="qwen2.5:14b", chunk_tokens=250, overlap=50,
+            temperature=0.1, seed=42, debug=False,
+            generate_rationale=True,
+        )
+
+        assert code == 0
+        report = json.loads(report_path.read_text(encoding="utf-8"))
+        assert report["rationale_generation"]["enabled"] is True
+        assert all(sp.get("rationale") for sp in report["spans"])
 
 
 class TestLLMModeRuleLikeSpansNeverGetLLMRationale:

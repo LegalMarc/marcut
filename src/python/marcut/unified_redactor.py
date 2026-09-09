@@ -173,6 +173,7 @@ def run_unified_redaction(
     progress_callback=None,
     think_mode: bool = False,
     format_schema: Optional[Dict] = None,
+    generate_rationale: Optional[bool] = None,
 ) -> Dict[str, Any]:
     """
     Unified redaction entry point.
@@ -266,8 +267,9 @@ def run_unified_redaction(
             progress_callback=progress_callback,
             think_mode=think_mode,
             format_schema=format_schema,
+            generate_rationale=generate_rationale,
         )
-        
+
         # Extract LLM timing if available
         llm_timing = {}
         if isinstance(phase_timings, dict) and 'llm_timing' in phase_timings:
@@ -366,6 +368,16 @@ Examples:
     parser.add_argument('--llm-concurrency', type=int, default=2, help='Concurrent Ollama extraction workers (default: 2)')
     parser.add_argument('--think', action='store_true', help='Enable thinking mode for Ollama models')
     parser.add_argument('--format-schema', help='Path to JSON schema file for constrained decoding')
+    parser.add_argument(
+        '--rationale',
+        action='store_true',
+        default=None,
+        help=(
+            'Generate a redaction rationale for each entity in the audit report. '
+            'Omit to fall back to the MARCUT_GENERATE_RATIONALE environment variable '
+            '(default: off).'
+        ),
+    )
 
     args, _ = parser.parse_known_args()
 
@@ -398,6 +410,7 @@ Examples:
         log_path=args.log,
         think_mode=args.think,
         format_schema=format_schema_dict,
+        generate_rationale=args.rationale,
     )
 
     # Exit with appropriate code
