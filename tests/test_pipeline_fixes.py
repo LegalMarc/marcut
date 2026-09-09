@@ -123,3 +123,62 @@ class TestPipelineFixes:
         out = pipeline._apply_consistency_pass(text, spans)
         org_spans = [sp for sp in out if sp.get("label") == "ORG" and sp.get("text") == "Sample 123 Inc"]
         assert len(org_spans) == 2
+
+    def test_final_output_file_info_does_not_read_final_path(self, tmp_path, monkeypatch):
+        # #84: naming fields for final_path (file_name/file_extension/mime_type)
+        # are derivable from the path string alone -- final_path must never be
+        # hashed or even statted, since it may be stale (a prior run's output)
+        # or not exist yet (the transactional rename hasn't happened).
+        temp_path = tmp_path / "staged.tmp"
+        temp_path.write_bytes(b"delivered bytes")
+        final_path = tmp_path / "does" / "not" / "exist.docx"  # deliberately missing
+
+        calls = []
+        original_sha256 = pipeline._sha256_file
+
+        def spy_sha256(path):
+            calls.append(path)
+            return original_sha256(path)
+
+        monkeypatch.setattr(pipeline, "_sha256_file", spy_sha256)
+
+        info = pipeline._final_output_file_info(str(temp_path), str(final_path))
+
+        # Only the real (temp) file was ever hashed.
+        assert calls == [str(temp_path)]
+        # Naming fields still come from final_path, not temp_path.
+        assert info["file_name"] == "exist.docx"
+        assert info["file_extension"] == "docx"
+        assert info["mime_type"] == pipeline._safe_report_file_info(str(final_path), hash_and_size=False)["mime_type"]
+        # size/hash reflect the real delivered bytes (temp_path), not final_path.
+        assert info["sha256"] == original_sha256(str(temp_path))
+        assert info["size_bytes"] == len(b"delivered bytes")
+
+    def test_safe_report_file_info_matches_with_and_without_hashing(self, tmp_path):
+        # Acceptance criterion: _final_output_file_info's returned dict must be
+        # unchanged for existing callers (same keys, same values) versus the
+        # pre-fix behaviour of calling _safe_report_file_info(final_path) with
+        # full hashing and copying only the naming keys out of it.
+        temp_path = tmp_path / "staged.tmp"
+        temp_path.write_bytes(b"hello world")
+        final_path = tmp_path / "final.docx"
+        final_path.write_bytes(b"stale previous run contents")
+
+        old_style_info = pipeline._safe_report_file_info(str(temp_path))
+        old_style_naming = pipeline._safe_report_file_info(str(final_path))
+        for key in ("file_name", "file_extension", "mime_type"):
+            if key in old_style_naming:
+                old_style_info[key] = old_style_naming[key]
+            else:
+                old_style_info.pop(key, None)
+
+        new_info = pipeline._final_output_file_info(str(temp_path), str(final_path))
+
+        assert new_info == old_style_info
+
+    def test_safe_report_file_info_hash_and_size_false_skips_filesystem_access(self, tmp_path):
+        path = tmp_path / "missing.docx"  # never created
+        info = pipeline._safe_report_file_info(str(path), hash_and_size=False)
+        assert info == {"file_name": "missing.docx", "file_extension": "docx", "mime_type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document"}
+        assert "size_bytes" not in info
+        assert "sha256" not in info

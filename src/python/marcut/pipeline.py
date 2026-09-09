@@ -2566,7 +2566,7 @@ def _sha256_file(path: str) -> str:
     return hasher.hexdigest()
 
 
-def _safe_report_file_info(path: Optional[str]) -> Dict[str, Any]:
+def _safe_report_file_info(path: Optional[str], hash_and_size: bool = True) -> Dict[str, Any]:
     info: Dict[str, Any] = {}
     if not path:
         return info
@@ -2586,6 +2586,9 @@ def _safe_report_file_info(path: Optional[str]) -> Dict[str, Any]:
             info["mime_type"] = mime_type
     except Exception:
         pass
+
+    if not hash_and_size:
+        return info
 
     try:
         info["size_bytes"] = os.path.getsize(path)
@@ -2608,9 +2611,13 @@ def _final_output_file_info(temp_path: str, final_path: str) -> Dict[str, Any]:
     report built from ``final_path`` would hash either a stale file or
     nothing at all. Hash and size the bytes that are actually delivered
     (the staged temp file), but name them by the path the user receives.
+    Naming fields (file_name/file_extension/mime_type) for ``final_path``
+    are derived from the path string alone -- ``hash_and_size=False`` skips
+    the filesystem stat/read that would otherwise hash or size a stale (or
+    nonexistent) file for values that are discarded below anyway.
     """
     info = _safe_report_file_info(temp_path)
-    naming = _safe_report_file_info(final_path)
+    naming = _safe_report_file_info(final_path, hash_and_size=False)
     for key in ("file_name", "file_extension", "mime_type"):
         if key in naming:
             info[key] = naming[key]
