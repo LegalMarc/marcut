@@ -1230,17 +1230,43 @@ def _build_report_settings(
     llm_skip_confidence: float,
     llama_gguf: str = "",
 ) -> Dict[str, Any]:
+    # `_collect_enhanced_spans` dispatches on `llama_gguf or model_id` (the
+    # full, un-sanitised path). Decide `llama_cpp_dispatch` from that exact
+    # value BEFORE either input gets basenamed below for the report, and
+    # record it unconditionally -- not only when `--llama-gguf` is set.
+    # `model_id` alone can be an absolute/path-like string (plain
+    # `--model /Users/alice/models/x`, no `--llama-gguf`), and basenaming it
+    # for privacy (#85) strips both the leading "/" and, when there's no
+    # ".gguf" suffix, the only other thing `_uses_llama_cpp_backend` keys
+    # on -- exactly the trap #68 round-8 already hit once for the
+    # `--llama-gguf` case. Recording the decision itself here, from the
+    # full path, is what keeps `_finalize_and_write`'s rationale-mode
+    # fallback (`llama_gguf or model`) honest without ever having to
+    # re-derive dispatch from a sanitised string.
+    llama_cpp_dispatch = _uses_llama_cpp_backend(backend, llama_gguf or model_id)
+
     settings = {
         "mode": mode,
         "mode_requested": mode_requested,
         "backend": backend,
-        "model": model_id,
+        # Basename only when the id names a file on disk: a plain
+        # `--model /Users/alice/models/x` -- or a relative
+        # `--model models/alice-private/x.gguf` -- would otherwise put the
+        # operator's home directory and username into an artifact that
+        # travels with the document (#85). `_sanitize_model_for_report`
+        # classifies "is a path" with the same two path arms dispatch uses,
+        # so a namespaced id like "hf.co/bartowski/Qwen2.5-14B-GGUF:Q4_K_M"
+        # is still recorded verbatim. `llama_cpp_dispatch` above is already
+        # captured from the full, un-sanitised value, so this can never
+        # affect dispatch.
+        "model": _sanitize_model_for_report(model_id),
         "chunk_tokens": chunk_tokens,
         "overlap": overlap,
         "temperature": temperature,
         "seed": seed,
         "llm_skip_confidence": llm_skip_confidence,
         "llm_skip_confidence_percent": int(round(llm_skip_confidence * 100)),
+        "llama_cpp_dispatch": llama_cpp_dispatch,
     }
     if llama_gguf:
         # `--llama-gguf` overrides `model_id` for dispatch (see
@@ -1250,19 +1276,8 @@ def _build_report_settings(
         # effective model the run actually used (#68 round-3 finding 2).
         # Basename only: an absolute GGUF path would put the operator's
         # home directory and username into an artifact that travels with
-        # the document (#68 round-7 finding). Narrow by design -- this
-        # closes the path this feature introduced, and does NOT claim the
-        # report is path-free overall: `settings["model"]` and the
-        # llama.cpp span `source` can still carry absolute paths from
-        # before this change. Removing those is its own ticket.
+        # the document (#68 round-7 finding).
         settings["llama_gguf"] = os.path.basename(llama_gguf)
-        # Basenaming is a privacy measure, so the report must NOT re-derive
-        # dispatch from the truncated value: "/Users/alice/models/qwen2.5"
-        # basenames to "qwen2.5", losing both the leading "/" and any
-        # ".gguf" suffix that `_uses_llama_cpp_backend` keys on, which would
-        # make a llama.cpp run claim "validation_extended" (#68 round-8
-        # finding). Record the decision itself, taken from the full path.
-        settings["llama_cpp_dispatch"] = _uses_llama_cpp_backend(backend, llama_gguf)
 
     advanced_enabled = os.environ.get("MARCUT_ADVANCED_MODE_ENABLED")
     if advanced_enabled is not None:
@@ -1904,6 +1919,18 @@ def _finalize_and_write(
                 entry["rationale"] = sp["rationale"]
             audit.append(entry)
 
+        # Sanitise the model identifier where it enters the report (#85):
+        # a path-like `model_info` (plain `--model /Users/alice/models/x`,
+        # or relative `--model models/alice-private/x.gguf`) would otherwise
+        # put the operator's home directory and username into an artifact
+        # that travels with the document -- both in the top-level `model`
+        # field written below and in `rationale_generation["model"]`. This
+        # is the same helper, and therefore the same "is a path" test, that
+        # `_build_report_settings` applies to `settings["model"]`: the two
+        # are independent routes into the report and must not diverge.
+        # `model_info` itself is left untouched for every other use above.
+        sanitized_model_info = _sanitize_model_for_report(model_info)
+
         # Report-level disclosure of whether/how rationale was generated for
         # this run (issue #68 mitigation #7) -- always present, even
         # disabled, so a report unambiguously distinguishes "not requested"
@@ -1936,7 +1963,7 @@ def _finalize_and_write(
                 # by default), and reporting it here would attribute
                 # template strings to a model that never executed
                 # (#68 round-4 finding).
-                "model": model_info if rationale_mode == "validation_extended" else None,
+                "model": sanitized_model_info if rationale_mode == "validation_extended" else None,
                 "mode": rationale_mode,
             }
         else:
@@ -1946,7 +1973,7 @@ def _finalize_and_write(
             write_report(
                 report_temp_path,
                 input_path,
-                model_info,
+                sanitized_model_info,
                 audit,
                 settings=report_settings,
                 warnings=warnings,
@@ -2011,6 +2038,30 @@ def _uses_llama_cpp_backend(backend: str, model_path: str) -> bool:
         or model_path.endswith(".gguf")
         or ("/" in model_path and model_path.startswith("/"))
     )
+
+
+def _sanitize_model_for_report(model_value: str) -> str:
+    """Strip the directory component from a model identifier that names a
+    file on disk, so a report travelling with the document never carries the
+    operator's home directory or username (#85).
+
+    "Names a file on disk" is decided with the same two path arms
+    `_uses_llama_cpp_backend` dispatches on -- an absolute path or a ".gguf"
+    file -- so a *relative* GGUF path ("models/mine/qwen2.5-14b.gguf") is
+    sanitised exactly like an absolute one, while a namespaced registry id
+    ("hf.co/bartowski/Qwen2.5-14B-GGUF:Q4_K_M") keeps the namespace that
+    distinguishes it from another model. Using a narrower test than dispatch
+    is what let relative paths through in the first place.
+
+    Display only. #68 deliberately separated the DISPLAYED model value from
+    the DISPATCH decision (`settings["llama_cpp_dispatch"]` is recorded from
+    the full path up front), so this can never change which backend runs.
+    """
+    if not model_value:
+        return model_value
+    if os.path.isabs(model_value) or model_value.endswith(".gguf"):
+        return os.path.basename(model_value)
+    return model_value
 
 
 def _collect_enhanced_spans(

@@ -12,6 +12,7 @@ Tests cover:
 """
 
 import json
+import os
 import pytest
 import stat
 from marcut import pipeline
@@ -781,7 +782,7 @@ class _FakeDocxMapForRationale:
             handle.write(b"stub docx")
 
 
-def _run_finalize_and_write(text, spans, tmp_path, **kwargs):
+def _run_finalize_and_write(text, spans, tmp_path, model_info="mock-model", **kwargs):
     dm = _FakeDocxMapForRationale()
     output_path = tmp_path / "output.docx"
     report_path = tmp_path / "report.json"
@@ -789,7 +790,7 @@ def _run_finalize_and_write(text, spans, tmp_path, **kwargs):
     input_path.write_bytes(b"input")
 
     code = _finalize_and_write(
-        dm, text, spans, str(output_path), str(report_path), str(input_path), "mock-model", **kwargs
+        dm, text, spans, str(output_path), str(report_path), str(input_path), model_info, **kwargs
     )
     assert code == 0
     return json.loads(report_path.read_text(encoding="utf-8"))
@@ -1095,6 +1096,13 @@ class TestFinalizeAndWriteRationaleIntegration:
         # say so instead of claiming validation_extended (mitigation #7).
         ("rules_override", "llama_cpp", "qwen2.5:14b", "", "unsupported_backend"),
         ("llm_overrides", "ollama", "/models/qwen2.5-14b.gguf", "", "unsupported_backend"),
+        # #85 trap: a path-like model_id with NO ".gguf" suffix and no
+        # `--llama-gguf` override. `settings["model"]` gets basenamed to
+        # "qwen2.5-14b" for the report (no leading "/", no ".gguf"), which
+        # would satisfy neither of `_uses_llama_cpp_backend`'s checks if the
+        # dispatch decision were re-derived from the sanitised value instead
+        # of being recorded from the full path up front.
+        ("llm_overrides", "ollama", "/models/qwen2.5-14b", "", "unsupported_backend"),
         # `marcut redact --llama-gguf x.gguf` with the default `--backend
         # ollama`: cli.py passes them separately, dispatch uses
         # `llama_gguf or model_id`, so the mode decision must too
@@ -1126,6 +1134,94 @@ class TestFinalizeAndWriteRationaleIntegration:
             assert report["rationale_generation"]["model"]
         else:
             assert report["rationale_generation"]["model"] is None
+
+    @pytest.mark.parametrize("model_id, llama_gguf", [
+        ("/Users/alice/models/qwen2.5-14b.gguf", ""),
+        ("/Users/alice/models/qwen2.5-14b", ""),
+        ("qwen2.5:14b", "/Users/alice/models/qwen2.5-14b.gguf"),
+        # Relative path-like ids: `os.path.isabs` alone says False for both,
+        # so a sanitiser keyed on absoluteness leaves the directory component
+        # (and here the username) in the report.
+        ("models/alice-private/qwen2.5-14b.gguf", ""),
+        ("./qwen2.5-14b.gguf", ""),
+    ])
+    def test_no_report_field_carries_a_filesystem_path(self, monkeypatch, tmp_path, model_id, llama_gguf):
+        """#85: a path-like `--model`/`--llama-gguf` value must never reach
+        any field of the written report -- not `settings["model"]` or
+        `settings["llama_gguf"]`, not the top-level `model` field (the
+        `model_info` argument to `_finalize_and_write`/`write_report`), and
+        not a span's `source` (as set by the llama.cpp extractor in
+        model_enhanced.py) -- for any of the ways a path can reach these
+        fields (plain `--model /path`, with or without the `.gguf` suffix
+        the old dispatch predicate keyed on, or via `--llama-gguf`)."""
+        monkeypatch.setenv("MARCUT_METADATA_ARGS", "--preset-none")
+        text = "Contact SSN 123-45-6789 today. Acme Corporation signed."
+        # model_enhanced.py's llama.cpp extractor basenames `self.model_path`
+        # (`llama_gguf or model_id`, same precedence as dispatch) and prefixes
+        # it before ever attaching it as a span's `source` -- pipeline.py then
+        # copies that field verbatim into the report entry, so the span
+        # constructed here carries the value that route would actually produce.
+        llama_cpp_source = f"llama_cpp:{os.path.basename(llama_gguf or model_id)}"
+        spans = [
+            self._rule_span(text, "123-45-6789"),
+            # A span whose `source` is the (already-sanitized) path-like
+            # model value, as set by the llama.cpp extractor in
+            # model_enhanced.py -- this route is independent of both
+            # `settings` and `model_info` above.
+            self._rule_span(text, "Acme Corporation", label="ORG", source=llama_cpp_source),
+        ]
+        report_settings = pipeline._build_report_settings(
+            mode="llm_overrides", mode_requested="llm_overrides", backend="ollama",
+            model_id=model_id, chunk_tokens=250, overlap=50, temperature=0.1,
+            seed=42, llm_skip_confidence=0.95, llama_gguf=llama_gguf,
+        )
+
+        # `model_info` (the top-level `model` field / `_finalize_and_write`'s
+        # positional argument) is an independent route from `settings` --
+        # sanitising one must not be mistaken for sanitising both.
+        report = _run_finalize_and_write(
+            text, spans, tmp_path, model_info=model_id, report_settings=report_settings
+        )
+
+        serialized = json.dumps(report)
+        assert "/Users/" not in serialized
+        assert "alice" not in serialized
+        # The acceptance criterion is "no directory component anywhere", not
+        # "no home prefix": a sanitiser that stripped only "/Users/alice"
+        # and left "models/qwen2.5-14b.gguf" would pass the two assertions
+        # above. Every other field the report writes is already separator-free
+        # (the input document is recorded by name, not by path), so this holds
+        # for the whole document.
+        assert "/" not in serialized
+
+    def test_llama_cpp_model_named_rule_keeps_its_llm_rationale(self, monkeypatch, tmp_path):
+        """#85 regression: basenaming the llama.cpp span `source` for privacy
+        moves it into the token namespace `rationale.is_rule_like_source`
+        matches on ("rule", "consistency_pass"), so a model file named
+        "rule-tuned-q4.gguf" would have its model-authored spans rewritten to
+        `rule_deterministic` and badged "rule" in the HTML report -- a false
+        provenance claim in an audit artifact, and one the pre-#85 absolute
+        path could never produce."""
+        monkeypatch.setenv("MARCUT_GENERATE_RATIONALE", "1")
+        monkeypatch.setenv("MARCUT_METADATA_ARGS", "--preset-none")
+        text = "Acme Corporation signed the agreement."
+        # Exactly what the llama.cpp extractor emits for this model file.
+        source = f"llama_cpp:{os.path.basename('/Users/alice/models/rule-tuned-q4.gguf')}"
+        # The bare basename would be classified as a deterministic rule match.
+        assert is_rule_like_source("rule-tuned-q4.gguf")
+        assert not is_rule_like_source(source)
+        span = self._rule_span(text, "Acme Corporation", label="ORG", source=source)
+        span["rationale"] = {
+            "text": "A specific named company party to the agreement.",
+            "origin": RationaleOrigin.LLM_VALIDATION.value,
+            "model": "rule-tuned-q4.gguf",
+        }
+
+        report = _run_finalize_and_write(text, [span], tmp_path)
+
+        rationale = report["spans"][0]["rationale"]
+        assert rationale["origin"] == RationaleOrigin.LLM_VALIDATION.value
+        assert rationale["text"] == "A specific named company party to the agreement."
 
     def test_rule_span_overlapping_llm_span_never_reports_llm_rationale_end_to_end(self, monkeypatch, tmp_path):
         """Regression for issue #68 finding 1, run through the real

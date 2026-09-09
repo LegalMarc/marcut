@@ -21,7 +21,7 @@ from marcut.model_enhanced import (
     LlamaCppRedactionPipeline,
     ValidationCache,
 )
-from marcut.rationale import RationaleOrigin
+from marcut.rationale import RationaleOrigin, is_rule_like_source
 
 
 class DummyResponse:
@@ -352,7 +352,46 @@ def test_llama_cpp_pipeline_extract_entities_returns_entities(monkeypatch):
     entity = entities[0]
     assert entity.text == "John Smith"
     assert entity.label == "NAME"
-    assert entity.source == "/fake/path/model.gguf"
+    # #85: the span `source` carries only the model file's basename, never
+    # the full path -- an absolute path would leak the operator's home
+    # directory and username into an artifact that travels with the document.
+    # The "llama_cpp:" prefix keeps the basename out of the token namespace
+    # `rationale.is_rule_like_source` pattern-matches on (see the test below).
+    assert entity.source == "llama_cpp:model.gguf"
+
+
+def test_llama_cpp_span_source_is_never_mistaken_for_a_rule_source(monkeypatch):
+    """#85 regression: basenaming the model path for privacy moves it into
+    the namespace `rationale._RULE_LIKE_PREFIXES` ("rule", "consistency_pass")
+    matches on, so a model file literally named "rule-tuned-q4.gguf" would
+    have its LLM spans reported as deterministic rule matches -- a false
+    provenance claim in an audit artifact. The emitted `source` must stay
+    non-rule-like whatever the file is called."""
+    pipeline = LlamaCppRedactionPipeline(
+        model_path="/Users/alice/models/rule-tuned-q4.gguf", temperature=0.1, seed=42
+    )
+
+    fake_response = json.dumps({
+        "entities": [
+            {"text": "John Smith", "label": "NAME", "confidence": 0.9, "needs_redaction": True}
+        ]
+    })
+    monkeypatch.setattr(pipeline, "_generate_response", lambda prompt, max_tokens=1024: fake_response)
+
+    doc_context = DocumentContext()
+    doc_context.analyze_document("John Smith signed the agreement.")
+
+    entities = pipeline.extract_entities("John Smith signed the agreement.", doc_context)
+
+    assert len(entities) == 1
+    source = entities[0].source
+    # Still no directory component, still no username.
+    assert "/" not in source
+    assert "alice" not in source
+    # ...and still not classified as a deterministic rule match. A bare
+    # basename ("rule-tuned-q4.gguf") would be.
+    assert is_rule_like_source("rule-tuned-q4.gguf")
+    assert not is_rule_like_source(source)
 
 
 def test_document_context_collects_specific_org_alias_after_formation_clause():

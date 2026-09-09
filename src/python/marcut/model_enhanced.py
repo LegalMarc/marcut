@@ -1826,7 +1826,21 @@ class LlamaCppRedactionPipeline:
                     confidence=item.get("confidence", 0.85),
                     needs_redaction=item.get("needs_redaction", True),
                     rationale=item.get("rationale"),
-                    source=self.model_path
+                    # Basename only: the full path would put the operator's
+                    # home directory and username into an artifact that
+                    # travels with the document (#85). `self.model_path`
+                    # itself stays untouched -- it's still used to load the
+                    # model file (see `_get_model`).
+                    #
+                    # The "llama_cpp:" prefix is not decoration: `rationale.py`
+                    # classifies a span as deterministic by pattern-matching
+                    # `source` against `_RULE_LIKE_PREFIXES = ("rule",
+                    # "consistency_pass")`, so a bare basename would make a
+                    # model file named e.g. "rule-tuned-q4.gguf" report its
+                    # LLM spans as rule matches -- a false provenance claim in
+                    # an audit artifact. Basenaming moves this value into that
+                    # namespace, so it has to be namespaced out of it.
+                    source=f"llama_cpp:{os.path.basename(self.model_path)}" if self.model_path else self.model_path
                 )
                 entities.append(entity)
                 start_search = start + 1
