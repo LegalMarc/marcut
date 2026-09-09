@@ -144,7 +144,9 @@ class TestDocumentLevelSanitizerScaling:
     machine noise cannot flake it while a return to quadratic still trips."""
 
     def test_two_thousand_entities_stays_far_under_quadratic(self):
-        import random, string, time
+        import random
+        import string
+        import time
         from marcut import pipeline
 
         random.seed(7)

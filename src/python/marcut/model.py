@@ -234,7 +234,7 @@ def parse_llm_response(response_text: str) -> Dict[str, Any]:
             try:
                 loaded = json.loads(repaired)
             except json.JSONDecodeError:
-                raise decode_error
+                raise decode_error from None
         else:
             raise decode_error
 

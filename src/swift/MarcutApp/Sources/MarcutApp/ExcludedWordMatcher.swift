@@ -143,7 +143,12 @@ enum ExcludedWordMatcher {
         var result = stripLeadingDeterminer(text)
         result = result.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         let possRange = NSRange(result.startIndex..., in: result)
-        result = trailingPossessiveRegex.stringByReplacingMatches(in: result, options: [], range: possRange, withTemplate: "")
+        result = trailingPossessiveRegex.stringByReplacingMatches(
+            in: result,
+            options: [],
+            range: possRange,
+            withTemplate: ""
+        )
         while let last = result.unicodeScalars.last, trailingPunctuation.contains(last) {
             result.removeLast()
         }

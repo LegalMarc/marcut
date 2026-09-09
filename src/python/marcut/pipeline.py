@@ -30,7 +30,6 @@ from .rationale import (
     RationaleOrigin,
     compile_leak_scanner,
     is_rule_like_source,
-    rationale_mentions_text,
     rule_deterministic_rationale_text,
     scan_leaked_texts,
 )
