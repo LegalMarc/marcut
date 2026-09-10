@@ -860,6 +860,119 @@ public enum PythonRuntime {
     }
 }
 
+/// Minimal recursive JSON value, used only to decode the intentionally
+/// loosely-typed nested fields of `MetadataScrubPayload`/`MetadataReportPayload`
+/// below (`summary`, `groups`, etc. mirror `report_schema.ScrubReport`'s
+/// `Dict[str, Any]` typing -- see that module's docstring for why those
+/// stay untyped on purpose) into a genuine `Decodable` value instead of an
+/// `as? [String: Any]` cast.
+enum JSONValue: Decodable {
+    case string(String)
+    case int(Int)
+    case double(Double)
+    case bool(Bool)
+    case object([String: JSONValue])
+    case array([JSONValue])
+    case null
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.singleValueContainer()
+        if container.decodeNil() {
+            self = .null
+        } else if let value = try? container.decode(Bool.self) {
+            self = .bool(value)
+        } else if let value = try? container.decode(Int.self) {
+            self = .int(value)
+        } else if let value = try? container.decode(Double.self) {
+            self = .double(value)
+        } else if let value = try? container.decode(String.self) {
+            self = .string(value)
+        } else if let value = try? container.decode([String: JSONValue].self) {
+            self = .object(value)
+        } else if let value = try? container.decode([JSONValue].self) {
+            self = .array(value)
+        } else {
+            throw DecodingError.dataCorruptedError(in: container, debugDescription: "Unsupported JSON value")
+        }
+    }
+
+    /// Recursive conversion back to the loosely-typed `Any` representation
+    /// existing downstream consumers already expect (e.g.
+    /// `DocumentRedactionViewModel`'s `report["summary"] as? [String: Any]`
+    /// reads and the `JSONSerialization` write of the full report to disk).
+    /// This is what keeps this ticket's scope to the two call sites below
+    /// rather than requiring every downstream consumer to be rewritten.
+    var anyValue: Any {
+        switch self {
+        case let .string(value): value
+        case let .int(value): value
+        case let .double(value): value
+        case let .bool(value): value
+        case .null: NSNull()
+        case let .object(value): value.mapValues { $0.anyValue }
+        case let .array(value): value.map(\.anyValue)
+        }
+    }
+}
+
+/// Shared top-level shape decoded from both `scrub_metadata_only()`'s and
+/// `metadata_report_only()`'s tuple element 2 (step 3 of
+/// docs/design/bridge_schema_migration.md). Both are validated in Python
+/// against `report_schema.MetadataScrubPayload`/`MetadataReportPayload`
+/// respectively -- two distinct pydantic models guarding two distinct
+/// function boundaries -- but both are built by the same
+/// `pipeline._build_scrub_report()`, so they share this identical
+/// `Decodable` shape on the Swift side rather than duplicating it.
+struct MetadataReportBridgePayload: Decodable {
+    let summary: [String: JSONValue]
+    let groups: [String: JSONValue]
+    let fileInfo: [String: JSONValue]?
+    let warnings: [JSONValue]?
+    let forensicFindings: [String: JSONValue]?
+    let deepExplorer: [String: JSONValue]?
+    let binaryExports: [JSONValue]?
+    let largeExports: [JSONValue]?
+
+    enum CodingKeys: String, CodingKey {
+        case summary
+        case groups
+        case fileInfo = "file_info"
+        case warnings
+        case forensicFindings = "forensic_findings"
+        case deepExplorer = "deep_explorer"
+        case binaryExports = "binary_exports"
+        case largeExports = "large_exports"
+    }
+
+    /// Reconstructs the `[String: Any]` shape existing downstream consumers
+    /// expect (see `JSONValue.anyValue` above).
+    var asDictionary: [String: Any] {
+        var dict: [String: Any] = [
+            "summary": summary.mapValues { $0.anyValue },
+            "groups": groups.mapValues { $0.anyValue },
+        ]
+        if let fileInfo {
+            dict["file_info"] = fileInfo.mapValues { $0.anyValue }
+        }
+        if let warnings {
+            dict["warnings"] = warnings.map(\.anyValue)
+        }
+        if let forensicFindings {
+            dict["forensic_findings"] = forensicFindings.mapValues { $0.anyValue }
+        }
+        if let deepExplorer {
+            dict["deep_explorer"] = deepExplorer.mapValues { $0.anyValue }
+        }
+        if let binaryExports {
+            dict["binary_exports"] = binaryExports.map(\.anyValue)
+        }
+        if let largeExports {
+            dict["large_exports"] = largeExports.map(\.anyValue)
+        }
+        return dict
+    }
+}
+
 public final class PythonKitRunner {
     let logger: (String) -> Void
     private let cfg: PythonRuntimeConfig
@@ -1754,17 +1867,20 @@ public final class PythonKitRunner {
                     let success = Bool(rawResult[0]) == true
                     let errorMsg = String(rawResult[1]) ?? ""
 
-                    // Extract report dictionary (full payload with groups) via JSON serialization
+                    // Extract report dictionary (full payload with groups). Validated in
+                    // Python (report_schema.MetadataScrubPayload) before this tuple was
+                    // returned; decode into the matching named type here rather than
+                    // guessing the shape with an `as? [String: Any]` cast (step 3 of
+                    // docs/design/bridge_schema_migration.md).
                     var reportDict: [String: Any]? = nil
                     let pyReport = rawResult[2]
                     if Bool(Python.isinstance(pyReport, Python.dict)) == true {
                         do {
                             let json = try Python.attemptImport("json")
                             let jsonString = String(json.dumps(pyReport)) ?? ""
-                            if let data = jsonString.data(using: .utf8),
-                               let obj = try JSONSerialization.jsonObject(with: data) as? [String: Any]
-                            {
-                                reportDict = obj
+                            if let data = jsonString.data(using: .utf8) {
+                                let payload = try JSONDecoder().decode(MetadataReportBridgePayload.self, from: data)
+                                reportDict = payload.asDictionary
                             }
                         } catch {
                             reportDict = nil
@@ -1839,16 +1955,18 @@ public final class PythonKitRunner {
                 if Bool(Python.isinstance(rawResult, Python.tuple)) == true {
                     let success = Bool(rawResult[0]) == true
                     let errorMsg = String(rawResult[1]) ?? ""
+                    // Validated in Python (report_schema.MetadataReportPayload) before this
+                    // tuple was returned; decode into the matching named type here (step 3
+                    // of docs/design/bridge_schema_migration.md).
                     var reportDict: [String: Any]? = nil
                     let pyReport = rawResult[2]
                     if Bool(Python.isinstance(pyReport, Python.dict)) == true {
                         do {
                             let json = try Python.attemptImport("json")
                             let jsonString = String(json.dumps(pyReport)) ?? ""
-                            if let data = jsonString.data(using: .utf8),
-                               let obj = try JSONSerialization.jsonObject(with: data) as? [String: Any]
-                            {
-                                reportDict = obj
+                            if let data = jsonString.data(using: .utf8) {
+                                let payload = try JSONDecoder().decode(MetadataReportBridgePayload.self, from: data)
+                                reportDict = payload.asDictionary
                             }
                         } catch {
                             reportDict = nil

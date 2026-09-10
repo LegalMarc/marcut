@@ -1016,9 +1016,11 @@ class TestMetadataScrubReport(unittest.TestCase):
 
     @unittest.skipUnless(DOCX_AVAILABLE and IMPORTS_SUCCESS, "python-docx or marcut not available")
     def test_metadata_report_only_validation_failure_writes_no_file(self):
-        """Issue #67: metadata_report_only() must also validate the scrub-shape
-        report (report_schema.ScrubReport) immediately before its write, and
-        must leave no file at report_path if that validation fails."""
+        """Issues #67/#91: metadata_report_only() must validate its report
+        payload (report_schema.MetadataReportPayload) immediately before its
+        write *and* before it crosses the PythonKit bridge as the function's
+        tuple element 2, and must leave no file at report_path if that
+        validation fails."""
         from unittest import mock
 
         report_path = os.path.join(self.temp_dir, "report_only_invalid.json")
@@ -1026,13 +1028,13 @@ class TestMetadataScrubReport(unittest.TestCase):
 
         captured_error = None
         try:
-            pipeline.ScrubReport.model_validate({})
+            pipeline.MetadataReportPayload.model_validate({})
         except Exception as real_validation_error:  # genuine pydantic.ValidationError
             captured_error = real_validation_error
-        self.assertIsNotNone(captured_error, "expected ScrubReport.model_validate({}) to raise")
+        self.assertIsNotNone(captured_error, "expected MetadataReportPayload.model_validate({}) to raise")
 
         with mock.patch.object(
-            pipeline.ScrubReport, "model_validate", side_effect=captured_error
+            pipeline.MetadataReportPayload, "model_validate", side_effect=captured_error
         ) as mock_validate:
             success, error, report, json_path, html_path = pipeline.metadata_report_only(
                 self.input_docx, report_path,
@@ -1045,6 +1047,47 @@ class TestMetadataScrubReport(unittest.TestCase):
         self.assertEqual(json_path, "")
         self.assertEqual(html_path, "")
         self.assertFalse(os.path.exists(report_path))
+
+    @unittest.skipUnless(DOCX_AVAILABLE and IMPORTS_SUCCESS, "python-docx or marcut not available")
+    def test_scrub_metadata_only_validation_failure_does_not_return_report(self):
+        """Issue #91: scrub_metadata_only() must validate its report payload
+        (report_schema.MetadataScrubPayload) immediately before returning it
+        as the function's tuple element 2 -- a schema-invalid report must
+        never cross the PythonKit bridge. Prior to this ticket,
+        scrub_metadata_only() performed no such validation at all, so this
+        mock only has something to intercept once the call exists."""
+        from unittest import mock
+
+        output_docx = os.path.join(self.temp_dir, "scrub_payload_invalid_output.docx")
+        prev_args = os.environ.get("MARCUT_METADATA_ARGS")
+        os.environ["MARCUT_METADATA_ARGS"] = ""
+
+        captured_error = None
+        try:
+            pipeline.MetadataScrubPayload.model_validate({})
+        except Exception as real_validation_error:  # genuine pydantic.ValidationError
+            captured_error = real_validation_error
+        self.assertIsNotNone(captured_error, "expected MetadataScrubPayload.model_validate({}) to raise")
+
+        try:
+            with mock.patch.object(
+                pipeline.MetadataScrubPayload, "model_validate", side_effect=captured_error
+            ) as mock_validate:
+                success, error, report = pipeline.scrub_metadata_only(
+                    input_path=self.input_docx,
+                    output_path=output_docx,
+                    debug=False,
+                )
+        finally:
+            if prev_args is None:
+                os.environ.pop("MARCUT_METADATA_ARGS", None)
+            else:
+                os.environ["MARCUT_METADATA_ARGS"] = prev_args
+
+        self.assertEqual(mock_validate.call_count, 1)
+        self.assertFalse(success)
+        self.assertTrue(error)
+        self.assertEqual(report, {})
 
     @unittest.skipUnless(DOCX_AVAILABLE and IMPORTS_SUCCESS, "python-docx or marcut not available")
     def test_rewrite_docx_zip_cleans_both_lang_and_form_defaults(self):

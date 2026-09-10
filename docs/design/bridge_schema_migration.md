@@ -7,8 +7,19 @@ Step 2 implemented (issue #89) -- Swift's `loadFailureReport(at:)`
 (`DocumentRedactionViewModel.swift`) now decodes the on-disk failure report
 via `JSONDecoder` into a typed `FailureReportPayload` struct first, with the
 untyped `JSONSerialization` dictionary path retained for one release as a
-fallback behind the `legacy report shape encountered` log line. Remaining
-steps of the migration plan below (steps 3-5) are still pending. Companion to issue #26. Addresses the
+fallback behind the `legacy report shape encountered` log line.
+Step 3 implemented (issue #91) -- `pipeline.scrub_metadata_only()`/
+`metadata_report_only()` validate their tuple-index-2 report payload against
+new `MetadataScrubPayload`/`MetadataReportPayload` Pydantic models before
+returning; `PythonKitBridge.swift`'s two call sites decode that payload via
+`JSONDecoder` into a shared `MetadataReportBridgePayload` struct instead of
+an `as? [String: Any]` cast, reconstructing the `[String: Any]` shape
+downstream consumers expect via `asDictionary` so no call site outside
+`PythonKitBridge.swift` changes. Tuple arity/order unchanged on both ends.
+`run_redaction()`'s own `(int, Dict[str, float])` tuple stays out of scope
+per the plan's explicit deprioritization. Remaining step of the migration
+plan below (step 4, the progress channel) is still pending. Companion to
+issue #26. Addresses the
 `backlog.md` tech-debt note: *"Fragile Swift-to-Python Bridge: Transition away
 from parsing unstructured JSON state files to a stricter schema like
 Protobuf, FlatBuffers, or strict OpenAPI JSON specs."*

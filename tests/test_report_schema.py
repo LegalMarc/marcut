@@ -13,7 +13,14 @@ Covers issue #67's acceptance criteria:
 import pytest
 from pydantic import ValidationError
 
-from marcut.report_schema import AuditReport, ScrubReport, FailureReport, SpanRationale
+from marcut.report_schema import (
+    AuditReport,
+    ScrubReport,
+    FailureReport,
+    SpanRationale,
+    MetadataScrubPayload,
+    MetadataReportPayload,
+)
 
 
 VALID_AUDIT = {
@@ -182,6 +189,39 @@ class TestScrubReportSchema:
             large_exports=[{"name": "b.bin"}],
         )
         ScrubReport.model_validate(full)  # must not raise
+
+
+class TestMetadataPayloadSchemas:
+    """Issue #91 (step 3 of the bridge-schema migration): the two tuple
+    return payloads crossing the PythonKit bridge from
+    pipeline.scrub_metadata_only() and pipeline.metadata_report_only().
+    Both are subclasses of ScrubReport -- same underlying dict shape,
+    built by the same pipeline._build_scrub_report() -- but each validates
+    its own function's return boundary independently, so one function's
+    payload rejecting a malformed dict says nothing about the other."""
+
+    def test_metadata_scrub_payload_valid_shape_round_trips(self):
+        MetadataScrubPayload.model_validate(VALID_SCRUB)
+
+    def test_metadata_scrub_payload_missing_required_field_rejected(self):
+        bad = dict(VALID_SCRUB)
+        del bad["summary"]
+        with pytest.raises(ValidationError):
+            MetadataScrubPayload.model_validate(bad)
+
+    def test_metadata_report_payload_valid_shape_round_trips(self):
+        MetadataReportPayload.model_validate(VALID_SCRUB)
+
+    def test_metadata_report_payload_missing_required_field_rejected(self):
+        bad = dict(VALID_SCRUB)
+        del bad["groups"]
+        with pytest.raises(ValidationError):
+            MetadataReportPayload.model_validate(bad)
+
+    def test_payloads_are_independent_models_not_aliases(self):
+        """Guards against a lazy `MetadataReportPayload = MetadataScrubPayload`
+        alias silently collapsing the two named types back into one."""
+        assert MetadataScrubPayload is not MetadataReportPayload
 
 
 class TestFailureReportSchema:

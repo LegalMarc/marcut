@@ -25,7 +25,12 @@ from .model_enhanced import (
 from .cluster import ClusterTable
 from .confidence import combine, low_conf
 from .report import write_report, write_json_file, make_private_file
-from .report_schema import ScrubReport, FailureReport
+from .report_schema import (
+    ScrubReport,
+    FailureReport,
+    MetadataScrubPayload,
+    MetadataReportPayload,
+)
 from .rationale import (
     RationaleOrigin,
     compile_leak_scanner,
@@ -4750,6 +4755,13 @@ def scrub_metadata_only(
             warnings=getattr(dm, "warnings", []) or None,
         )
         report["summary"]["report_type"] = "scrub"
+
+        # Validate the tuple payload before it crosses the PythonKit bridge --
+        # see report_schema.MetadataScrubPayload and step 3 of
+        # docs/design/bridge_schema_migration.md. Keeps the tuple arity/order
+        # unchanged; a malformed report raises here instead of being decoded
+        # on the Swift side as a best-effort dictionary guess.
+        MetadataScrubPayload.model_validate(report)
         return (True, "", report)
 
     except Exception as e:
@@ -4804,9 +4816,12 @@ def metadata_report_only(
                 field["after"] = ""
                 field["status"] = "observed"
 
-        # Validate the in-memory shape before it is written to disk -- see
-        # report_schema.ScrubReport and the analogous check in run_redaction().
-        ScrubReport.model_validate(report)
+        # Validate the in-memory shape before it is written to disk and before
+        # it crosses the PythonKit bridge as this function's tuple element 2
+        # -- see report_schema.MetadataReportPayload (step 3 of
+        # docs/design/bridge_schema_migration.md) and the analogous
+        # ScrubReport check in run_redaction().
+        MetadataReportPayload.model_validate(report)
         write_json_file(report_path, report)
 
         try:

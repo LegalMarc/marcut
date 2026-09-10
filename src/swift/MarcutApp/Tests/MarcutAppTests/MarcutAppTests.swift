@@ -2263,6 +2263,58 @@ final class MarcutAppTests: XCTestCase {
 
         XCTAssertNil(viewModel.loadFailureReport(at: missingPath))
     }
+
+    // MARK: - Metadata bridge payload decode (issue #91)
+
+    /// A well-formed scrub/report payload -- the shape returned by both
+    /// `pipeline.scrub_metadata_only()` and `pipeline.metadata_report_only()`,
+    /// already validated in Python against `report_schema.MetadataScrubPayload`/
+    /// `MetadataReportPayload` -- must decode via `JSONDecoder` into the named
+    /// `MetadataReportBridgePayload` type (step 3 of
+    /// docs/design/bridge_schema_migration.md), and `asDictionary` must
+    /// round-trip every value back to the loosely-typed shape existing
+    /// callers rely on.
+    func testMetadataReportBridgePayloadDecodesWellFormedReport() throws {
+        let json = """
+        {
+            "summary": {"total_cleaned": 2, "total_preserved": 1, "report_type": "scrub"},
+            "groups": {"Core Properties": [{"field": "author", "status": "cleaned"}]},
+            "warnings": [{"code": "W1"}]
+        }
+        """
+        let data = try XCTUnwrap(json.data(using: .utf8))
+
+        let payload = try JSONDecoder().decode(MetadataReportBridgePayload.self, from: data)
+
+        let dict = payload.asDictionary
+        let summary = try XCTUnwrap(dict["summary"] as? [String: Any])
+        XCTAssertEqual(summary["total_cleaned"] as? Int, 2)
+        XCTAssertEqual(summary["total_preserved"] as? Int, 1)
+        XCTAssertEqual(summary["report_type"] as? String, "scrub")
+
+        let groups = try XCTUnwrap(dict["groups"] as? [String: Any])
+        let coreProps = try XCTUnwrap(groups["Core Properties"] as? [Any])
+        XCTAssertEqual(coreProps.count, 1)
+        let firstField = try XCTUnwrap(coreProps.first as? [String: Any])
+        XCTAssertEqual(firstField["field"] as? String, "author")
+
+        let warnings = try XCTUnwrap(dict["warnings"] as? [Any])
+        XCTAssertEqual(warnings.count, 1)
+        XCTAssertNil(dict["file_info"], "absent optional fields must stay absent, not become null")
+    }
+
+    /// A payload missing a required top-level key (`groups`) -- the same
+    /// shape Python's `MetadataScrubPayload.model_validate()` rejects before
+    /// ever returning it -- must also fail to decode on the Swift side
+    /// rather than silently producing a partial `MetadataReportBridgePayload`.
+    func testMetadataReportBridgePayloadRejectsMissingRequiredField() throws {
+        let json = """
+        {"summary": {"total_cleaned": 0}}
+        """
+        let data = try XCTUnwrap(json.data(using: .utf8))
+
+        XCTAssertThrowsError(try JSONDecoder().decode(MetadataReportBridgePayload.self, from: data))
+    }
 }
 
 // MARK: - Test Extensions

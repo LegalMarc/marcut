@@ -118,6 +118,25 @@ class ScrubReport(BaseModel):
     large_exports: Optional[List[Dict[str, Any]]] = None
 
 
+class MetadataScrubPayload(ScrubReport):
+    """Return-payload shape for ``pipeline.scrub_metadata_only()``'s tuple
+    element 2 (step 3 of docs/design/bridge_schema_migration.md).
+
+    Structurally identical to ``ScrubReport`` today -- both are built by
+    ``pipeline._build_scrub_report()`` -- but kept as its own name because
+    it validates a different boundary: the tuple payload crossing the
+    PythonKit bridge (decoded on the Swift side into a named ``Decodable``
+    type), not the on-disk report file ``ScrubReport`` guards. The two are
+    free to diverge without one silently constraining the other.
+    """
+
+
+class MetadataReportPayload(ScrubReport):
+    """Return-payload shape for ``pipeline.metadata_report_only()``'s tuple
+    element 2. See ``MetadataScrubPayload`` docstring -- same rationale,
+    different function."""
+
+
 class FailureReport(BaseModel):
     """Shape written by ``pipeline._write_failure_report()``.
 
