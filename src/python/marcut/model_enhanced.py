@@ -1194,8 +1194,16 @@ class IntelligentRedactionPipeline:
             try:
                 message = json.dumps(payload)
                 display = status_message or message
+                # Tracker dispatch is best-effort and guarded on its own --
+                # ProgressUpdate is a pydantic dataclass (bridge schema
+                # migration step 4a) and can raise ValidationError, which
+                # must not swallow the stdout mass-event print below (the
+                # Swift bridge's progress channel).
                 if tracker:
-                    tracker.update_phase(ProcessingPhase.LLM_EXTRACTION, progress or 0.0, display)
+                    try:
+                        tracker.update_phase(ProcessingPhase.LLM_EXTRACTION, progress or 0.0, display)
+                    except Exception:
+                        pass
                 elif progress_callback:
                     try:
                         progress_callback(0, 0, display)

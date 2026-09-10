@@ -328,6 +328,111 @@ def test_intelligent_pipeline_sends_seed_to_chunk_extraction(monkeypatch):
     assert captured == {"model_id": "test-model", "temperature": 0.3, "seed": 456}
 
 
+# --- emit_mass_event's 3-arg progress_callback dispatch (#92) --------------
+#
+# This is the path the shipping Swift app actually uses for LLM-extraction
+# progress: the bridge's callback is an unintrospectable `PyCFunction`, so
+# `accepts_progress_update` is False, `tracker` stays None, and
+# `emit_mass_event` falls through to the 3-arg `progress_callback(0, 0,
+# display)` branch below.
+
+def test_emit_mass_event_dispatches_three_arg_progress_callback(monkeypatch):
+    calls = []
+
+    def cb(chunk, total, message):
+        calls.append((chunk, total, message))
+
+    monkeypatch.setattr("marcut.model.ollama_extract", lambda *a, **k: [])
+    monkeypatch.setattr(model_enhanced, "needs_validation", lambda entity, doc_context: False)
+
+    pipeline = model_enhanced.IntelligentRedactionPipeline("test-model", temperature=0.1, seed=1)
+    pipeline.process_document(
+        "John Smith",
+        [{"text": "John Smith", "start": 0, "end": 10}],
+        progress_callback=cb,
+        warnings=[],
+        suppressed=[],
+    )
+
+    assert calls, "3-arg progress_callback was never invoked"
+    chunk, total, message = calls[0]
+    assert (chunk, total) == (0, 0)
+    payload = json.loads(message)
+    assert payload["type"] == "mass_total"
+
+
+def test_emit_mass_event_falls_back_to_two_arg_callback_on_type_error(monkeypatch):
+    """A callback that only accepts two positional args still doesn't take
+    the rich single-arg ProgressUpdate path (accepts_progress_update requires
+    exactly one positional param), so it hits the 3-arg branch, raises
+    TypeError, and must fall back to the 2-arg call at line 1204."""
+    calls = []
+
+    def cb(chunk, total):
+        calls.append((chunk, total))
+
+    monkeypatch.setattr("marcut.model.ollama_extract", lambda *a, **k: [])
+    monkeypatch.setattr(model_enhanced, "needs_validation", lambda entity, doc_context: False)
+
+    pipeline = model_enhanced.IntelligentRedactionPipeline("test-model", temperature=0.1, seed=1)
+    pipeline.process_document(
+        "John Smith",
+        [{"text": "John Smith", "start": 0, "end": 10}],
+        progress_callback=cb,
+        warnings=[],
+        suppressed=[],
+    )
+
+    assert calls, "2-arg fallback was never invoked"
+    assert calls[0] == (0, 0)
+
+
+def test_emit_mass_event_still_prints_when_tracker_dispatch_raises(monkeypatch, capsys):
+    """ProgressUpdate is a pydantic dataclass (bridge schema migration step
+    4a) and tracker.update_phase() can raise ValidationError. That must not
+    also swallow the stdout mass-event print, which is the channel the Swift
+    bridge parses independently of the tracker."""
+    import marcut.progress as progress_module
+
+    call_count = {"n": 0}
+    original_update_phase = progress_module.ProgressTracker.update_phase
+
+    def flaky_update_phase(self, phase, progress=0.0, message=None):
+        # Only fail the emit_mass_event() dispatches, which pass the raw
+        # JSON payload as `message` (no status_message override). Other
+        # call sites in process_document/process_single_chunk pass plain
+        # text and are out of scope for this test -- they must keep working
+        # exactly as before.
+        if message and message.startswith("{"):
+            call_count["n"] += 1
+            raise RuntimeError("simulated ValidationError from tracker.update_phase")
+        return original_update_phase(self, phase, progress, message)
+
+    monkeypatch.setattr(progress_module.ProgressTracker, "update_phase", flaky_update_phase)
+    monkeypatch.setattr("marcut.model.ollama_extract", lambda *a, **k: [])
+    monkeypatch.setattr(model_enhanced, "needs_validation", lambda entity, doc_context: False)
+
+    def cb(update):
+        pass
+
+    pipeline = model_enhanced.IntelligentRedactionPipeline("test-model", temperature=0.1, seed=1)
+    pipeline.process_document(
+        "John Smith",
+        [{"text": "John Smith", "start": 0, "end": 10}],
+        progress_callback=cb,
+        warnings=[],
+        suppressed=[],
+    )
+
+    assert call_count["n"] > 0, "tracker.update_phase was never invoked from emit_mass_event"
+    printed = capsys.readouterr().out
+    mass_total_lines = [
+        json.loads(line) for line in printed.splitlines()
+        if line.strip().startswith("{") and '"mass_total"' in line
+    ]
+    assert mass_total_lines, f"expected a mass_total JSON line on stdout, got: {printed!r}"
+
+
 def test_llama_cpp_pipeline_extract_entities_returns_entities(monkeypatch):
     """Regression test: extract_entities() used to build Entity(source=self.model_id),
     but __init__ never sets self.model_id (only self.model_path), so every call raised

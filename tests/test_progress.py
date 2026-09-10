@@ -3,6 +3,10 @@ Tests for the progress.py module - progress tracking and time estimation.
 """
 
 import time
+
+import pydantic
+import pytest
+
 from marcut.progress import (
     ProcessingPhase, PHASE_INFO,
     TimeEstimator, ProgressUpdate, ProgressTracker,
@@ -170,6 +174,36 @@ class TestProgressUpdate:
         
         assert update.message is None
 
+    def test_wrong_typed_field_raises(self):
+        """ProgressUpdate is a pydantic dataclass (bridge schema migration
+        step 4a, #92): a field that cannot be coerced to its declared type
+        must raise on construction instead of silently crossing the Swift
+        bridge as wrong data."""
+        with pytest.raises(pydantic.ValidationError):
+            ProgressUpdate(
+                phase=ProcessingPhase.PREFLIGHT,
+                phase_progress="not-a-number",
+                overall_progress=0.1,
+                phase_name="Loading Document",
+                estimated_remaining=30.0,
+                elapsed_time=5.0,
+            )
+
+    def test_phase_stays_enum_member(self):
+        """phase must stay a ProcessingPhase enum member, not be widened
+        to a plain string, per the #92 ticket's explicit constraint."""
+        update = ProgressUpdate(
+            phase=ProcessingPhase.VALIDATION,
+            phase_progress=0.2,
+            overall_progress=0.3,
+            phase_name="Validating Entities",
+            estimated_remaining=10.0,
+            elapsed_time=2.0,
+        )
+
+        assert update.phase is ProcessingPhase.VALIDATION
+        assert isinstance(update.phase, ProcessingPhase)
+
 
 class TestProgressTracker:
     """Test ProgressTracker class."""
@@ -187,23 +221,56 @@ class TestProgressTracker:
         assert hasattr(tracker, 'complexity')
         assert tracker.complexity > 0
     
-    def test_simple_callback_detection(self):
-        """Test that simple callbacks are detected correctly."""
-        # Simple callback (3 params)
-        def simple_cb(chunk, total, message):
-            pass
-        
-        tracker = ProgressTracker(simple_cb, "test", 10)
-        assert tracker.is_simple_callback
-    
-    def test_rich_callback_detection(self):
-        """Test that rich callbacks are detected correctly."""
-        # Rich callback (1 param)
+    def test_rich_path_taken_for_one_parameter_callback(self):
+        """A one-parameter callback -- the shape both the CLI and the GUI
+        actually register -- receives the ProgressUpdate object directly."""
+        received = []
+
         def rich_cb(update):
-            pass
-        
+            received.append(update)
+
         tracker = ProgressTracker(rich_cb, "test", 10)
-        assert not tracker.is_simple_callback
+        tracker.update_phase(ProcessingPhase.RULE_DETECTION, 0.5, "Detecting...")
+
+        assert len(received) == 1
+        assert isinstance(received[0], ProgressUpdate)
+
+    def test_three_parameter_callback_also_receives_single_update(self):
+        """#92 removed the `inspect.signature`-based dispatch that used to
+        call a callback declaring exactly three parameters positionally as
+        `(chunk, total, message)`. The audit for #92 found no such callback
+        registered anywhere in the codebase, so every callback -- even one
+        that happens to declare three parameters -- must now receive the
+        single rich ProgressUpdate object instead.
+
+        The three parameters below all default to None so the call succeeds
+        under either calling convention, which is what lets this test tell
+        the two conventions apart instead of merely erroring out under one
+        of them: the pre-#92 code path would populate all three (chunk int,
+        total int, message str), while the current code path leaves the
+        second and third at their defaults and passes the ProgressUpdate as
+        the first argument.
+        """
+        received = []
+
+        def three_param_cb(a=None, b=None, c=None):
+            received.append((a, b, c))
+
+        tracker = ProgressTracker(three_param_cb, "test", 10)
+        tracker.update_phase(ProcessingPhase.RULE_DETECTION, 0.5, "Detecting...")
+
+        assert len(received) == 1
+        first, second, third = received[0]
+        assert isinstance(first, ProgressUpdate)
+        assert second is None
+        assert third is None
+
+    def test_is_simple_callback_attribute_removed(self):
+        """The `is_simple_callback` flag was removed along with the branch
+        it gated (#92) -- assert it stays gone rather than silently
+        reappearing."""
+        tracker = ProgressTracker(lambda update: None, "test", 10)
+        assert not hasattr(tracker, "is_simple_callback")
     
     def test_update_phase(self):
         """Test phase updates."""

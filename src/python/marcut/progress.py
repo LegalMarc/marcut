@@ -7,6 +7,8 @@ from typing import Callable, Optional
 from dataclasses import dataclass
 from enum import Enum
 
+import pydantic.dataclasses
+
 
 class ProcessingPhase(Enum):
     """Processing phases for document redaction."""
@@ -110,9 +112,17 @@ class TimeEstimator:
         return total
 
 
-@dataclass
+@pydantic.dataclasses.dataclass
 class ProgressUpdate:
-    """Progress update information."""
+    """Progress update information.
+
+    A ``pydantic`` dataclass rather than a plain one (bridge schema
+    migration step 4a, docs/design/bridge_schema_migration.md, #92) so a
+    malformed update (e.g. a non-numeric progress value) raises immediately
+    on construction instead of crossing the Swift bridge as silently wrong
+    data. ``phase`` stays a ``ProcessingPhase`` enum member, not a string --
+    pydantic validates and coerces into the enum without widening it.
+    """
     phase: ProcessingPhase
     phase_progress: float  # 0.0 to 1.0
     overall_progress: float  # 0.0 to 1.0
@@ -126,22 +136,19 @@ class ProgressTracker:
     """Tracks progress through processing phases with time estimation."""
 
     def __init__(self, callback, text: str, word_count: Optional[int] = None):
+        # Every registered callback receives a single rich ProgressUpdate
+        # object (bridge schema migration step 4a, #92). A parallel
+        # `(chunk, total, message)` three-argument shape used to be
+        # dispatched to callbacks `inspect.signature` reported as taking
+        # exactly three parameters; the audit for #92 found no such
+        # callback registered anywhere in the codebase (CLI and GUI both
+        # register a one-parameter rich callback via
+        # `create_progress_callback`, and the Swift bridge's callback is an
+        # unintrospectable `PyCFunction` that `inspect.signature` cannot
+        # read the arity of, so it always took the rich path too) and
+        # removed the branch. See the audit comment on issue #92 for the
+        # full trace.
         self.callback = callback
-        self.is_simple_callback = False
-
-        # Detect callback signature: simple (chunk, total, message) vs rich (ProgressUpdate)
-        import inspect
-        try:
-            sig = inspect.signature(callback)
-        except (TypeError, ValueError):
-            sig = None
-
-        if sig is not None and len(sig.parameters) == 3:
-            # Simple callback: (chunk, total, message)
-            self.is_simple_callback = True
-        else:
-            # Rich callback: (ProgressUpdate)
-            self.is_simple_callback = False
         self.estimator = TimeEstimator()
         self.complexity = self.estimator.estimate_document_complexity(text, word_count)
         self.start_time = time.time()
@@ -203,16 +210,9 @@ class ProgressTracker:
             message=message
         )
         
-        # Send callback in appropriate format
-        if self.is_simple_callback:
-            # Convert to simple (chunk, total, message) format
-            chunk = int(update.phase_progress * 100)  # 0-100 percentage
-            total = 100
-            message = f"{update.phase_name}: {update.phase_progress:.0%} - {update.message or ''}"
-            self.callback(chunk, total, message)
-        else:
-            # Send rich ProgressUpdate object
-            self.callback(update)
+        # Send the rich ProgressUpdate object -- the only shape this
+        # tracker dispatches (see __init__).
+        self.callback(update)
     
     def complete(self):
         """Mark processing as complete."""

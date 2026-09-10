@@ -17,8 +17,19 @@ an `as? [String: Any]` cast, reconstructing the `[String: Any]` shape
 downstream consumers expect via `asDictionary` so no call site outside
 `PythonKitBridge.swift` changes. Tuple arity/order unchanged on both ends.
 `run_redaction()`'s own `(int, Dict[str, float])` tuple stays out of scope
-per the plan's explicit deprioritization. Remaining step of the migration
-plan below (step 4, the progress channel) is still pending. Companion to
+per the plan's explicit deprioritization.
+Step 4a implemented (issue #92) -- `ProgressUpdate` (`progress.py`) is now a
+`pydantic.dataclasses.dataclass`, validated on construction; the
+`inspect.signature`-based three-argument fallback branch in
+`ProgressTracker.__init__` and its `is_simple_callback` flag are removed,
+confirming this doc's own hypothesis below that no call site registers a
+three-parameter callback (the CLI/GUI register a one-parameter rich
+callback, and the Swift bridge's `PyCFunction` callback has no
+`__text_signature__` for `inspect.signature` to read at all, so it always
+took the rich path in practice). Every callback now receives the single
+rich `ProgressUpdate` object unconditionally. Step 4b (folding
+`emit_mass_event()`'s ad-hoc JSON dicts into closed `pydantic` models) is
+still pending, tracked as a separate ticket. Companion to
 issue #26. Addresses the
 `backlog.md` tech-debt note: *"Fragile Swift-to-Python Bridge: Transition away
 from parsing unstructured JSON state files to a stricter schema like
@@ -343,7 +354,15 @@ shippable and independently revertable:
      3-tuple path exists purely as a fallback for callbacks with a different
      declared arity, and no current Swift call site actually registers a
      3-arg callback; confirm this with a grep-based audit as the first task
-     of this step before removing the branch).
+     of this step before removing the branch). **Done (#92)**: the audit
+     found no 3-parameter callback registered anywhere -- CLI and GUI both
+     register a 1-parameter rich callback, and the Swift bridge's
+     `PythonFunction`-backed callback compiles to a `PyCFunction`
+     (`METH_VARARGS | METH_KEYWORDS`) with no `__text_signature__`, so
+     `inspect.signature()` raises `ValueError` on it and it always fell
+     into the rich `else` branch regardless. The branch and
+     `is_simple_callback` are removed; `ProgressUpdate` is now the
+     `pydantic.dataclasses.dataclass` described above.
    - Fold `emit_mass_event()`'s ad-hoc `{"type": ..., ...}` dicts into a
      small closed set of `pydantic` models (`MassTotalEvent`, `ChunkStartEvent`,
      `ChunkEndEvent`, `KeepaliveEvent`), validated before `json.dumps()`, so
