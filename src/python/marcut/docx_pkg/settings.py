@@ -9,9 +9,55 @@ compatibility with existing ``from .docx_io import ...`` call sites.
 
 import copy
 import json
+import logging
 import os
+import time
+import warnings
 from typing import List, Dict, Any, Optional, Tuple
 from dataclasses import dataclass, fields
+
+logger = logging.getLogger(__name__)
+
+
+def _log_app_event(message: str) -> None:
+    """Write ``message`` to the ``MARCUT_LOG_PATH`` app-log file, if set.
+
+    A deliberate near-duplicate of ``model._log_app_event`` rather than an
+    import from ``.model``: that module pulls in ``requests`` and other
+    dependencies this module is required to stay free of (see the module
+    docstring and ``TestSettingsModuleBoundary``). ``MARCUT_LOG_PATH`` is
+    what the shipped in-app log viewer reads, and ``PythonKitBridge.swift``
+    does not capture Python's stderr, so this is the only channel that makes
+    a diagnostic visible to a user of the packaged app.
+    """
+    log_path = os.environ.get("MARCUT_LOG_PATH")
+    if not log_path:
+        return
+    try:
+        timestamp = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        with open(log_path, "a", encoding="utf-8") as handle:
+            handle.write(f"[{timestamp}] PythonSettings: {message}\n")
+    except Exception:
+        pass
+
+
+def _emit_settings_diagnostic(message: str, *, stacklevel: int) -> None:
+    """Emit a settings diagnostic on every occurrence, not just the first.
+
+    ``warnings.warn`` alone is insufficient here: Python's default warning
+    filter shows a given (message, category, module, lineno) only once per
+    process, and the macOS app runs Python in-process, reusing one
+    interpreter across an entire batch job -- so a bad payload that is
+    identical across a batch would only be reported for document 1. Routing
+    the same message through the module logger (which does not deduplicate)
+    and the ``MARCUT_LOG_PATH`` app-log channel ensures every document in
+    the batch produces a visible diagnostic, and that it lands somewhere a
+    packaged-app user can actually see it.
+    """
+    warnings.warn(message, RuntimeWarning, stacklevel=stacklevel + 1)
+    logger.warning(message)
+    _log_app_event(message)
+
 
 CLI_ARG_PAIRS: List[Tuple[str, str]] = [
     # App Properties
@@ -99,6 +145,108 @@ CLI_CLEAN_ARG_PAIRS: List[Tuple[str, str]] = [
 ]
 CLI_CLEAN_ARG_MAP = dict(CLI_CLEAN_ARG_PAIRS)
 FIELD_TO_CLI = {field: flag for flag, field in CLI_ARG_PAIRS}
+
+# Sentinels accepted in MARCUT_METADATA_ARGS that are not field-toggling
+# flags: "--preset-none" is read directly by pipeline.py as an early-return
+# marker (never applied through from_cli_args' setattr loop), and the two
+# review-comments flags are handled by their own explicit checks in
+# from_cli_args below, before the per-flag loop runs. None of these should
+# be reported as an unrecognised argument.
+_KNOWN_METADATA_ARG_SENTINELS = {
+    "--preset-none",
+    "--no-clean-review-comments",
+    "--clean-review-comments",
+}
+
+
+_metadata_settings_payload_cls: Optional[type] = None
+
+
+def _get_metadata_settings_payload_cls() -> type:
+    """Build (once) and return the ``_MetadataSettingsPayload`` pydantic
+    model used to shape-validate ``MARCUT_METADATA_SETTINGS_JSON``.
+
+    ``pydantic`` is imported lazily, inside this function, rather than at
+    module level: docs/design/docx_io_package_split.md Section 2 requires
+    ``marcut.docx_pkg.settings`` to import without pulling in ``zipfile``
+    (enforced by
+    ``tests/test_docx_io.py::TestSettingsModuleBoundary``), and constructing
+    a pydantic ``BaseModel`` transitively imports ``zipfile`` as part of its
+    schema-building machinery. Deferring the import to first actual use (a
+    non-empty ``MARCUT_METADATA_SETTINGS_JSON``) keeps that invariant intact
+    while still validating the payload with a real pydantic model, as the
+    issue requires.
+    """
+    global _metadata_settings_payload_cls
+    if _metadata_settings_payload_cls is None:
+        from pydantic import BaseModel, ConfigDict
+
+        class _MetadataSettingsPayload(BaseModel):
+            """Shape of the decoded ``MARCUT_METADATA_SETTINGS_JSON`` payload
+            (issue #94, docs/design/bridge_schema_migration.md step 5).
+
+            The payload is either a flat mapping of field name -> value, or
+            a mapping with the actual overrides nested under a
+            ``"settings"`` key (``from_environment()`` picks whichever shape
+            applies, matching the pre-existing behavior). ``apply_mapping()``
+            already tolerates unknown field names and non-bool-like values
+            on a per-key basis by design (it is the forward-compatible
+            boundary for fields Swift may send that this Python version does
+            not yet know about), so this model only enforces the one shape
+            invariant that was previously silently dropped: the payload
+            itself must be a JSON object, not a scalar or array, and a
+            present ``"settings"`` key must itself be an object. Matches
+            ``report_schema.py``'s style: ``extra="allow"`` because unknown
+            top-level keys are informational, not an error.
+            """
+
+            model_config = ConfigDict(extra="allow")
+
+            settings: Optional[Dict[str, Any]] = None
+
+        _metadata_settings_payload_cls = _MetadataSettingsPayload
+    return _metadata_settings_payload_cls
+
+
+def _decode_metadata_settings_json(raw_json: str) -> Optional[Dict[str, Any]]:
+    """Decode and shape-validate ``MARCUT_METADATA_SETTINGS_JSON``.
+
+    Returns the resolved settings mapping (already unwrapped from a
+    ``"settings"`` key when present) on success. On malformed JSON or a
+    well-formed payload of the wrong shape, emits a diagnostic naming the
+    variable and returns ``None`` so the caller falls back to defaults
+    instead of raising: this class is constructed on the redaction path,
+    and the macOS app runs Python in-process and reuses one interpreter
+    across an entire batch job, so an exception here would fail every
+    remaining document in the batch rather than just the one with the bad
+    payload. The requirement is that the failure becomes visible, not that
+    it becomes fatal (issue #94).
+    """
+    try:
+        decoded = json.loads(raw_json)
+    except (json.JSONDecodeError, ValueError) as exc:
+        _emit_settings_diagnostic(
+            f"MARCUT_METADATA_SETTINGS_JSON is not valid JSON ({exc}); "
+            "ignoring it and using default metadata cleaning settings.",
+            stacklevel=3,
+        )
+        return None
+
+    from pydantic import ValidationError
+
+    try:
+        payload = _get_metadata_settings_payload_cls().model_validate(decoded)
+    except ValidationError as exc:
+        _emit_settings_diagnostic(
+            f"MARCUT_METADATA_SETTINGS_JSON has an unexpected shape ({exc}); "
+            "ignoring it and using default metadata cleaning settings.",
+            stacklevel=3,
+        )
+        return None
+
+    if payload.settings is not None:
+        return payload.settings
+    return decoded
 
 
 def _normalize_metadata_field_key(name: str) -> str:
@@ -281,6 +429,11 @@ class MetadataCleaningSettings:
                 setattr(settings, CLI_ARG_MAP[arg], False)
             elif arg in CLI_CLEAN_ARG_MAP:
                 setattr(settings, CLI_CLEAN_ARG_MAP[arg], True)
+            elif arg not in _KNOWN_METADATA_ARG_SENTINELS:
+                _emit_settings_diagnostic(
+                    f"Unrecognised MARCUT_METADATA_ARGS argument {arg!r}; ignoring it.",
+                    stacklevel=2,
+                )
         return settings
 
     @classmethod
@@ -292,12 +445,8 @@ class MetadataCleaningSettings:
 
         raw_json = os.environ.get("MARCUT_METADATA_SETTINGS_JSON", "").strip()
         if raw_json:
-            try:
-                decoded = json.loads(raw_json)
-            except Exception:
-                decoded = None
-            if isinstance(decoded, dict):
-                payload = decoded.get("settings") if isinstance(decoded.get("settings"), dict) else decoded
+            payload = _decode_metadata_settings_json(raw_json)
+            if payload is not None:
                 settings.apply_mapping(payload)
 
         return cls.from_cli_args(parsed_args, base=settings)

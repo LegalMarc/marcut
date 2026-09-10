@@ -1792,9 +1792,7 @@ def _finalize_and_write(
     _sync_dm_warnings()
 
     # Parse metadata cleaning settings from environment (set by Swift UI)
-    metadata_args_str = os.environ.get("MARCUT_METADATA_ARGS", "")
-    metadata_args = metadata_args_str.split() if metadata_args_str else []
-    metadata_settings = MetadataCleaningSettings.from_environment(metadata_args)
+    metadata_settings, metadata_args, metadata_args_str = _metadata_settings_from_env()
     scrub_report_path = os.environ.get("MARCUT_SCRUB_REPORT_PATH", "").strip() or None
     is_none_preset = "--preset-none" in metadata_args or "--preset-none" in metadata_args_str
     if is_none_preset:
@@ -2633,6 +2631,20 @@ def run_redaction_enhanced(
 
 # Alias for backwards compatibility
 redact_docx = run_redaction
+
+
+def _metadata_settings_from_env() -> Tuple[MetadataCleaningSettings, List[str], str]:
+    """Read and decode the metadata-cleaning-settings environment variables
+    (set by the Swift UI) exactly as the three call sites below used to do
+    inline. Shared so the decode/validation behavior (issue #94) lives in
+    one place; each caller still gets back the same three values it read
+    before (the resolved settings object, the split arg list, and the raw
+    arg string), so no call site's downstream logic changes.
+    """
+    metadata_args_str = os.environ.get("MARCUT_METADATA_ARGS", "")
+    metadata_args = metadata_args_str.split() if metadata_args_str else []
+    metadata_settings = MetadataCleaningSettings.from_environment(metadata_args)
+    return metadata_settings, metadata_args, metadata_args_str
 
 
 def _default_scrub_report_path(report_path: str, output_path: str):
@@ -4671,9 +4683,7 @@ def scrub_metadata_only(
     """
     try:
         # 1. Parse Args
-        metadata_args_str = os.environ.get("MARCUT_METADATA_ARGS", "")
-        metadata_args = metadata_args_str.split() if metadata_args_str else []
-        metadata_settings = MetadataCleaningSettings.from_environment(metadata_args)
+        metadata_settings, metadata_args, metadata_args_str = _metadata_settings_from_env()
 
         # Check for explicit 'None' preset flag for ultra-robust handling
         is_none_preset = "--preset-none" in metadata_args or "--preset-none" in metadata_args_str
@@ -4782,9 +4792,7 @@ def metadata_report_only(
     """
     del debug
     try:
-        metadata_args_str = os.environ.get("MARCUT_METADATA_ARGS", "")
-        metadata_args = metadata_args_str.split() if metadata_args_str else []
-        metadata_settings = MetadataCleaningSettings.from_environment(metadata_args)
+        metadata_settings, metadata_args, metadata_args_str = _metadata_settings_from_env()
 
         # Load original document for read-only metadata extraction
         dm = DocxMap.load(input_path)

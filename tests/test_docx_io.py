@@ -6,6 +6,8 @@ Tests cover:
 - _safe_fromstring: XML parsing security
 """
 
+import json
+
 import pytest
 from marcut.docx_io import (
     MetadataCleaningSettings,
@@ -224,6 +226,93 @@ class TestPresetNone:
         
         args = settings.to_cli_args()
         assert "--preset-none" in args
+
+
+class TestSettingsDiagnosticVisibility:
+    """A settings diagnostic must repeat every occurrence, not just the first.
+
+    Regression coverage for issue #94 fix round 1: Python's default warning
+    filter shows a given (message, category, module, lineno) only once per
+    process, and the macOS app runs Python in-process, reusing one
+    interpreter across an entire batch job with an identical bad payload
+    across documents -- so a ``warnings.warn``-only diagnostic would fire
+    for document 1 and go silent for documents 2..N. These tests use
+    ``caplog`` (module-logger records) rather than ``assertWarns``/
+    ``warnings.catch_warnings``, because both of those reset or invalidate
+    the warnings registry themselves and so would pass even without a fix.
+    """
+
+    def test_malformed_json_diagnostic_repeats_across_calls(self, caplog):
+        import logging as _logging
+
+        from marcut.docx_pkg.settings import _decode_metadata_settings_json
+
+        with caplog.at_level(_logging.WARNING, logger="marcut.docx_pkg.settings"):
+            first = _decode_metadata_settings_json("{not valid json")
+            second = _decode_metadata_settings_json("{not valid json")
+            third = _decode_metadata_settings_json("{not valid json")
+
+        assert first is None
+        assert second is None
+        assert third is None
+        matches = [
+            r for r in caplog.records
+            if "MARCUT_METADATA_SETTINGS_JSON is not valid JSON" in r.message
+        ]
+        assert len(matches) == 3, (
+            "expected the diagnostic on every call, not just the first; got "
+            f"{len(matches)} of 3"
+        )
+
+    def test_wrong_shape_json_diagnostic_repeats_across_calls(self, caplog):
+        import logging as _logging
+
+        from marcut.docx_pkg.settings import _decode_metadata_settings_json
+
+        bad_shape = json.dumps({"settings": "not-an-object"})
+        with caplog.at_level(_logging.WARNING, logger="marcut.docx_pkg.settings"):
+            first = _decode_metadata_settings_json(bad_shape)
+            second = _decode_metadata_settings_json(bad_shape)
+
+        assert first is None
+        assert second is None
+        matches = [
+            r for r in caplog.records
+            if "MARCUT_METADATA_SETTINGS_JSON has an unexpected shape" in r.message
+        ]
+        assert len(matches) == 2
+
+    def test_unrecognised_cli_arg_diagnostic_repeats_across_calls(self, caplog):
+        import logging as _logging
+
+        with caplog.at_level(_logging.WARNING, logger="marcut.docx_pkg.settings"):
+            MetadataCleaningSettings.from_cli_args(["--totally-bogus-flag"])
+            MetadataCleaningSettings.from_cli_args(["--totally-bogus-flag"])
+
+        matches = [
+            r for r in caplog.records
+            if "Unrecognised MARCUT_METADATA_ARGS argument" in r.message
+        ]
+        assert len(matches) == 2
+
+    def test_diagnostic_written_to_marcut_log_path_on_every_call(self, tmp_path, monkeypatch):
+        """The diagnostic must also reach MARCUT_LOG_PATH, which the shipped
+        in-app log viewer reads -- PythonKitBridge.swift never captures
+        Python's stderr, so warnings.warn alone is invisible to a packaged-app
+        user."""
+        from marcut.docx_pkg.settings import _decode_metadata_settings_json
+
+        log_path = tmp_path / "marcut-app.log"
+        monkeypatch.setenv("MARCUT_LOG_PATH", str(log_path))
+
+        _decode_metadata_settings_json("{not valid json")
+        _decode_metadata_settings_json("{not valid json")
+
+        contents = log_path.read_text(encoding="utf-8")
+        occurrences = contents.count("MARCUT_METADATA_SETTINGS_JSON is not valid JSON")
+        assert occurrences == 2, (
+            f"expected 2 app-log occurrences, found {occurrences} in: {contents!r}"
+        )
 
 
 class TestSettingsModuleBoundary:

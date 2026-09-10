@@ -34,6 +34,23 @@ issue #26. Addresses the
 `backlog.md` tech-debt note: *"Fragile Swift-to-Python Bridge: Transition away
 from parsing unstructured JSON state files to a stricter schema like
 Protobuf, FlatBuffers, or strict OpenAPI JSON specs."*
+Step 5 implemented (issue #94) -- `MetadataCleaningSettings.from_environment()`
+(`docx_pkg/settings.py`, moved from `docx_io.py` by the package split in
+#72-#76) validates the decoded `MARCUT_METADATA_SETTINGS_JSON` payload
+against a new `_MetadataSettingsPayload` pydantic model instead of the old
+bare `except Exception` plus `isinstance(decoded, dict)` guard. Warn-and-
+default, not raise: a `RuntimeWarning` naming the variable is emitted on
+malformed JSON or a well-formed payload of the wrong shape (a non-object
+top level, or a `"settings"` key that isn't itself an object), and defaults
+are used instead -- raising was rejected because this class is constructed
+on the redaction path and the macOS app reuses one Python interpreter
+across a whole batch job, so an exception here would fail every remaining
+document rather than just the one with the bad payload. `from_cli_args()`
+gets the same treatment for `MARCUT_METADATA_ARGS`: an unrecognised flag
+now warns instead of disappearing silently (the three non-field sentinels
+`--preset-none`/`--no-clean-review-comments`/`--clean-review-comments` stay
+silent). `MARCUT_PROCESSING_DEADLINE_MONOTONIC` is untouched, per this
+doc's explicit fail-open exclusion above.
 
 ## Goal
 

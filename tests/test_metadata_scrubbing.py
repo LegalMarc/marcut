@@ -12,6 +12,7 @@ import os
 import stat
 import tempfile
 import unittest
+import warnings
 import zipfile
 from dataclasses import fields
 from xml.etree import ElementTree as ET
@@ -169,6 +170,126 @@ class TestMetadataCleaningSettings(unittest.TestCase):
         settings = MetadataCleaningSettings.from_cli_args(args, base=MetadataCleaningSettings.from_preset("none"))
         for f in fields(settings):
             self.assertTrue(getattr(settings, f.name), msg=f"expected cleaned field to be enabled: {f.name}")
+
+
+class TestMetadataSettingsJsonValidation(unittest.TestCase):
+    """Issue #94: MARCUT_METADATA_SETTINGS_JSON is validated against a
+    pydantic model instead of being silently dropped on a bad payload.
+    Warn-and-default was chosen over raising -- see the issue for the
+    reasoning -- so every case here asserts the settings object still
+    comes back usable (with defaults) rather than an exception."""
+
+    def setUp(self):
+        self._prev_preset = os.environ.get("MARCUT_METADATA_PRESET")
+        self._prev_json = os.environ.get("MARCUT_METADATA_SETTINGS_JSON")
+        self._prev_args = os.environ.get("MARCUT_METADATA_ARGS")
+        os.environ.pop("MARCUT_METADATA_PRESET", None)
+        os.environ.pop("MARCUT_METADATA_SETTINGS_JSON", None)
+        os.environ.pop("MARCUT_METADATA_ARGS", None)
+
+    def tearDown(self):
+        for name, prev in (
+            ("MARCUT_METADATA_PRESET", self._prev_preset),
+            ("MARCUT_METADATA_SETTINGS_JSON", self._prev_json),
+            ("MARCUT_METADATA_ARGS", self._prev_args),
+        ):
+            if prev is None:
+                os.environ.pop(name, None)
+            else:
+                os.environ[name] = prev
+
+    @unittest.skipUnless(IMPORTS_SUCCESS, "marcut.docx_io not available")
+    def test_valid_payload_applies_exactly_as_before(self):
+        os.environ["MARCUT_METADATA_SETTINGS_JSON"] = json.dumps({
+            "clean_author": False,
+            "clean_company": False,
+        })
+        with _no_warnings(self):
+            settings = MetadataCleaningSettings.from_environment([])
+        self.assertFalse(settings.clean_author)
+        self.assertFalse(settings.clean_company)
+        # Untouched fields keep their defaults.
+        self.assertTrue(settings.clean_thumbnail)
+
+    @unittest.skipUnless(IMPORTS_SUCCESS, "marcut.docx_io not available")
+    def test_malformed_json_produces_diagnostic_and_defaults(self):
+        os.environ["MARCUT_METADATA_SETTINGS_JSON"] = "{not valid json"
+        with self.assertWarns(RuntimeWarning) as caught:
+            settings = MetadataCleaningSettings.from_environment([])
+        self.assertIn("MARCUT_METADATA_SETTINGS_JSON", str(caught.warning))
+        # Falls back to defaults rather than raising or half-applying.
+        default = MetadataCleaningSettings()
+        for f in fields(settings):
+            self.assertEqual(getattr(settings, f.name), getattr(default, f.name), msg=f.name)
+
+    @unittest.skipUnless(IMPORTS_SUCCESS, "marcut.docx_io not available")
+    def test_wellformed_wrong_shape_produces_same_diagnostic(self):
+        # Valid JSON, but a top-level array rather than an object.
+        os.environ["MARCUT_METADATA_SETTINGS_JSON"] = json.dumps(["clean_author", False])
+        with self.assertWarns(RuntimeWarning) as caught:
+            settings = MetadataCleaningSettings.from_environment([])
+        self.assertIn("MARCUT_METADATA_SETTINGS_JSON", str(caught.warning))
+        default = MetadataCleaningSettings()
+        for f in fields(settings):
+            self.assertEqual(getattr(settings, f.name), getattr(default, f.name), msg=f.name)
+
+    @unittest.skipUnless(IMPORTS_SUCCESS, "marcut.docx_io not available")
+    def test_settings_key_present_but_wrong_type_is_also_flagged(self):
+        # A "settings" key that isn't itself an object is a shape error too,
+        # not a silent fall-through to the flat top-level keys.
+        os.environ["MARCUT_METADATA_SETTINGS_JSON"] = json.dumps({
+            "settings": "not-an-object",
+            "clean_author": False,
+        })
+        with self.assertWarns(RuntimeWarning):
+            settings = MetadataCleaningSettings.from_environment([])
+        self.assertTrue(settings.clean_author)  # default, not applied
+
+    @unittest.skipUnless(IMPORTS_SUCCESS, "marcut.docx_io not available")
+    def test_absent_variable_yields_defaults_with_no_diagnostic(self):
+        with _no_warnings(self):
+            settings = MetadataCleaningSettings.from_environment([])
+        default = MetadataCleaningSettings()
+        for f in fields(settings):
+            self.assertEqual(getattr(settings, f.name), getattr(default, f.name), msg=f.name)
+
+    @unittest.skipUnless(IMPORTS_SUCCESS, "marcut.docx_io not available")
+    def test_unrecognised_cli_arg_warns_but_does_not_raise(self):
+        with self.assertWarns(RuntimeWarning) as caught:
+            settings = MetadataCleaningSettings.from_cli_args([
+                "--no-clean-company",
+                "--totally-bogus-flag",
+            ])
+        self.assertIn("bogus-flag", str(caught.warning))
+        self.assertFalse(settings.clean_company)
+
+    @unittest.skipUnless(IMPORTS_SUCCESS, "marcut.docx_io not available")
+    def test_preset_none_sentinel_does_not_warn(self):
+        with _no_warnings(self):
+            settings = MetadataCleaningSettings.from_cli_args(["--preset-none"])
+        self.assertIsInstance(settings, MetadataCleaningSettings)
+
+
+class _no_warnings:
+    """Context manager asserting no warnings were emitted in its block."""
+
+    def __init__(self, test_case):
+        self._test_case = test_case
+
+    def __enter__(self):
+        self._cm = warnings.catch_warnings(record=True)
+        self._records = self._cm.__enter__()
+        warnings.simplefilter("always")
+        return self._records
+
+    def __exit__(self, exc_type, exc, tb):
+        self._cm.__exit__(exc_type, exc, tb)
+        if exc_type is None:
+            self._test_case.assertEqual(
+                [str(r.message) for r in self._records], [],
+                "expected no warnings to be emitted",
+            )
+        return False
 
 
 class TestScrubReportPrePostValues(unittest.TestCase):
