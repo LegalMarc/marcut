@@ -2264,6 +2264,120 @@ final class MarcutAppTests: XCTestCase {
         XCTAssertNil(viewModel.loadFailureReport(at: missingPath))
     }
 
+    // MARK: - Report-viewer binary export decoding (issue #90 / bridge schema step 2)
+
+    /// A report with both `binary_exports` and `large_exports` populated must decode via
+    /// `JSONDecoder` (not `as? [String: Any]`) and return a URL for every valid entry from
+    /// both arrays.
+    func testCollectBinaryExportURLsWithBothKeysPopulated() throws {
+        let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let reportURL = tempDir.appendingPathComponent("scrub_report.json")
+        let json = """
+        {
+            "binary_exports": [
+                {"name": "logo.png", "type": "image", "path": "binaries/media/logo.png", "size": 1024}
+            ],
+            "large_exports": [
+                {"name": "blob.bin", "type": "other", "path": "binaries/blob.bin", "size": 70000}
+            ]
+        }
+        """
+        try json.write(to: reportURL, atomically: true, encoding: .utf8)
+
+        let viewer = ReportViewer(report: ReportViewerItem(url: reportURL, title: "Test Report"))
+        let urls = Set(viewer.collectBinaryExportURLs(from: reportURL))
+
+        let expectedMedia = tempDir.appendingPathComponent("binaries/media/logo.png").standardizedFileURL
+        let expectedBlob = tempDir.appendingPathComponent("binaries/blob.bin").standardizedFileURL
+        XCTAssertEqual(urls, Set([expectedMedia, expectedBlob]))
+    }
+
+    /// `BinaryExportEntry` decodes only `path`, so an entry missing `name`/`type`/`size`
+    /// (as an older or hand-edited report might write) must not fail the whole array --
+    /// `JSONDecoder` fails an entire container when any single element is missing a
+    /// *required* key, and this file never reads those three fields.
+    func testCollectBinaryExportURLsToleratesEntryMissingOptionalFields() throws {
+        let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let reportURL = tempDir.appendingPathComponent("scrub_report.json")
+        let json = """
+        {
+            "binary_exports": [
+                {"path": "binaries/media/no_size.png"},
+                {"name": "logo.png", "type": "image", "path": "binaries/media/logo.png", "size": 1024}
+            ]
+        }
+        """
+        try json.write(to: reportURL, atomically: true, encoding: .utf8)
+
+        let viewer = ReportViewer(report: ReportViewerItem(url: reportURL, title: "Test Report"))
+        let urls = Set(viewer.collectBinaryExportURLs(from: reportURL))
+
+        let expectedNoSize = tempDir.appendingPathComponent("binaries/media/no_size.png").standardizedFileURL
+        let expectedLogo = tempDir.appendingPathComponent("binaries/media/logo.png").standardizedFileURL
+        XCTAssertEqual(urls, Set([expectedNoSize, expectedLogo]))
+    }
+
+    /// A report carrying neither `binary_exports` nor `large_exports` must return an empty
+    /// array without error.
+    func testCollectBinaryExportURLsWithNeitherKeyPresent() throws {
+        let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let reportURL = tempDir.appendingPathComponent("scrub_report.json")
+        let json = """
+        {
+            "summary": {"file_name": "test.docx"}
+        }
+        """
+        try json.write(to: reportURL, atomically: true, encoding: .utf8)
+
+        let viewer = ReportViewer(report: ReportViewerItem(url: reportURL, title: "Test Report"))
+        XCTAssertEqual(viewer.collectBinaryExportURLs(from: reportURL), [])
+    }
+
+    /// An entry whose `path` attempts to escape the report directory via `../` traversal must
+    /// still be rejected by the directory-containment check -- the security-relevant part of
+    /// this function that the refactor to `JSONDecoder` must preserve verbatim.
+    func testCollectBinaryExportURLsRejectsPathEscapingReportDirectory() throws {
+        let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let reportURL = tempDir.appendingPathComponent("scrub_report.json")
+        let json = """
+        {
+            "binary_exports": [
+                {"name": "escape.bin", "type": "other", "path": "../../escape.bin", "size": 10}
+            ]
+        }
+        """
+        try json.write(to: reportURL, atomically: true, encoding: .utf8)
+
+        let viewer = ReportViewer(report: ReportViewerItem(url: reportURL, title: "Test Report"))
+        XCTAssertEqual(viewer.collectBinaryExportURLs(from: reportURL), [])
+    }
+
+    /// A malformed (non-JSON) report file must return an empty array rather than throwing,
+    /// exactly as the pre-refactor `as?` guard chain did.
+    func testCollectBinaryExportURLsReturnsEmptyForMalformedFile() throws {
+        let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let reportURL = tempDir.appendingPathComponent("scrub_report.json")
+        try "not valid json {{{".write(to: reportURL, atomically: true, encoding: .utf8)
+
+        let viewer = ReportViewer(report: ReportViewerItem(url: reportURL, title: "Test Report"))
+        XCTAssertEqual(viewer.collectBinaryExportURLs(from: reportURL), [])
+    }
+
     // MARK: - Metadata bridge payload decode (issue #91)
 
     /// A well-formed scrub/report payload -- the shape returned by both

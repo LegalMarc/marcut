@@ -3,11 +3,30 @@
 Status: Step 1 implemented (issue #67) -- `report_schema.py` adds
 `AuditReport`/`ScrubReport`/`FailureReport` Pydantic models, validated
 immediately before every on-disk report write in `pipeline.py`/`report.py`.
-Step 2 implemented (issue #89) -- Swift's `loadFailureReport(at:)`
+Step 2a implemented (issue #89) -- Swift's `loadFailureReport(at:)`
 (`DocumentRedactionViewModel.swift`) now decodes the on-disk failure report
 via `JSONDecoder` into a typed `FailureReportPayload` struct first, with the
 untyped `JSONSerialization` dictionary path retained for one release as a
 fallback behind the `legacy report shape encountered` log line.
+Step 2b implemented (issue #90) -- the *other* on-disk report reader named
+in the "Current State Inventory" §4 fix below,
+`ReportViewer.collectBinaryExportURLs(from:)` (`ReportViewer.swift`), is
+extracted into a pure, testable `ReportViewer.parseBinaryExportRelativePaths(from:)`
+that decodes the report's `binary_exports`/`large_exports` arrays via
+`JSONDecoder` into a typed `BinaryExportManifest`/`BinaryExportEntry` instead
+of `JSONSerialization... as? [String: Any]` plus per-entry `as?` casts.
+`BinaryExportEntry` decodes only the `path` field this file actually reads --
+`name`/`type`/`size` are written by `pipeline.py` but never consumed here,
+and declaring them as required `Decodable` fields would fail `JSONDecoder`
+on the whole array (not just the offending element) the first time an older
+or hand-edited report omits one, silently erasing every export from the
+Burn/secure-erase path. The path-traversal containment check
+(`candidatePath == rootPath || candidatePath.hasPrefix(rootPath + "/")`) is
+unchanged. A decode failure returns `[]` exactly as the prior `as?` guard
+chain did, now with one `DebugLogger` line naming the file. This is a
+second, independent instance of Step 2's pattern (typed on-disk report
+reading in Swift), not a re-run of #89 -- hence "2b": #89 typed the failure
+report, #90 types the binary-export manifest read by a different view.
 Step 3 implemented (issue #91) -- `pipeline.scrub_metadata_only()`/
 `metadata_report_only()` validate their tuple-index-2 report payload against
 new `MetadataScrubPayload`/`MetadataReportPayload` Pydantic models before
@@ -188,16 +207,20 @@ below):
   `write_json_file()` helper.
 - **Failure report** — `_write_failure_report()` (`pipeline.py:1637-1661`)
   writes yet another shape: `{"status": "error", "input_file", "error_code",
-  "message", "technical_details"}`. Swift's only reader of any on-disk report
-  today is `loadFailureReport()` (`DocumentRedactionViewModel.swift:2105-2121`),
-  which does `JSONSerialization.jsonObject(...) as? [String: Any]` and then
-  reads `json["error_code"] as? String ?? json["status"] as? String ?? "unknown"`
+  "message", "technical_details"}`. Swift has (at least) two independent
+  readers of on-disk reports: `loadFailureReport()`
+  (`DocumentRedactionViewModel.swift:2105-2121`), which does
+  `JSONSerialization.jsonObject(...) as? [String: Any]` and then reads
+  `json["error_code"] as? String ?? json["status"] as? String ?? "unknown"`
   — i.e. it doesn't even commit to one key name, it guesses between two
-  possible shapes with a string literal as the last-resort default. This is
-  the clearest concrete evidence in the codebase of exactly the fragility
-  problem this ticket is about: two independently-evolving dict-builders
-  (`write_report` vs. `_write_failure_report`) whose consumer has to
-  defensively probe for whichever one actually wrote the file.
+  possible shapes with a string literal as the last-resort default -- and
+  `ReportViewer.collectBinaryExportURLs(from:)` (`ReportViewer.swift`), which
+  reads the same file's `binary_exports`/`large_exports` arrays to locate
+  extracted binary parts for secure erase. This is the clearest concrete
+  evidence in the codebase of exactly the fragility problem this ticket is
+  about: two independently-evolving dict-builders (`write_report` vs.
+  `_write_failure_report`) whose consumers each have to defensively probe
+  for whichever shape actually wrote the file.
 - The full audit report (with `groups`) is also read back into Swift via
   the same tuple + `json.dumps`/`JSONSerialization` round-trip described
   above for `scrub_metadata_only()`/`metadata_report_only()`

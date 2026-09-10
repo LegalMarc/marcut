@@ -9,6 +9,34 @@ private enum ReportDisclosureAction {
     case share
 }
 
+/// Typed decode target for one entry of the on-disk report's `binary_exports`/
+/// `large_exports` arrays, written by `pipeline.py`'s "STRUCTURED BINARY EXPORT" block
+/// (`export_entry`) and declared as `Optional[List[Dict[str, Any]]]` on `ScrubReport`
+/// (`report_schema.py`). Only `path` is read by this file, and this reader treats report
+/// content as attacker-influenceable, so only `path` is decoded here: `JSONDecoder` fails
+/// the whole array when any single element is missing a required key, and requiring fields
+/// this file never uses would let one malformed/older entry blank out every other export in
+/// the array. `report_html.py`'s own reader of this same data treats `name`/`type`/`size` as
+/// optional for the same reason (`binary.get('name', '')`, etc.). `Decodable` already ignores
+/// unknown keys, so the shape is free to grow.
+struct BinaryExportEntry: Decodable {
+    let path: String
+}
+
+/// Container for the two optional export arrays a report may carry. `pipeline.py` only
+/// sets `report["binary_exports"]`/`report["large_exports"]` when the corresponding list is
+/// non-empty (`if binary_exports: report["binary_exports"] = binary_exports`), so a report
+/// with no exports of a given kind omits the key entirely rather than writing `[]`.
+struct BinaryExportManifest: Decodable {
+    let binaryExports: [BinaryExportEntry]?
+    let largeExports: [BinaryExportEntry]?
+
+    enum CodingKeys: String, CodingKey {
+        case binaryExports = "binary_exports"
+        case largeExports = "large_exports"
+    }
+}
+
 struct ReportViewer: View {
     let report: ReportViewerItem
     @StateObject private var webViewState = ReportWebViewState()
@@ -251,28 +279,45 @@ struct ReportViewer: View {
         return Array(Set(candidates)).filter { FileManager.default.fileExists(atPath: $0.path) }
     }
 
-    private func collectBinaryExportURLs(from jsonURL: URL) -> [URL] {
+    /// Pure, testable parse of a report JSON `Data` into the relative export paths named by
+    /// its `binary_exports`/`large_exports` arrays (both merged, in that order, unfiltered).
+    /// Returns `nil` on decode failure so the caller can log that distinctly from "no exports
+    /// present". Does no I/O and does not apply the directory-containment check -- that stays
+    /// the caller's responsibility, unchanged, in `collectBinaryExportURLs(from:)`.
+    ///
+    /// Internal (not private) so this is directly unit-testable via `@testable import
+    /// MarcutApp`, matching the `parseFailureReport`/`loadFailureReport` split in
+    /// `DocumentRedactionViewModel.swift` (issue #89).
+    static func parseBinaryExportRelativePaths(from data: Data) -> [String]? {
+        guard let manifest = try? JSONDecoder().decode(BinaryExportManifest.self, from: data) else {
+            return nil
+        }
+        let entries = (manifest.binaryExports ?? []) + (manifest.largeExports ?? [])
+        return entries.map(\.path)
+    }
+
+    /// Internal (not private) for the same testability reason as `parseBinaryExportRelativePaths`.
+    func collectBinaryExportURLs(from jsonURL: URL) -> [URL] {
         guard FileManager.default.fileExists(atPath: jsonURL.path) else { return [] }
         guard let data = try? Data(contentsOf: jsonURL),
-              let json = try? JSONSerialization.jsonObject(with: data, options: []),
-              let payload = json as? [String: Any]
+              let relativePaths = Self.parseBinaryExportRelativePaths(from: data)
         else {
+            DebugLogger.shared.log(
+                "Failed to parse binary export manifest at \(jsonURL.path)",
+                component: "ReportViewer"
+            )
             return []
         }
         let reportDir = jsonURL.deletingLastPathComponent()
         var urls = Set<URL>()
-        let exportKeys = ["binary_exports", "large_exports"]
-        for key in exportKeys {
-            guard let entries = payload[key] as? [[String: Any]] else { continue }
-            for entry in entries {
-                guard let relPath = entry["path"] as? String, !relPath.isEmpty else { continue }
-                let candidate = reportDir.appendingPathComponent(relPath).standardizedFileURL
-                let rootPath = reportDir.standardizedFileURL.path
-                let candidatePath = candidate.path
-                let withinRoot = candidatePath == rootPath || candidatePath.hasPrefix(rootPath + "/")
-                if withinRoot {
-                    urls.insert(candidate)
-                }
+        for relPath in relativePaths {
+            guard !relPath.isEmpty else { continue }
+            let candidate = reportDir.appendingPathComponent(relPath).standardizedFileURL
+            let rootPath = reportDir.standardizedFileURL.path
+            let candidatePath = candidate.path
+            let withinRoot = candidatePath == rootPath || candidatePath.hasPrefix(rootPath + "/")
+            if withinRoot {
+                urls.insert(candidate)
             }
         }
         return Array(urls)
