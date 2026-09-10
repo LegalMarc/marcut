@@ -738,6 +738,32 @@ final class MarcutAppTests: XCTestCase {
         XCTAssertEqual(item.processedMass, 100, "Processed mass should clamp to total mass")
     }
 
+    func testTokenProgressIsRecognizedButDoesNotDriveProgress() {
+        // issue #93: token_progress is a deliberate, documented no-op in
+        // ingestProgressPayload's switch, not an accidental fall-through
+        // to `default`. It must be reported as handled (so the CLI-fallback
+        // stdout path doesn't log it as an unexpected line) while leaving
+        // mass-based progress state untouched -- chunk_start/chunk_end and
+        // keepalive remain the only events that move the progress bar.
+        let item = createTestDocumentItem(status: .processing)
+        item.beginStage(.enhancedDetection)
+
+        XCTAssertTrue(item.ingestProgressPayload("{\"type\":\"mass_total\",\"value\":100}"))
+        XCTAssertTrue(item.ingestProgressPayload("{\"type\":\"chunk_start\",\"size\":150,\"estimated_time\":10}"))
+
+        let processedMassBefore = item.processedMass
+        XCTAssertTrue(
+            item.ingestProgressPayload(
+                "{\"type\":\"token_progress\",\"chunk_index\":0,\"chars\":42,\"eval_count\":7}"
+            ),
+            "token_progress must be reported as a recognized type"
+        )
+        XCTAssertEqual(item.processedMass, processedMassBefore, "token_progress must not move mass-based progress")
+
+        XCTAssertTrue(item.ingestProgressPayload("{\"type\":\"chunk_end\",\"size\":150}"))
+        XCTAssertEqual(item.processedMass, 100)
+    }
+
     // MARK: - Batch ETA Tests
 
     func testBatchETAReturnsNilWithFewerThanTwoSamples() {

@@ -34,6 +34,7 @@ import concurrent.futures
 from dataclasses import dataclass
 from .cancellation import ProcessingDeadlineExceeded, check_processing_deadline, remaining_seconds
 from .model_config import uses_llama_cpp_backend
+from .progress import validate_mass_event
 from .rationale import RationaleOrigin, rationale_mentions_text
 from .model import (
     parse_llm_response,
@@ -1191,6 +1192,32 @@ class IntelligentRedactionPipeline:
         prompt_context = build_prompt_context(self.doc_context)
 
         def emit_mass_event(payload, progress=None, status_message=None):
+            # Validate before the best-effort guard below, and before
+            # anything is serialized -- a malformed payload is a
+            # programming error (a producer-side typo or shape drift, e.g.
+            # #93) and must raise here, not be silently swallowed by the
+            # bare `except Exception: pass` that guards the rest of this
+            # function. This path fires many times per document, so
+            # `validate_mass_event` stays cheap (a single TypeAdapter call,
+            # no per-call model construction beyond validation itself).
+            #
+            # Raising here only surfaces at *some* call sites. Two of the
+            # five swallow or downgrade it upstream, so a malformed payload
+            # there costs the events rather than failing the run:
+            #   - `token_progress`: emitted from the on_token_progress
+            #     callback, which model.py's streaming loop invokes inside
+            #     `try: ... except Exception: pass`, so the event is dropped
+            #     with no trace (this is precisely how an over-strict
+            #     `eval_count: int` destroyed intra-chunk progress unnoticed
+            #     -- see test_token_progress_validation_failure_is_swallowed
+            #     _by_stream_callback in tests/test_model_enhanced.py).
+            #   - `keepalive`: emitted from the keepalive thread, whose
+            #     `except Exception` downgrades it to an
+            #     LLM_KEEPALIVE_FAILED warning.
+            # Only `mass_total`/`chunk_start`/`chunk_end` propagate to the
+            # caller. Tests must therefore assert on emitted events, never
+            # rely on a green run to prove a payload validated.
+            validate_mass_event(payload)
             try:
                 message = json.dumps(payload)
                 display = status_message or message

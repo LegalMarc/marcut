@@ -361,6 +361,139 @@ def test_emit_mass_event_dispatches_three_arg_progress_callback(monkeypatch):
     assert payload["type"] == "mass_total"
 
 
+def test_emit_mass_event_validation_error_is_not_swallowed(monkeypatch):
+    """emit_mass_event wraps its serialization/dispatch in a bare
+    `except Exception: pass` -- but validation must run before that guard
+    (issue #93 Notes: "a malformed event is a programming error and should
+    surface"). Simulate a malformed payload by making validate_mass_event
+    raise, and confirm the exception actually propagates out of
+    process_document instead of being caught and dropped."""
+    def boom(payload):
+        raise ValueError("simulated malformed mass-event payload")
+
+    monkeypatch.setattr(model_enhanced, "validate_mass_event", boom)
+    monkeypatch.setattr("marcut.model.ollama_extract", lambda *a, **k: [])
+    monkeypatch.setattr(model_enhanced, "needs_validation", lambda entity, doc_context: False)
+
+    pipeline = model_enhanced.IntelligentRedactionPipeline("test-model", temperature=0.1, seed=1)
+    with pytest.raises(ValueError, match="simulated malformed mass-event payload"):
+        pipeline.process_document(
+            "John Smith",
+            [{"text": "John Smith", "start": 0, "end": 10}],
+            warnings=[],
+            suppressed=[],
+        )
+
+
+# Padded so each streamed piece clears on_chunk_token_progress's 40-char
+# rate-limit threshold and therefore emits its own token_progress event.
+_STREAM_PIECES = [
+    '[{"text": "John Smith", ' + " " * 45,
+    '"label": "NAME"}]' + " " * 45,
+    " " * 50,
+    " " * 50,
+    " " * 50,
+    " " * 50,
+]
+
+
+def _fake_stream_without_eval_count(*_args, **_kwargs):
+    """An NDJSON stream shaped like a real Ollama one: `eval_count` appears
+    only on the final `done: true` line."""
+    def lines():
+        for piece in _STREAM_PIECES:
+            yield json.dumps({"response": piece, "done": False})
+        yield json.dumps({"response": "", "done": True, "eval_count": 7})
+
+    return _FakeStreamResponse(lines())
+
+
+def _emitted_mass_events(captured_stdout):
+    events = []
+    for line in captured_stdout.splitlines():
+        if not line.startswith("{"):
+            continue
+        try:
+            payload = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(payload, dict) and "type" in payload:
+            events.append(payload)
+    return events
+
+
+def test_stream_emits_token_progress_for_lines_without_eval_count(monkeypatch, capsys):
+    """Ollama sends `eval_count` only on the final `done: true` line, so
+    every *intermediate* token_progress event carries `eval_count: None`
+    (model.py's streaming loop passes `event.get("eval_count")` through, and
+    its callback contract is `Callable[[int, Optional[int]], None]`). Those
+    intermediate events are the whole of intra-chunk streaming progress, and
+    each one also refreshes the Swift-side heartbeat that closes the #49
+    long-chunk false-failure gap, so mass-event validation must accept them.
+
+    A required `eval_count: int` rejected all six of them here, and because
+    model.py invokes the callback inside `try: ... except Exception: pass`
+    the loss was silent -- only the final done-line event survived, at chunk
+    end, which is useless as intra-chunk progress."""
+    monkeypatch.setattr(model_module.requests, "post", _fake_stream_without_eval_count)
+    monkeypatch.setattr(model_enhanced, "needs_validation", lambda entity, doc_context: False)
+
+    pipeline = model_enhanced.IntelligentRedactionPipeline("test-model", temperature=0.0, seed=1)
+    pipeline.process_document(
+        "John Smith",
+        [{"text": "John Smith", "start": 0, "end": 10}],
+        warnings=[],
+        suppressed=[],
+    )
+
+    token_events = [
+        e for e in _emitted_mass_events(capsys.readouterr().out)
+        if e.get("type") == "token_progress"
+    ]
+    without_eval_count = [e for e in token_events if e.get("eval_count") is None]
+    assert len(without_eval_count) >= len(_STREAM_PIECES) - 1, (
+        "intra-chunk token_progress events were dropped; "
+        f"got {token_events}"
+    )
+    assert all(e["chunk_index"] == 0 for e in without_eval_count)
+    assert [e["chars"] for e in without_eval_count] == sorted(
+        e["chars"] for e in without_eval_count
+    )
+
+
+def test_token_progress_validation_failure_is_swallowed_by_stream_callback(monkeypatch, capsys):
+    """Documents the limitation the comment in `emit_mass_event` records: a
+    validation failure only propagates from the mass_total/chunk_start/
+    chunk_end call sites. On the token_progress path the exception dies in
+    model.py's `except Exception: pass` around on_token_progress, so the run
+    completes normally and the events simply vanish -- which is exactly why
+    a green suite is not evidence that token_progress payloads validate."""
+    real_validate = model_enhanced.validate_mass_event
+
+    def reject_token_progress(payload):
+        if payload.get("type") == "token_progress":
+            raise ValueError("simulated malformed token_progress payload")
+        return real_validate(payload)
+
+    monkeypatch.setattr(model_enhanced, "validate_mass_event", reject_token_progress)
+    monkeypatch.setattr(model_module.requests, "post", _fake_stream_without_eval_count)
+    monkeypatch.setattr(model_enhanced, "needs_validation", lambda entity, doc_context: False)
+
+    pipeline = model_enhanced.IntelligentRedactionPipeline("test-model", temperature=0.0, seed=1)
+    pipeline.process_document(
+        "John Smith",
+        [{"text": "John Smith", "start": 0, "end": 10}],
+        warnings=[],
+        suppressed=[],
+    )
+
+    events = _emitted_mass_events(capsys.readouterr().out)
+    assert not [e for e in events if e.get("type") == "token_progress"]
+    # The surrounding run is unaffected -- no warning, no failure, no trace.
+    assert [e for e in events if e.get("type") == "mass_total"]
+    assert [e for e in events if e.get("type") == "chunk_end"]
+
+
 def test_emit_mass_event_falls_back_to_two_arg_callback_on_type_error(monkeypatch):
     """A callback that only accepts two positional args still doesn't take
     the rich single-arg ProgressUpdate path (accepts_progress_update requires

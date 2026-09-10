@@ -46,9 +46,37 @@ three-parameter callback (the CLI/GUI register a one-parameter rich
 callback, and the Swift bridge's `PyCFunction` callback has no
 `__text_signature__` for `inspect.signature` to read at all, so it always
 took the rich path in practice). Every callback now receives the single
-rich `ProgressUpdate` object unconditionally. Step 4b (folding
-`emit_mass_event()`'s ad-hoc JSON dicts into closed `pydantic` models) is
-still pending, tracked as a separate ticket. Companion to
+rich `ProgressUpdate` object unconditionally.
+Step 4b implemented (issue #93) -- `progress.py` adds one `pydantic`
+`BaseModel` per `emit_mass_event()` event type (`MassTotalEvent`,
+`ChunkStartEvent`, `ChunkEndEvent`, `KeepaliveEvent`, `TokenProgressEvent`,
+each `extra="forbid"`) plus a `type`-discriminated union, and
+`emit_mass_event()` validates every payload against it before entering its
+own best-effort `try`/`except Exception: pass` guard, so a malformed event
+raises instead of being silently dropped. `DocumentModels.swift`'s
+`ingestProgressPayload` gains an explicit, commented no-op case for
+`token_progress` (previously an undocumented fall-through to `default:
+return false`) rather than a decoded handler, per the ticket's explicit
+choice between the two. A parity test parses that switch out of
+`DocumentModels.swift` and asserts the model set, the Python-side
+readability mirror `SWIFT_HANDLED_MASS_EVENT_TYPES`, and the parsed Swift
+set are all identical -- the Swift source stays the authority, and the
+mirror constant (which has no runtime consumer) is held to it rather than
+substituted for it.
+
+Two caveats on where validation actually surfaces. First, each field's type
+comes from its emit site's own signature and guards, not from a happy-path
+literal: `TokenProgressEvent.eval_count` is `Optional[int]` because Ollama
+reports `eval_count` only on the stream's final `done: true` line and the
+producing callback's contract is `Callable[[int, Optional[int]], None]`.
+Second, `emit_mass_event` raising does not reach the caller from every call
+site -- the `token_progress` callback is invoked inside `model.py`'s
+`try`/`except Exception: pass`, and the keepalive thread downgrades the
+exception to an `LLM_KEEPALIVE_FAILED` warning, so at those two sites a
+malformed payload costs the events rather than failing the run. Only
+`mass_total`/`chunk_start`/`chunk_end` propagate. Tests covering these
+events must therefore assert on emitted events; a green run is not evidence
+that a payload validated. Companion to
 issue #26. Addresses the
 `backlog.md` tech-debt note: *"Fragile Swift-to-Python Bridge: Transition away
 from parsing unstructured JSON state files to a stricter schema like

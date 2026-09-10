@@ -2,7 +2,10 @@
 Tests for the progress.py module - progress tracking and time estimation.
 """
 
+import os
+import re
 import time
+import typing
 
 import pydantic
 import pytest
@@ -10,8 +13,42 @@ import pytest
 from marcut.progress import (
     ProcessingPhase, PHASE_INFO,
     TimeEstimator, ProgressUpdate, ProgressTracker,
-    create_progress_callback
+    create_progress_callback,
+    MassEvent, SWIFT_HANDLED_MASS_EVENT_TYPES, validate_mass_event,
 )
+
+REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+DOCUMENT_MODELS_SWIFT_PATH = os.path.join(
+    REPO_ROOT, "src/swift/MarcutApp/Sources/MarcutApp/DocumentModels.swift"
+)
+
+
+def _swift_handled_mass_event_types():
+    """Parse `ingestProgressPayload`'s `switch type { case "...": ... }` out
+    of DocumentModels.swift and return the `type` strings it handles.
+
+    Derives the consumer-side set directly from the Swift source -- the same
+    style tests/test_model_config.py uses for models.json -- rather than
+    restating it as a hand-maintained Python mirror. A hand-maintained
+    mirror only catches producer-side drift (a Python model type this
+    constant forgets to list); it cannot catch a `case` silently dropped
+    from the Swift switch itself, which is exactly the class of bug
+    issue #93 exists to fix.
+    """
+    with open(DOCUMENT_MODELS_SWIFT_PATH, "r", encoding="utf-8") as f:
+        source = f.read()
+
+    func_match = re.search(
+        r"func ingestProgressPayload\(.*?\n(.*?)\n    (?:private )?func ",
+        source,
+        re.DOTALL,
+    )
+    assert func_match, "ingestProgressPayload not found in DocumentModels.swift"
+
+    switch_match = re.search(r"switch type \{(.*?)\n        \}", func_match.group(1), re.DOTALL)
+    assert switch_match, "switch type { ... } not found in ingestProgressPayload"
+
+    return set(re.findall(r'case "([a-zA-Z_]+)":', switch_match.group(1)))
 
 
 class TestProcessingPhaseEnum:
@@ -376,3 +413,114 @@ class TestCreateProgressCallback:
         
         # Should not raise - error is caught internally
         callback(update)
+
+
+class TestMassEventModels:
+    """Tests for the closed set of `emit_mass_event` payload models
+    (bridge schema migration step 4b, issue #93). One malformed-payload
+    case per event type, plus the Swift-parity pin."""
+
+    def test_mass_total_valid(self):
+        validate_mass_event({"type": "mass_total", "value": 4200})
+
+    def test_mass_total_rejects_non_numeric_value(self):
+        with pytest.raises(pydantic.ValidationError):
+            validate_mass_event({"type": "mass_total", "value": "a lot"})
+
+    def test_chunk_start_valid(self):
+        validate_mass_event({
+            "type": "chunk_start", "size": 150, "estimated_time": 30.0,
+        })
+
+    def test_chunk_start_rejects_missing_estimated_time(self):
+        with pytest.raises(pydantic.ValidationError):
+            validate_mass_event({"type": "chunk_start", "size": 150})
+
+    def test_chunk_end_valid(self):
+        validate_mass_event({"type": "chunk_end", "size": 150})
+
+    def test_chunk_end_rejects_missing_size(self):
+        with pytest.raises(pydantic.ValidationError):
+            validate_mass_event({"type": "chunk_end"})
+
+    def test_keepalive_valid_without_chunk_info(self):
+        validate_mass_event({"type": "keepalive", "message": "AI processing..."})
+
+    def test_keepalive_valid_with_chunk_info(self):
+        validate_mass_event({
+            "type": "keepalive", "message": "still running", "chunk": 2, "total": 5,
+        })
+
+    def test_keepalive_rejects_missing_message(self):
+        with pytest.raises(pydantic.ValidationError):
+            validate_mass_event({"type": "keepalive", "chunk": 2, "total": 5})
+
+    def test_token_progress_valid(self):
+        validate_mass_event({
+            "type": "token_progress", "chunk_index": 0, "chars": 120, "eval_count": 30,
+        })
+
+    def test_token_progress_valid_without_eval_count(self):
+        """Ollama reports `eval_count` only on the stream's final
+        `done: true` line, so every intermediate emission carries
+        `eval_count: None` -- the common case, which must validate."""
+        event = validate_mass_event({
+            "type": "token_progress", "chunk_index": 0, "chars": 120, "eval_count": None,
+        })
+        assert event.eval_count is None
+
+    def test_token_progress_rejects_missing_chunk_index(self):
+        """`chunk_index` is always supplied at the emit site (it is the
+        loop's own index), so its absence is real producer-side drift --
+        unlike a missing/None `eval_count`, which is the normal shape of an
+        intermediate streaming event."""
+        with pytest.raises(pydantic.ValidationError):
+            validate_mass_event({"type": "token_progress", "chars": 120, "eval_count": 30})
+
+    def test_token_progress_rejects_non_numeric_eval_count(self):
+        with pytest.raises(pydantic.ValidationError):
+            validate_mass_event({
+                "type": "token_progress", "chunk_index": 0, "chars": 120,
+                "eval_count": "seven",
+            })
+
+    def test_unknown_type_rejected(self):
+        """No sixth event type exists -- an unrecognized `type` value must
+        raise, not silently pass through as some best-effort shape."""
+        with pytest.raises(pydantic.ValidationError):
+            validate_mass_event({"type": "not_a_real_event"})
+
+    def test_unexpected_extra_field_rejected(self):
+        """Every model is `extra="forbid"` -- a stray/renamed field is
+        exactly the kind of producer-side drift this validation exists to
+        catch, so it must raise rather than be dropped or ignored."""
+        with pytest.raises(pydantic.ValidationError):
+            validate_mass_event({"type": "chunk_end", "size": 150, "unexpected": True})
+
+    def test_emitted_type_strings_match_swift_handled_set(self):
+        """Pin the producer's closed set of `type` discriminator values
+        against the set `DocumentModels.swift`'s `ingestProgressPayload`
+        switch actually accepts -- parsed from the Swift source itself, not
+        a hand-maintained Python mirror of it -- so neither a new Python
+        model type nor a `case` dropped from the Swift switch can silently
+        drift the two sides apart again (issue #93).
+
+        `SWIFT_HANDLED_MASS_EVENT_TYPES` is asserted here too, as a third
+        term rather than as a substitute for the parse: the Swift source
+        stays the authority on what Swift accepts, and the constant -- which
+        has no runtime consumer and would otherwise go stale unnoticed --
+        is held to it."""
+        # Derived from the union itself, never restated. A hand-written set
+        # here would make the pin one-directional: it would still catch a
+        # `case` dropped from the Swift switch, but a sixth member added to
+        # `MassEvent` with no Swift `case` would leave this set unchanged and
+        # the assertion green -- which is the exact direction issue #93's
+        # original bug ran (Python emitted `token_progress`, Swift fell
+        # through to `default`).
+        model_types = {
+            member.model_fields["type"].default
+            for member in typing.get_args(typing.get_args(MassEvent)[0])
+        }
+        swift_types = _swift_handled_mass_event_types()
+        assert model_types == swift_types
+        assert SWIFT_HANDLED_MASS_EVENT_TYPES == swift_types

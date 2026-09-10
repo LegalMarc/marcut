@@ -3,11 +3,12 @@ Progress tracking and time estimation for Marcut redaction pipeline.
 """
 
 import time
-from typing import Callable, Optional
+from typing import Annotated, Any, Callable, Dict, Literal, Optional, Union
 from dataclasses import dataclass
 from enum import Enum
 
 import pydantic.dataclasses
+from pydantic import BaseModel, ConfigDict, Field, TypeAdapter
 
 
 class ProcessingPhase(Enum):
@@ -130,6 +131,134 @@ class ProgressUpdate:
     estimated_remaining: float  # seconds
     elapsed_time: float  # seconds
     message: Optional[str] = None
+
+
+# --- Mass-event models (bridge schema migration step 4b, issue #93) -------
+#
+# `IntelligentRedactionPipeline.process_document`'s `emit_mass_event()`
+# (model_enhanced.py) prints one JSON object per line on stdout -- the
+# channel `PythonKitBridge.swift` reads and `DocumentModels.swift`'s
+# `ingestProgressPayload` parses structurally to drive the enhanced-
+# detection progress bar (see the Notes on issue #93: the design doc's
+# claim that Swift only displays these as text was verified false on
+# 2026-09-09). Each dict `emit_mass_event` is handed must validate against
+# exactly one of these five models -- keyed on `type`, `extra="forbid"` so
+# an unexpected field is caught at the same point a missing/mistyped one
+# would be -- before it is serialized, so a producer-side typo or shape
+# drift raises in Python instead of crossing the bridge as silently wrong
+# or dropped data.
+#
+# Field sets below are copied from each emit site, not inferred from the
+# Swift consumer, per the ticket's instruction.
+
+
+class MassTotalEvent(BaseModel):
+    """Emitted once before extraction begins, with the document's total
+    character count across all chunks."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    type: Literal["mass_total"] = "mass_total"
+    value: int
+
+
+class ChunkStartEvent(BaseModel):
+    """Emitted immediately before a chunk is dispatched to the extractor."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    type: Literal["chunk_start"] = "chunk_start"
+    size: int
+    estimated_time: float
+
+
+class ChunkEndEvent(BaseModel):
+    """Emitted when a chunk's extraction finishes, successfully or not."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    type: Literal["chunk_end"] = "chunk_end"
+    size: int
+
+
+class KeepaliveEvent(BaseModel):
+    """Emitted every ~3s while extraction is in flight so a slow model call
+    doesn't look hung. `chunk`/`total` are only attached once at least one
+    chunk has started, so both stay optional."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    type: Literal["keepalive"] = "keepalive"
+    message: str
+    chunk: Optional[int] = None
+    total: Optional[int] = None
+
+
+class TokenProgressEvent(BaseModel):
+    """Intra-chunk streaming progress emitted as an Ollama chunk extraction
+    call streams NDJSON response lines (docs/design/streaming_progress.md,
+    Option B).
+
+    `eval_count` is `Optional` because Ollama only reports it on the final
+    `done: true` line of the stream: `model.py`'s streaming loop passes
+    `event.get("eval_count")` straight through on every emission, its
+    callback contract is `Callable[[int, Optional[int]], None]`
+    (model.py, llm_timing.py), and the guard around that call deliberately
+    fires when a response `piece` arrived *without* an `eval_count`. So
+    `None` here is the normal case, not a malformation -- typing it `int`
+    made validation reject every intermediate event and, because the
+    callback is invoked inside a `try: ... except Exception: pass`, drop
+    intra-chunk progress silently.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    type: Literal["token_progress"] = "token_progress"
+    chunk_index: int
+    chars: int
+    eval_count: Optional[int] = None
+
+
+MassEvent = Annotated[
+    Union[
+        MassTotalEvent,
+        ChunkStartEvent,
+        ChunkEndEvent,
+        KeepaliveEvent,
+        TokenProgressEvent,
+    ],
+    Field(discriminator="type"),
+]
+
+_MASS_EVENT_ADAPTER: TypeAdapter = TypeAdapter(MassEvent)
+
+# The exact `type` strings `DocumentModels.swift`'s `ingestProgressPayload`
+# switch recognizes, readable from Python without opening the Swift source.
+# This is a mirror, so it is never the authority: the parity test
+# (`test_emitted_type_strings_match_swift_handled_set`) parses the switch out
+# of DocumentModels.swift and asserts models == this constant == the parsed
+# Swift set, so drift on any of the three sides fails the suite (issue #93).
+# `token_progress` is handled there via an explicit no-op case (deliberately
+# ignored, not decoded into the progress bar) rather than driving progress --
+# see the switch's own comment.
+SWIFT_HANDLED_MASS_EVENT_TYPES = frozenset(
+    {"mass_total", "chunk_start", "chunk_end", "keepalive", "token_progress"}
+)
+
+
+def validate_mass_event(payload: Dict[str, Any]) -> MassEvent:
+    """Validate one `emit_mass_event` payload dict against the closed set
+    of mass-event models above.
+
+    Raises `pydantic.ValidationError` on an unknown `type`, a missing or
+    mistyped field, or an unexpected extra field. Deliberately not caught
+    here -- the caller decides how a malformed event (a programming error)
+    should surface; see `emit_mass_event`'s own docstring/comments in
+    model_enhanced.py. This path fires many times per document, so it stays
+    a plain function around a cached `TypeAdapter` rather than doing any
+    per-call model construction beyond what validation itself requires.
+    """
+    return _MASS_EVENT_ADAPTER.validate_python(payload)
 
 
 class ProgressTracker:
