@@ -3,7 +3,12 @@
 Status: Step 1 implemented (issue #67) -- `report_schema.py` adds
 `AuditReport`/`ScrubReport`/`FailureReport` Pydantic models, validated
 immediately before every on-disk report write in `pipeline.py`/`report.py`.
-Remaining steps of the migration plan below are still pending. Companion to issue #26. Addresses the
+Step 2 implemented (issue #89) -- Swift's `loadFailureReport(at:)`
+(`DocumentRedactionViewModel.swift`) now decodes the on-disk failure report
+via `JSONDecoder` into a typed `FailureReportPayload` struct first, with the
+untyped `JSONSerialization` dictionary path retained for one release as a
+fallback behind the `legacy report shape encountered` log line. Remaining
+steps of the migration plan below (steps 3-5) are still pending. Companion to issue #26. Addresses the
 `backlog.md` tech-debt note: *"Fragile Swift-to-Python Bridge: Transition away
 from parsing unstructured JSON state files to a stricter schema like
 Protobuf, FlatBuffers, or strict OpenAPI JSON specs."*

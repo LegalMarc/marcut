@@ -7,6 +7,30 @@ enum ProcessingState {
     static var isProcessing = false
 }
 
+/// Typed decode target for the on-disk failure report written by
+/// `pipeline._write_failure_report()` and validated (pydantic, step 1 of
+/// `docs/design/bridge_schema_migration.md`) against `FailureReport` in
+/// `report_schema.py`. `message`/`technical_details` stay plain `String` --
+/// the `AI_PROCESSING_TIMEOUT` classifier in `pipeline.py` greps them for
+/// "timeout"/"deadline", so narrowing them would silently break that check.
+/// The pydantic model sets `extra="allow"`; `Decodable` already ignores
+/// unknown keys by default, so no `CodingKeys` strictness is added here.
+struct FailureReportPayload: Decodable {
+    let status: String
+    let inputFile: String
+    let errorCode: String
+    let message: String
+    let technicalDetails: String
+
+    enum CodingKeys: String, CodingKey {
+        case status
+        case inputFile = "input_file"
+        case errorCode = "error_code"
+        case message
+        case technicalDetails = "technical_details"
+    }
+}
+
 @MainActor
 final class DocumentRedactionViewModel: ObservableObject {
     private static let supportedModelIdentifiers: Set<String> = ModelCatalog.shared.modelIds
@@ -2487,18 +2511,60 @@ final class DocumentRedactionViewModel: ObservableObject {
         return size
     }
 
-    private func loadFailureReport(at path: String) -> (code: String, message: String, details: String)? {
+    /// Pure, testable parse of failure-report JSON `Data`. Returns the same tuple
+    /// `loadFailureReport(at:)` does, plus `usedLegacyPath` recording which of the two decode
+    /// paths actually produced it -- so a test can assert the typed path ran for a well-formed
+    /// report rather than only checking a result the legacy fallback would also have produced.
+    /// Mirrors the pure/directory-taking shape of `DebugLogger.discoverLogFiles(in:)`
+    /// (`DocumentModels.swift`).
+    ///
+    /// Tries `JSONDecoder` against `FailureReportPayload` first (step 2 of
+    /// `docs/design/bridge_schema_migration.md`). If that fails -- e.g. a report from before
+    /// the pydantic model existed, or one missing a field the current model requires -- falls
+    /// back to the legacy untyped-dictionary read for one release. Does no I/O and does not
+    /// log; `loadFailureReport(at:)` logs based on `usedLegacyPath`.
+    static func parseFailureReport(
+        _ data: Data
+    ) throws -> (code: String, message: String, details: String, usedLegacyPath: Bool)? {
+        if let payload = try? JSONDecoder().decode(FailureReportPayload.self, from: data) {
+            return (
+                code: payload.errorCode,
+                message: payload.message,
+                details: payload.technicalDetails,
+                usedLegacyPath: false
+            )
+        }
+        guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            return nil
+        }
+        let code = (json["error_code"] as? String) ?? (json["status"] as? String) ?? "unknown"
+        let message = (json["message"] as? String) ?? "Unspecified failure"
+        let details = (json["technical_details"] as? String) ?? ""
+        return (code: code, message: message, details: details, usedLegacyPath: true)
+    }
+
+    /// Internal (not private) so the typed-decode / legacy-fallback paths are directly
+    /// unit-testable via `@testable import MarcutApp`, matching the `PythonWorkerThread`
+    /// precedent in `PythonKitBridge.swift`.
+    ///
+    /// Delegates the actual decode to `parseFailureReport(_:)` and logs the
+    /// `legacy report shape encountered` line only when that helper reports
+    /// `usedLegacyPath == true`, keeping the fallback's use observable rather than silent.
+    func loadFailureReport(at path: String) -> (code: String, message: String, details: String)? {
         let url = URL(fileURLWithPath: path)
         guard FileManager.default.fileExists(atPath: url.path) else { return nil }
         do {
             let data = try Data(contentsOf: url)
-            guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            guard let parsed = try Self.parseFailureReport(data) else {
                 return nil
             }
-            let code = (json["error_code"] as? String) ?? (json["status"] as? String) ?? "unknown"
-            let message = (json["message"] as? String) ?? "Unspecified failure"
-            let details = (json["technical_details"] as? String) ?? ""
-            return (code: code, message: message, details: details)
+            if parsed.usedLegacyPath {
+                DebugLogger.shared.log(
+                    "legacy report shape encountered at \(path)",
+                    component: "DocumentRedactionViewModel"
+                )
+            }
+            return (code: parsed.code, message: parsed.message, details: parsed.details)
         } catch {
             DebugLogger.shared.log(
                 "⚠️ Failed to parse failure report at \(path): \(error)",

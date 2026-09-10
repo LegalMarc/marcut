@@ -2161,6 +2161,108 @@ final class MarcutAppTests: XCTestCase {
         XCTAssertEqual(item.status, .failed)
         XCTAssertEqual(item.errorMessage, DocumentRedactionViewModel.wakeHealthCheckFailedMessage)
     }
+
+    // MARK: - Failure Report Decoding Tests (issue #89 / bridge schema step 2)
+
+    /// A well-formed failure report -- matching the pydantic `FailureReport` model -- must
+    /// decode through `JSONDecoder`, not fall through to the legacy `error_code ?? status ??
+    /// "unknown"` guess chain. Because both paths would produce an identical tuple for a
+    /// fixture carrying all five keys, asserting only `failure.code`/`.message`/`.details`
+    /// would pass even if the typed decode were deleted -- so this asserts directly on
+    /// `parseFailureReport`'s `usedLegacyPath` discriminator, the only thing that actually
+    /// distinguishes the two paths.
+    func testLoadFailureReportDecodesWellFormedReportViaTypedPath() throws {
+        let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let reportURL = tempDir.appendingPathComponent("failure_report.json")
+        let json = """
+        {
+            "status": "failed",
+            "input_file": "/tmp/input.docx",
+            "error_code": "AI_PROCESSING_TIMEOUT",
+            "message": "Processing exceeded the deadline",
+            "technical_details": "deadline exceeded after 300s"
+        }
+        """
+        try json.write(to: reportURL, atomically: true, encoding: .utf8)
+        let data = try Data(contentsOf: reportURL)
+
+        let parsed = try XCTUnwrap(try DocumentRedactionViewModel.parseFailureReport(data))
+        XCTAssertFalse(
+            parsed.usedLegacyPath,
+            "well-formed report must decode via JSONDecoder, not the legacy dictionary path"
+        )
+        XCTAssertEqual(parsed.code, "AI_PROCESSING_TIMEOUT")
+        XCTAssertEqual(parsed.message, "Processing exceeded the deadline")
+        XCTAssertEqual(parsed.details, "deadline exceeded after 300s")
+
+        let viewModel = createTestViewModel()
+        let failure = try XCTUnwrap(viewModel.loadFailureReport(at: reportURL.path))
+
+        XCTAssertEqual(failure.code, "AI_PROCESSING_TIMEOUT")
+        XCTAssertEqual(failure.message, "Processing exceeded the deadline")
+        XCTAssertEqual(failure.details, "deadline exceeded after 300s")
+    }
+
+    /// A legacy-shaped report -- missing `error_code`, the field the current pydantic model
+    /// requires -- must still resolve, falling back to `status` for the code exactly as the
+    /// pre-migration untyped path did. Asserts `usedLegacyPath == true` directly, mirroring the
+    /// discriminator check in the well-formed-report test above.
+    func testLoadFailureReportFallsBackToLegacyShapeWhenErrorCodeMissing() throws {
+        let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let reportURL = tempDir.appendingPathComponent("legacy_failure_report.json")
+        let json = """
+        {
+            "status": "failed",
+            "message": "Something went wrong"
+        }
+        """
+        try json.write(to: reportURL, atomically: true, encoding: .utf8)
+        let data = try Data(contentsOf: reportURL)
+
+        let parsed = try XCTUnwrap(try DocumentRedactionViewModel.parseFailureReport(data))
+        XCTAssertTrue(parsed.usedLegacyPath, "a report missing error_code must fall back to the legacy dictionary path")
+        XCTAssertEqual(parsed.code, "failed")
+        XCTAssertEqual(parsed.message, "Something went wrong")
+        XCTAssertEqual(parsed.details, "")
+
+        let viewModel = createTestViewModel()
+        let failure = try XCTUnwrap(viewModel.loadFailureReport(at: reportURL.path))
+
+        XCTAssertEqual(failure.code, "failed")
+        XCTAssertEqual(failure.message, "Something went wrong")
+        XCTAssertEqual(failure.details, "")
+    }
+
+    /// A corrupt/non-JSON report must return `nil` rather than throwing, exactly as the
+    /// pre-migration behavior did.
+    func testLoadFailureReportReturnsNilForCorruptFile() throws {
+        let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let reportURL = tempDir.appendingPathComponent("corrupt_failure_report.json")
+        try "not valid json {{{".write(to: reportURL, atomically: true, encoding: .utf8)
+
+        let viewModel = createTestViewModel()
+        XCTAssertNil(viewModel.loadFailureReport(at: reportURL.path))
+    }
+
+    /// A missing report path must return `nil` without attempting to read or decode anything.
+    func testLoadFailureReportReturnsNilWhenFileMissing() {
+        let viewModel = createTestViewModel()
+        let missingPath = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString)
+            .appendingPathComponent("missing.json")
+            .path
+
+        XCTAssertNil(viewModel.loadFailureReport(at: missingPath))
+    }
 }
 
 // MARK: - Test Extensions
