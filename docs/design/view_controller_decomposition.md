@@ -544,16 +544,39 @@ depend on the characterization tests from §3.2 landing first.
    Verification per §3.3: `swift build` + `swift test` green, SwiftFormat
    lint clean, zero golden diffs.
 
-7. **`OutputArtifactManager` extraction** — largest mechanical slice
-   (~500+ lines: `applyOutputArtifacts`, output-directory resolution,
-   report open/save/export). Add the `applyOutputArtifacts` filesystem
-   characterization test (§3.2 item 4) plus tests for
-   `saveMetadataReportToDirectory`/`ToDownloads` (using a temp directory
-   fixture) first. This slice touches the most call sites in the view
-   model, so budget it as its own PR even though it's "just" file moves,
-   and consider splitting further (report-viewing vs. report-saving vs.
-   output-directory-resolution) if it exceeds the ~10-file guideline once
-   call-site updates are counted.
+7. **`OutputArtifactManager` extraction** — **done (#109)**: the largest
+   mechanical slice (~500+ lines) -- `applyOutputArtifacts`,
+   `findScrubReport`, output-directory resolution and permission handling
+   (`outputSaveLocationPreference`, `resolveOutputDirectory`,
+   `resolveTemporaryReportDirectory`, `requestMetadataOutputAccess`,
+   `retryFileAccessPermissions*`), the metadata-report error helpers
+   (`metadataReportErrorPayload`, `setMetadataReportError`,
+   `setReportError`, `clearMetadataReportError*`, `clearReportError`),
+   report viewing/saving (`openReport`/`openScrubReport`/
+   `openMetadataReport`/`presentReport`/`resolvedHTMLURL`/
+   `saveMetadataReport`/its `ToDownloads`/`ToDirectory` helpers/
+   `exportMetadataReport`/`revealInFinder`), and preflight validation
+   (`validateDestination`/`estimatedOutputBytes`/
+   `generateScrubHTMLIfMissing`) all moved into an `OutputArtifactManager`
+   collaborator taking `defaults`, the runner provider, an items-snapshot
+   closure, and two error-sink closures (`setGlobalMetadataReportError`/
+   `setGlobalReportError`) as constructor parameters, rather than reaching
+   back into the view model. `metadataReportErrorMessage`/
+   `metadataReportNeedsPermissionRetry`/`reportErrorMessage` stay
+   `@Published` on the view model per this slice's own scope note, applied
+   from those two closures; every item-scoped error field is set directly
+   since `DocumentItem` is itself an `ObservableObject` reference passed
+   in. The view model keeps thin forwarding methods for every call site --
+   both `ContentView.swift`'s direct calls and its own remaining
+   `processAllDocuments`/`scrubMetadataOnly`/`retryDocument`/
+   `generateMetadataReportsInPlace`/`generateMetadataReport`/
+   `scrubDocumentMetadataOnly` (staying on the view model until #110's
+   `ProcessRunner` extraction and #111's `BatchCoordinator` extraction) --
+   so none of those call sites changed;
+   #101's `applyOutputArtifacts` filesystem characterization tests
+   (§3.2 item 4) pass unmodified, construction-only unchanged.
+   Verification per §3.3: `swift build` + `swift test` green, SwiftFormat
+   lint clean, zero golden diffs.
 
 8. **`ProcessRunner` extraction** — depends on slice 7 (uses
    `applyOutputArtifacts`) and slice 5 (uses `applyAdvancedSettingsEnvironment`
