@@ -167,7 +167,7 @@ struct SettingsView: View {
         return Self.matchesSearch(rule.displayName, query: searchQuery)
     }
 
-    init(viewModel: DocumentRedactionViewModel) {
+    init(viewModel: DocumentRedactionViewModel, defaults: UserDefaults = .standard) {
         self.viewModel = viewModel
         var initialSettings = viewModel.settings
         if viewModel.availableModels.count == 1, let onlyModel = viewModel.availableModels.first {
@@ -177,7 +177,6 @@ struct SettingsView: View {
         {
             initialSettings.model = first
         }
-        let defaults = UserDefaults.standard
         if defaults.object(forKey: DefaultsKey.advancedModeEnabled.key) == nil {
             defaults.set(viewModel.hasCompletedFirstRun, forKey: DefaultsKey.advancedModeEnabled.key)
         }

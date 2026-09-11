@@ -15,8 +15,8 @@ final class MarcutAppTests: XCTestCase {
     }
 
     /// Test helper for creating a test ViewModel
-    private func createTestViewModel() -> DocumentRedactionViewModel {
-        DocumentRedactionViewModel()
+    private func createTestViewModel(defaults: UserDefaults = .standard) -> DocumentRedactionViewModel {
+        DocumentRedactionViewModel(defaults: defaults)
     }
 
     /// Test helper for resolving sample file URLs from the repo root
@@ -1654,22 +1654,9 @@ final class MarcutAppTests: XCTestCase {
     // MARK: - Resume/Discard Flow Tests (issue #19 regression)
 
     //
-    // `DocumentRedactionViewModel` persists pending-batch state via `PendingBatchJobStore`'s
-    // `.standard`-defaulted parameter with no injection seam, so these tests exercise the real
-    // `UserDefaults.standard` under `PendingBatchJobStore.defaultsKey`. Save/restore whatever was
-    // already there so the tests don't leak state into other tests or a developer's machine.
-
-    private func withPreservedStandardPendingBatchJobRecord(_ body: () throws -> Void) rethrows {
-        let existing = UserDefaults.standard.data(forKey: PendingBatchJobStore.defaultsKey)
-        defer {
-            if let existing {
-                UserDefaults.standard.set(existing, forKey: PendingBatchJobStore.defaultsKey)
-            } else {
-                UserDefaults.standard.removeObject(forKey: PendingBatchJobStore.defaultsKey)
-            }
-        }
-        try body()
-    }
+    // `DocumentRedactionViewModel` and `PendingBatchJobStore` both accept an injected
+    // `UserDefaults` suite, so these tests exercise an isolated suite (`makePendingBatchJobTestDefaults()`)
+    // instead of `.standard` -- no save/restore of real preference state is needed.
 
     /// Regression test for issue #19: choosing "Resume" must not wipe the persisted record.
     ///
@@ -1677,52 +1664,53 @@ final class MarcutAppTests: XCTestCase {
     /// "Resume" button action runs, which calls the binding setter's `discardPendingJob()`. Before
     /// the fix, that call unconditionally cleared the record `resumePendingJob()` had just
     /// re-persisted, so a crash right after Resume would lose the resumed documents.
-    func testResumePendingJobSurvivesSubsequentDiscardCallFromBindingDismissal() throws {
-        try withPreservedStandardPendingBatchJobRecord {
-            let record = PendingBatchJobRecord(
-                documentPaths: ["/Users/test/a.docx", "/Users/test/b.docx"],
-                settings: RedactionSettings()
-            )
-            PendingBatchJobStore.save(record)
+    func testResumePendingJobSurvivesSubsequentDiscardCallFromBindingDismissal() {
+        let defaults = makePendingBatchJobTestDefaults()
+        let record = PendingBatchJobRecord(
+            documentPaths: ["/Users/test/a.docx", "/Users/test/b.docx"],
+            settings: RedactionSettings()
+        )
+        PendingBatchJobStore.save(record, defaults: defaults)
 
-            let viewModel = createTestViewModel()
-            viewModel.pendingResumeRecord = record
+        let viewModel = createTestViewModel(defaults: defaults)
+        viewModel.pendingResumeRecord = record
 
-            viewModel.resumePendingJob()
-            XCTAssertNil(viewModel.pendingResumeRecord)
+        viewModel.resumePendingJob()
+        XCTAssertNil(viewModel.pendingResumeRecord)
 
-            // Simulates SwiftUI writing `isPresented = false` back through the alert's binding
-            // immediately after the "Resume" button action completes.
-            viewModel.discardPendingJob()
+        // Simulates SwiftUI writing `isPresented = false` back through the alert's binding
+        // immediately after the "Resume" button action completes.
+        viewModel.discardPendingJob()
 
-            let persisted = PendingBatchJobStore.load()
-            XCTAssertNotNil(persisted, "Resume must not be undone by the alert's post-dismissal discard")
-            XCTAssertEqual(persisted?.documentPaths, record.documentPaths)
+        let persisted = PendingBatchJobStore.load(defaults: defaults)
+        XCTAssertNotNil(persisted, "Resume must not be undone by the alert's post-dismissal discard")
+        XCTAssertEqual(persisted?.documentPaths, record.documentPaths)
 
-            // The echo call must only be consumed once: a later, genuine Discard (e.g. from a
-            // subsequent resume-prompt cycle) must still clear the record.
-            viewModel.discardPendingJob()
-            XCTAssertNil(PendingBatchJobStore.load(), "A later explicit discard must still clear the record")
-        }
+        // The echo call must only be consumed once: a later, genuine Discard (e.g. from a
+        // subsequent resume-prompt cycle) must still clear the record.
+        viewModel.discardPendingJob()
+        XCTAssertNil(
+            PendingBatchJobStore.load(defaults: defaults),
+            "A later explicit discard must still clear the record"
+        )
     }
 
     /// Companion to the above: the "Discard" button path must still clear the record.
-    func testDiscardPendingJobClearsRecordWhenNotResuming() throws {
-        try withPreservedStandardPendingBatchJobRecord {
-            let record = PendingBatchJobRecord(
-                documentPaths: ["/Users/test/a.docx"],
-                settings: RedactionSettings()
-            )
-            PendingBatchJobStore.save(record)
+    func testDiscardPendingJobClearsRecordWhenNotResuming() {
+        let defaults = makePendingBatchJobTestDefaults()
+        let record = PendingBatchJobRecord(
+            documentPaths: ["/Users/test/a.docx"],
+            settings: RedactionSettings()
+        )
+        PendingBatchJobStore.save(record, defaults: defaults)
 
-            let viewModel = createTestViewModel()
-            viewModel.pendingResumeRecord = record
+        let viewModel = createTestViewModel(defaults: defaults)
+        viewModel.pendingResumeRecord = record
 
-            viewModel.discardPendingJob()
+        viewModel.discardPendingJob()
 
-            XCTAssertNil(viewModel.pendingResumeRecord)
-            XCTAssertNil(PendingBatchJobStore.load())
-        }
+        XCTAssertNil(viewModel.pendingResumeRecord)
+        XCTAssertNil(PendingBatchJobStore.load(defaults: defaults))
     }
 
     // MARK: - Kill-Mid-Document Resume Safety Tests (issue #48 / B6)
@@ -1775,33 +1763,32 @@ final class MarcutAppTests: XCTestCase {
     /// reached `.completed` before the kill must not be re-persisted for reprocessing. This is
     /// the core state invariant issue #48 asks to validate: the record must reflect what actually
     /// finished, not merely what was once queued.
-    func testPendingRecordCapturesMidProcessingDocumentAndExcludesCompletedDocument() throws {
-        try withPreservedStandardPendingBatchJobRecord {
-            let completedItem = DocumentItem(url: URL(fileURLWithPath: "/tmp/b6-doc1-completed.docx"))
-            completedItem.status = .completed
-            let midProcessingItem = DocumentItem(url: URL(fileURLWithPath: "/tmp/b6-doc2-mid-kill.docx"))
-            midProcessingItem.status = .analyzing // where processing was when the kill landed
-            let queuedItem = DocumentItem(url: URL(fileURLWithPath: "/tmp/b6-doc3-queued.docx"))
-            queuedItem.status = .validDocument
+    func testPendingRecordCapturesMidProcessingDocumentAndExcludesCompletedDocument() {
+        let defaults = makePendingBatchJobTestDefaults()
+        let completedItem = DocumentItem(url: URL(fileURLWithPath: "/tmp/b6-doc1-completed.docx"))
+        completedItem.status = .completed
+        let midProcessingItem = DocumentItem(url: URL(fileURLWithPath: "/tmp/b6-doc2-mid-kill.docx"))
+        midProcessingItem.status = .analyzing // where processing was when the kill landed
+        let queuedItem = DocumentItem(url: URL(fileURLWithPath: "/tmp/b6-doc3-queued.docx"))
+        queuedItem.status = .validDocument
 
-            let viewModel = createTestViewModel()
-            viewModel.items = [completedItem, midProcessingItem, queuedItem]
-            // `items` is set directly, bypassing `add(urls:)`'s async validation path -- force
-            // `updateState()`'s persistence pass the same way `testHasFailedDocumentsReflectsItemStatuses`
-            // above does, via `add(urls: [])` (a no-op add that still triggers `updateState()`).
-            viewModel.add(urls: [])
+        let viewModel = createTestViewModel(defaults: defaults)
+        viewModel.items = [completedItem, midProcessingItem, queuedItem]
+        // `items` is set directly, bypassing `add(urls:)`'s async validation path -- force
+        // `updateState()`'s persistence pass the same way `testHasFailedDocumentsReflectsItemStatuses`
+        // above does, via `add(urls: [])` (a no-op add that still triggers `updateState()`).
+        viewModel.add(urls: [])
 
-            let persisted = PendingBatchJobStore.load()
-            XCTAssertNotNil(
-                persisted,
-                "A batch with documents still pending/mid-processing must persist a resume record"
-            )
-            XCTAssertEqual(
-                Set(persisted?.documentPaths ?? []),
-                Set([midProcessingItem.url.path, queuedItem.url.path]),
-                "The completed document must be excluded; the mid-processing and still-queued documents must both be present"
-            )
-        }
+        let persisted = PendingBatchJobStore.load(defaults: defaults)
+        XCTAssertNotNil(
+            persisted,
+            "A batch with documents still pending/mid-processing must persist a resume record"
+        )
+        XCTAssertEqual(
+            Set(persisted?.documentPaths ?? []),
+            Set([midProcessingItem.url.path, queuedItem.url.path]),
+            "The completed document must be excluded; the mid-processing and still-queued documents must both be present"
+        )
     }
 
     /// End-to-end version of the invariant above, exercised through the actual resume path.
@@ -1809,29 +1796,28 @@ final class MarcutAppTests: XCTestCase {
     /// never `.completed` -- deterministically and synchronously, before any async re-validation
     /// even runs. Per `PendingBatchJobRecord`'s doc comment, resume is document-list-level: the
     /// item starts over at `.checking`, not wherever it left off.
-    func testResumeAfterMidDocumentKillCreatesFreshPendingItemNeverCompleted() throws {
-        try withPreservedStandardPendingBatchJobRecord {
-            let midProcessingDocURL = URL(fileURLWithPath: "/tmp/b6-mid-kill-doc.docx")
-            let record = PendingBatchJobRecord(
-                documentPaths: [midProcessingDocURL.path],
-                settings: RedactionSettings()
-            )
-            PendingBatchJobStore.save(record)
+    func testResumeAfterMidDocumentKillCreatesFreshPendingItemNeverCompleted() {
+        let defaults = makePendingBatchJobTestDefaults()
+        let midProcessingDocURL = URL(fileURLWithPath: "/tmp/b6-mid-kill-doc.docx")
+        let record = PendingBatchJobRecord(
+            documentPaths: [midProcessingDocURL.path],
+            settings: RedactionSettings()
+        )
+        PendingBatchJobStore.save(record, defaults: defaults)
 
-            let viewModel = createTestViewModel()
-            viewModel.pendingResumeRecord = record
-            viewModel.resumePendingJob()
+        let viewModel = createTestViewModel(defaults: defaults)
+        viewModel.pendingResumeRecord = record
+        viewModel.resumePendingJob()
 
-            XCTAssertEqual(viewModel.items.count, 1)
-            XCTAssertNotEqual(
-                viewModel.items.first?.status, .completed,
-                "A resumed mid-kill document must never be resurrected as already complete"
-            )
-            XCTAssertEqual(
-                viewModel.items.first?.status, .checking,
-                "Resume must start the document over fresh (issue #19 'Out of scope'), not resume wherever it left off"
-            )
-        }
+        XCTAssertEqual(viewModel.items.count, 1)
+        XCTAssertNotEqual(
+            viewModel.items.first?.status, .completed,
+            "A resumed mid-kill document must never be resurrected as already complete"
+        )
+        XCTAssertEqual(
+            viewModel.items.first?.status, .checking,
+            "Resume must start the document over fresh (issue #19 'Out of scope'), not resume wherever it left off"
+        )
     }
 
     /// Companion to the above, covering the specific risk this ticket names: a same-named file
@@ -1847,14 +1833,7 @@ final class MarcutAppTests: XCTestCase {
             throw XCTSkip("Missing sample file: \(sourceDocx.path)")
         }
 
-        let existingRecord = UserDefaults.standard.data(forKey: PendingBatchJobStore.defaultsKey)
-        defer {
-            if let existingRecord {
-                UserDefaults.standard.set(existingRecord, forKey: PendingBatchJobStore.defaultsKey)
-            } else {
-                UserDefaults.standard.removeObject(forKey: PendingBatchJobStore.defaultsKey)
-            }
-        }
+        let defaults = makePendingBatchJobTestDefaults()
 
         let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent(
             UUID().uuidString,
@@ -1878,9 +1857,9 @@ final class MarcutAppTests: XCTestCase {
             documentPaths: [midProcessingDocURL.path],
             settings: RedactionSettings()
         )
-        PendingBatchJobStore.save(record)
+        PendingBatchJobStore.save(record, defaults: defaults)
 
-        let viewModel = createTestViewModel()
+        let viewModel = createTestViewModel(defaults: defaults)
         viewModel.pendingResumeRecord = record
         viewModel.resumePendingJob()
 

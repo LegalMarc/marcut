@@ -176,12 +176,17 @@ final class DocumentRedactionViewModel: ObservableObject {
         self?.presentSharePicker(for: url) ?? false
     }
 
-    init(powerAssertion: PowerAssertionGuard? = nil, pythonBridge: PythonBridgeService? = nil) {
+    init(
+        powerAssertion: PowerAssertionGuard? = nil,
+        pythonBridge: PythonBridgeService? = nil,
+        defaults: UserDefaults = .standard
+    ) {
         // `.shared` is main-actor isolated, so it can't be a default *parameter* value (that
         // default expression is evaluated in a nonisolated context per Swift's isolation rules);
         // resolving it here in the (main-actor) initializer body avoids that warning.
         self.powerAssertion = powerAssertion ?? .shared
         self.pythonBridge = pythonBridge ?? .shared
+        self.defaults = defaults
         let center = NotificationCenter.default
         let ready = center.addObserver(forName: .pythonRunnerReady, object: nil, queue: .main) { [weak self] _ in
             guard let self else { return }
@@ -227,8 +232,8 @@ final class DocumentRedactionViewModel: ObservableObject {
         systemPowerObservers = [wakeObserver]
 
         applyAdvancedModeDefaultsIfNeeded()
-        if DebugPreferences.hasStoredValue() {
-            settings.debug = DebugPreferences.isEnabled()
+        if DebugPreferences.hasStoredValue(defaults) {
+            settings.debug = DebugPreferences.isEnabled(defaults)
         }
 
         // Fast-path: Check for models asynchronously.
@@ -247,7 +252,7 @@ final class DocumentRedactionViewModel: ObservableObject {
         self.pythonBridge.updateRuleFilter(settings.enabledRules)
         pythonRunner?.updateRuleFilter(settings.enabledRules)
 
-        pendingResumeRecord = PendingBatchJobStore.load()
+        pendingResumeRecord = PendingBatchJobStore.load(defaults: defaults)
     }
 
     deinit {
@@ -275,6 +280,11 @@ final class DocumentRedactionViewModel: ObservableObject {
     }
 
     private let pythonBridge: PythonBridgeService
+    /// Injected `UserDefaults` suite every UserDefaults-backed read/write in this file routes
+    /// through, so tests can seed and observe preference state without touching `.standard`
+    /// (`docs/design/view_controller_decomposition.md` §3.2 item 5). Defaults to `.standard` in
+    /// production; every call site keeps its plain-argument form unchanged.
+    let defaults: UserDefaults
     private var processingTasks: [UUID: Task<Void, Never>] = [:]
     private var heartbeatTasks: [UUID: Task<Void, Never>] = [:]
 
@@ -295,10 +305,10 @@ final class DocumentRedactionViewModel: ObservableObject {
 
     /// Wall-clock time each document started processing in the current run, keyed by item id.
     /// Used to compute a per-document duration sample once the document reaches a terminal state.
-    private var batchProcessingStartTimes: [UUID: Date] = [:]
+    var batchProcessingStartTimes: [UUID: Date] = [:]
     /// (duration, size) samples for documents completed so far in the current run. Reset at the
     /// start of every `processAllDocuments` call.
-    private var batchETASamples: [BatchETASample] = []
+    var batchETASamples: [BatchETASample] = []
     private let heartbeatTimeout: TimeInterval = 120.0
     /// How often the heartbeat watchdog re-checks a processing document for staleness. Small
     /// relative to `heartbeatTimeout` so a stall is reported soon after crossing the threshold,
@@ -322,19 +332,19 @@ final class DocumentRedactionViewModel: ObservableObject {
     @Published var firstRunEntryPoint: FirstRunEntryPoint = .onboarding
 
     var hasCompletedFirstRun: Bool {
-        UserDefaults.standard.bool(forKey: DefaultsKey.hasCompletedFirstRun.key)
+        defaults.bool(forKey: DefaultsKey.hasCompletedFirstRun.key)
     }
 
     func markFirstRunComplete() {
-        UserDefaults.standard.set(true, forKey: DefaultsKey.hasCompletedFirstRun.key)
+        defaults.set(true, forKey: DefaultsKey.hasCompletedFirstRun.key)
     }
 
     var hasUsedMetadataScrub: Bool {
-        UserDefaults.standard.bool(forKey: DefaultsKey.hasUsedMetadataScrub.key)
+        defaults.bool(forKey: DefaultsKey.hasUsedMetadataScrub.key)
     }
 
     private func markMetadataScrubUsed() {
-        UserDefaults.standard.set(true, forKey: DefaultsKey.hasUsedMetadataScrub.key)
+        defaults.set(true, forKey: DefaultsKey.hasUsedMetadataScrub.key)
     }
 
     // MARK: - Document Management
@@ -648,7 +658,7 @@ final class DocumentRedactionViewModel: ObservableObject {
             return
         }
 
-        let metadataSettings = MetadataCleaningSettings.load()
+        let metadataSettings = MetadataCleaningSettings.load(defaults: defaults)
         applyMetadataSettingsEnvironment(metadataSettings, context: "report only")
 
         guard let runner = pythonRunner else {
@@ -844,7 +854,6 @@ final class DocumentRedactionViewModel: ObservableObject {
     }
 
     var outputSaveLocationPreference: OutputSaveLocation {
-        let defaults = UserDefaults.standard
         let rawValue = defaults
             .object(forKey: DefaultsKey.outputSaveLocationPreference.key) as? Int ?? OutputSaveLocation.alwaysAsk
             .rawValue
@@ -1055,7 +1064,7 @@ final class DocumentRedactionViewModel: ObservableObject {
         }
 
         // Load metadata settings and set environment variable
-        let metadataSettings = MetadataCleaningSettings.load()
+        let metadataSettings = MetadataCleaningSettings.load(defaults: defaults)
         applyMetadataSettingsEnvironment(metadataSettings, context: "metadata scrub")
 
         // Also set flag to skip rules and LLM
@@ -1323,7 +1332,6 @@ final class DocumentRedactionViewModel: ObservableObject {
     }
 
     private func logAdvancedSettingsSnapshot(useEnhanced: Bool, modelName: String, backend: String) {
-        let defaults = UserDefaults.standard
         let advancedEnabled = defaults.bool(forKey: DefaultsKey.advancedModeEnabled.key)
         let advancedModeRaw = defaults.string(forKey: DefaultsKey.advancedAIMode.key) ?? "unknown"
         let advancedConfidence = defaults.integer(forKey: DefaultsKey.advancedLLMConfidence.key)
@@ -1335,8 +1343,7 @@ final class DocumentRedactionViewModel: ObservableObject {
         )
     }
 
-    private func applyAdvancedSettingsEnvironment() {
-        let defaults = UserDefaults.standard
+    func applyAdvancedSettingsEnvironment() {
         let advancedEnabled = defaults.bool(forKey: DefaultsKey.advancedModeEnabled.key)
         let advancedModeRaw = defaults.string(forKey: DefaultsKey.advancedAIMode.key) ?? RedactionMode.rulesOverride
             .rawValue
@@ -1346,7 +1353,7 @@ final class DocumentRedactionViewModel: ObservableObject {
         setenv("MARCUT_ADVANCED_CONFIDENCE", "\(advancedConfidence)", 1)
     }
 
-    private func applyMetadataSettingsEnvironment(_ metadataSettings: MetadataCleaningSettings, context: String) {
+    func applyMetadataSettingsEnvironment(_ metadataSettings: MetadataCleaningSettings, context: String) {
         let metadataArgs = metadataSettings.toCLIArguments().joined(separator: " ")
         setenv("MARCUT_METADATA_ARGS", metadataArgs, 1)
         setenv("MARCUT_METADATA_PRESET", metadataSettings.detectPreset().rawValue, 1)
@@ -1361,7 +1368,7 @@ final class DocumentRedactionViewModel: ObservableObject {
         )
     }
 
-    private func applyOutputArtifacts(
+    func applyOutputArtifacts(
         to item: DocumentItem,
         outputPath: String,
         reportPath: String,
@@ -1375,7 +1382,7 @@ final class DocumentRedactionViewModel: ObservableObject {
             item.reportHTMLOutputURL = reportHTMLURL
         }
 
-        let metadataSettings = MetadataCleaningSettings.load()
+        let metadataSettings = MetadataCleaningSettings.load(defaults: defaults)
         if metadataSettings != .none {
             let scrubReportURL = URL(fileURLWithPath: scrubReportPath)
             if FileManager.default.fileExists(atPath: scrubReportURL.path) {
@@ -1468,7 +1475,7 @@ final class DocumentRedactionViewModel: ObservableObject {
         }
 
         // Propagate metadata cleaning settings to Python via environment variable
-        let metadataSettings = MetadataCleaningSettings.load()
+        let metadataSettings = MetadataCleaningSettings.load(defaults: defaults)
         applyMetadataSettingsEnvironment(metadataSettings, context: "redaction")
 
         if useEnhanced {
@@ -1797,7 +1804,7 @@ final class DocumentRedactionViewModel: ObservableObject {
 
     // MARK: - State Management
 
-    private func needsRedaction(_ item: DocumentItem, includeRetryItems: Bool = true) -> Bool {
+    func needsRedaction(_ item: DocumentItem, includeRetryItems: Bool = true) -> Bool {
         if item.status == .validDocument {
             return true
         }
@@ -1807,7 +1814,7 @@ final class DocumentRedactionViewModel: ObservableObject {
         return false
     }
 
-    private func updateState() {
+    func updateState() {
         hasDocuments = !items.isEmpty
         hasValidDocuments = items.contains { $0.status == .validDocument }
 
@@ -1857,9 +1864,12 @@ final class DocumentRedactionViewModel: ObservableObject {
         lastPersistedPendingPaths = paths
 
         if paths.isEmpty {
-            PendingBatchJobStore.save(nil)
+            PendingBatchJobStore.save(nil, defaults: defaults)
         } else {
-            PendingBatchJobStore.save(PendingBatchJobRecord(documentPaths: paths, settings: settings))
+            PendingBatchJobStore.save(
+                PendingBatchJobRecord(documentPaths: paths, settings: settings),
+                defaults: defaults
+            )
         }
     }
 
@@ -1894,7 +1904,7 @@ final class DocumentRedactionViewModel: ObservableObject {
             return
         }
         pendingResumeRecord = nil
-        PendingBatchJobStore.save(nil)
+        PendingBatchJobStore.save(nil, defaults: defaults)
     }
 
     func clearAllDocuments() {
@@ -1989,7 +1999,7 @@ final class DocumentRedactionViewModel: ObservableObject {
         return sharePresenter(url)
     }
 
-    private func shareFinalRedactedCopy(_ item: DocumentItem) async {
+    func shareFinalRedactedCopy(_ item: DocumentItem) async {
         guard let sourceURL = item.redactedOutputURL ?? item.scrubOutputURL else {
             item.errorMessage = "No DOCX output is available to finalize."
             return
@@ -2029,7 +2039,7 @@ final class DocumentRedactionViewModel: ObservableObject {
         }
     }
 
-    private func restoreEnvironmentValue(_ value: String?, forKey key: String) {
+    func restoreEnvironmentValue(_ value: String?, forKey key: String) {
         if let value {
             setenv(key, value, 1)
         } else {
@@ -2407,8 +2417,7 @@ final class DocumentRedactionViewModel: ObservableObject {
         pythonRunner?.updateRuleFilter(newSettings.enabledRules)
     }
 
-    private func applyAdvancedModeDefaultsIfNeeded() {
-        let defaults = UserDefaults.standard
+    func applyAdvancedModeDefaultsIfNeeded() {
         if defaults.object(forKey: DefaultsKey.advancedModeEnabled.key) == nil {
             defaults.set(hasCompletedFirstRun, forKey: DefaultsKey.advancedModeEnabled.key)
         }
@@ -2477,7 +2486,7 @@ final class DocumentRedactionViewModel: ObservableObject {
         firstRunEntryPoint = .onboarding
     }
 
-    private func finalizeProcessing(for item: DocumentItem) {
+    func finalizeProcessing(for item: DocumentItem) {
         processingTasks.removeValue(forKey: item.id)
         if let hbTask = heartbeatTasks[item.id] {
             hbTask.cancel()
@@ -2501,7 +2510,7 @@ final class DocumentRedactionViewModel: ObservableObject {
     /// Records a (duration, size) sample for the batch ETA estimator once a document that
     /// actually ran (completed or failed) reaches a terminal state. Cancelled documents are
     /// skipped — their elapsed time isn't a meaningful processing-rate signal.
-    private func recordBatchETASample(for item: DocumentItem) {
+    func recordBatchETASample(for item: DocumentItem) {
         guard let startedAt = batchProcessingStartTimes.removeValue(forKey: item.id) else { return }
         guard item.status == .completed || item.status == .failed else { return }
 
@@ -2517,7 +2526,7 @@ final class DocumentRedactionViewModel: ObservableObject {
     /// Recomputes `batchETA` from samples collected so far in this run plus the size signal
     /// for documents still queued or in-flight. Clears the estimate once no documents remain
     /// in a processing state, or while there isn't enough data yet.
-    private func updateBatchETA() {
+    func updateBatchETA() {
         guard hasProcessingDocuments else {
             batchETA = nil
             return
@@ -2539,7 +2548,7 @@ final class DocumentRedactionViewModel: ObservableObject {
     /// so word count is a much better predictor of how long a document will
     /// take. Falls back to file byte size when word count isn't available
     /// yet (e.g. validation hasn't completed for this item).
-    private func documentSizeSignal(for item: DocumentItem) -> Int64 {
+    func documentSizeSignal(for item: DocumentItem) -> Int64 {
         if let words = item.wordCount, words > 0 {
             return Int64(words)
         }

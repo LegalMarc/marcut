@@ -10,7 +10,13 @@ runner, the Ollama bridge, and the share sheet is now injectable
 (`RedactionRunning.swift`, `runnerProvider`, `llmPreflightCheck`,
 `modelReadinessCheck`, `sharePresenter`), with zero behavior change, so a
 recording fake can stand in for `PythonKitRunner` in the golden harness
-(#100).
+(#100). Prereq 3 (#99) is also done: `DocumentRedactionViewModel.init`,
+`SettingsView.init`, and `MetadataCleaningSettings.load()`/`save()` now
+accept an injected `UserDefaults` suite (default `.standard`, every
+production call site unchanged), and every §3.2 characterization target
+listed in #99 is widened from `private` to `internal`, so tests can seed
+preference state and stored ETA/batch properties without touching real
+`UserDefaults.standard` or reaching for reflection.
 
 ## Goal
 
