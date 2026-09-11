@@ -48,7 +48,16 @@ edit) is needed before that slice's characterization test can be added; see
 reimplemented-logic tests `updateState()`'s coverage used to rely on
 (`MarcutAppTests.swift`, formerly `testFinishedProcessingStateLogic`/
 `testProcessingStateLogic`, plus the unrelated `testPreparingStateLogic`
-dead test) are removed now that real coverage exists.
+dead test) are removed now that real coverage exists. Prereq 6 (#102) is
+also done: `Tests/MarcutAppTests/AdvancedModeDefaultsMigrationTests.swift`
+pins `SettingsView.init`'s and
+`DocumentRedactionViewModel.applyAdvancedModeDefaultsIfNeeded()`'s
+`UserDefaults` seeding across the eight start states x three call orders in
+#102's scope, plus two named tests for the two drift points below (only
+`SettingsView.init` seeds `outputSaveLocationPreference` and
+`unsavedReportQuitBehavior`). This is tests only -- the drift is pinned, not
+resolved; #106 must still decide, on the record, whether the unified
+migrator keeps seeding those two keys.
 
 ## Goal
 
@@ -354,21 +363,24 @@ merged independently of any refactor PR:
    without touching PythonKit.
 
 5. **`AdvancedModeDefaultsMigrator` unification (highest-value, must be
-   characterized first)** — snapshot `UserDefaults` state after
-   `SettingsView.init` alone, after `DocumentRedactionViewModel
+   characterized first)** — **done (#102)**: snapshot `UserDefaults` state
+   after `SettingsView.init` alone, after `DocumentRedactionViewModel
    .applyAdvancedModeDefaultsIfNeeded()` alone, and after both run in the
    app's actual startup order, across the matrix of {defaults empty,
    defaults from a pre-0.x install with only the legacy
    `legacyMetadataReportAlwaysSaveToDownloads` key, defaults already fully
    migrated, the one-time confidence-95-to-99 migration flag already
-   consumed vs. not}. Only once this matrix is pinned should the two
+   consumed vs. not, `advancedModeEnabled == false` with `hasCompletedFirstRun`
+   true and false} — see `Tests/MarcutAppTests/AdvancedModeDefaultsMigrationTests.swift`.
+   Only once this matrix is pinned should the two
    call sites be merged into one shared migrator — this is the single
    riskiest de-duplication in this doc because it is real logic
    duplication (not just organizational), so unifying it can change what
    gets written to `UserDefaults` on first launch after an update if the
    two versions have actually drifted (per §2.2, they already have:
    `outputSaveLocationPreference`/`unsavedReportQuitBehavior` seeding is
-   only in `SettingsView.init` today).
+   only in `SettingsView.init` today — now pinned as two named tests, not
+   resolved). #106 does the actual unification.
 
 6. **`shareDocument` / `shareFinalRedactedCopy` environment-variable
    save/restore** — assert that `MARCUT_METADATA_PRESET`,

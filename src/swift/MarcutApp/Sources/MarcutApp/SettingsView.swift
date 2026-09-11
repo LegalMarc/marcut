@@ -235,6 +235,14 @@ struct SettingsView: View {
         self._localSettings = State(initialValue: initialSettings)
     }
 
+    /// Test-only accessor for `init`'s initial `localSettings` snapshot -- a pure read of the
+    /// `@State` value computed at construction time. Added for the UserDefaults migration-matrix
+    /// characterization (#102, `docs/design/view_controller_decomposition.md` §3.2 item 5); no
+    /// production call site uses this.
+    var initialLocalSettingsForTesting: RedactionSettings {
+        localSettings
+    }
+
     var body: some View {
         VStack(spacing: 24) {
             headerView
