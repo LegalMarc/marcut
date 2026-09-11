@@ -33,20 +33,6 @@ struct FailureReportPayload: Decodable {
 
 @MainActor
 final class DocumentRedactionViewModel: ObservableObject {
-    private static let supportedModelIdentifiers: Set<String> = ModelCatalog.shared.modelIds
-    private static func normalizeModelIdentifier(_ modelName: String) -> String {
-        let trimmed = modelName.trimmingCharacters(in: .whitespacesAndNewlines)
-        let parts = trimmed.split(separator: "/")
-        var relevant = Array(parts)
-        if parts.count >= 3 {
-            relevant = Array(parts.suffix(2))
-        }
-        if relevant.count == 2, relevant.first == "library" {
-            return String(relevant[1]).lowercased()
-        }
-        return relevant.map { String($0).lowercased() }.joined(separator: "/")
-    }
-
     static func finalRedactedCopyURL(
         for sourceURL: URL,
         fileExists: (String) -> Bool = { FileManager.default.fileExists(atPath: $0) }
@@ -193,6 +179,15 @@ final class DocumentRedactionViewModel: ObservableObject {
             self.finalizeProcessing(for: item)
         },
         batchETASink: { [weak self] eta in self?.batchETA = eta }
+    )
+
+    /// Environment/model diagnostics collaborator
+    /// (`docs/design/view_controller_decomposition.md` §2.1, slice 4). `lazy` for the same
+    /// two-phase-init reason as `progressMonitor` above -- `runnerProvider` isn't available at
+    /// property-default evaluation time.
+    lazy var environmentDiagnostics = EnvironmentDiagnosticsService(
+        pythonBridge: pythonBridge,
+        runnerProvider: { [weak self] in self?.runnerProvider() }
     )
 
     init(
@@ -2600,195 +2595,108 @@ final class DocumentRedactionViewModel: ObservableObject {
 
     // MARK: - Environment Status
 
+    //
+    // Forwards to `environmentDiagnostics` (`docs/design/view_controller_decomposition.md`
+    // §2.1, slice 4); view/binding call sites in ContentView.swift/SettingsView.swift are
+    // unchanged. `frameworkAvailable`, `shouldShowFirstRunSetup`, and the first-run flags stay
+    // `@Published` here and are set from the collaborator's returned results, rather than the
+    // collaborator reaching back into this view model directly.
+
     var isEnvironmentReady: Bool {
-        // In Rules Only mode, we don't need Ollama or models
-        if settings.mode == .rules {
-            return frameworkAvailable
-        }
-
-        // Environment is only truly ready when the Ollama service is confirmed to be running.
-        // The UI will reflect the startup process until this is true.
-        // In LLM modes, we also require at least one model to be installed.
-        if settings.mode.usesLLM {
-            return frameworkAvailable && pythonBridge.isOllamaRunning && !availableModels.isEmpty
-        }
-        return frameworkAvailable && pythonBridge.isOllamaRunning
-    }
-
-    private func getOllamaPath() -> String? {
-        // Correctly check Contents/MacOS for the binary
-        if let executableURL = Bundle.main.executableURL {
-            let macosOllamaURL = executableURL.deletingLastPathComponent().appendingPathComponent(
-                "ollama",
-                isDirectory: false
-            )
-            if FileManager.default.fileExists(atPath: macosOllamaURL.path) {
-                return macosOllamaURL.path
-            }
-        }
-
-        // Fallback to legacy Resources location (just in case)
-        if let bundledPath = Bundle.main.path(forResource: "ollama", ofType: nil) {
-            return bundledPath
-        }
-
-        return nil
+        environmentDiagnostics.isEnvironmentReady(mode: settings.mode, frameworkAvailable: frameworkAvailable)
     }
 
     var environmentStatus: String {
-        let supportedModels = availableModels
-
-        // Provide specific, actionable error messages
-        if !frameworkAvailable {
-            return "❌ Python framework missing - Please reinstall MarcutApp"
-        }
-
-        // In Rules Only mode, we bypass AI checks
-        if settings.mode == .rules {
-            return "✅ Ready (Rules Only Mode)"
-        }
-
-        if let launchError = pythonBridge.ollamaLaunchError, !pythonBridge.isOllamaRunning {
-            return "❌ \(launchError)"
-        }
-
-        if !pythonBridge.isOllamaRunning, getOllamaPath() == nil {
-            return "❌ Ollama service not found - Check installation"
-        } else if !pythonBridge.isOllamaRunning {
-            return "Starting Ollama service..."
-        } else if supportedModels.isEmpty {
-            if pythonBridge.installedModels.isEmpty {
-                return "⚠️ No AI models available - Will download on first use"
-            } else {
-                return "⚠️ No supported models - Install qwen2.5:14b or similar"
-            }
-        } else {
-            return "✅ Ready with \(supportedModels.count) AI model(s)"
-        }
+        environmentDiagnostics.environmentStatus(mode: settings.mode, frameworkAvailable: frameworkAvailable)
     }
 
     // MARK: - Enhanced Error Recovery Methods
 
     func attemptEnvironmentRecovery() async -> Bool {
-        DebugLogger.shared.log("🔧 ATTEMPTING ENVIRONMENT RECOVERY", component: "DocumentRedactionViewModel")
-
-        // Try to recover from common issues
-        var recoveryAttempts = 0
-
-        // 1. Try to refresh environment status
-        let refreshSuccess = await refreshEnvironmentStatus(triggerFirstRunCheck: false)
-        recoveryAttempts += 1
-        DebugLogger.shared.log(
-            "Recovery attempt \(recoveryAttempts): Environment refresh - \(refreshSuccess ? "✅" : "❌")",
-            component: "DocumentRedactionViewModel"
-        )
-
-        if refreshSuccess {
-            return true
+        let outcome = await environmentDiagnostics.attemptEnvironmentRecovery(
+            mode: settings.mode,
+            currentModel: settings.model
+        ) { [weak self] mode, currentModel in
+            guard let self else {
+                return EnvironmentDiagnosticsService.RefreshOutcome(
+                    frameworkAvailable: false,
+                    ready: false,
+                    selectedModel: nil
+                )
+            }
+            return await self.applyEnvironmentRefresh(mode: mode, currentModel: currentModel)
         }
-
-        // 2. If framework is missing, we can't recover without reinstall
-        if !frameworkAvailable {
-            DebugLogger.shared.log(
-                "❌ Cannot recover - Python framework missing",
-                component: "DocumentRedactionViewModel"
-            )
-            return false
-        }
-
-        // 3. Try to restart Ollama service
-        if !pythonBridge.isOllamaRunning {
-            DebugLogger.shared.log("🔄 Attempting to restart Ollama service", component: "DocumentRedactionViewModel")
-
-            // Force check Ollama status
-            await pythonBridge.checkOllamaStatus()
-            recoveryAttempts += 1
-
-            // Give it a moment to start
-            try? await Task.sleep(nanoseconds: 2_000_000_000)
-
-            // Check again
-            await pythonBridge.checkOllamaStatus()
-            DebugLogger.shared.log(
-                "Recovery attempt \(recoveryAttempts): Ollama restart - \(pythonBridge.isOllamaRunning ? "✅" : "❌")",
-                component: "DocumentRedactionViewModel"
-            )
-        }
-
-        // Final status check
-        let finalStatus = isEnvironmentReady
-        DebugLogger.shared.log(
-            "🏁 Recovery completed - Final status: \(finalStatus ? "✅ Ready" : "❌ Still not ready")",
-            component: "DocumentRedactionViewModel"
-        )
-
-        return finalStatus
+        return outcome.ready
     }
 
     func getDetailedEnvironmentDiagnostics() -> [String: String] {
-        var diagnostics: [String: String] = [:]
-
-        diagnostics["framework_available"] = frameworkAvailable ? "✅ Yes" : "❌ No"
-        diagnostics["framework_path"] = pythonRunner != nil ? "PythonKit + BeeWare framework" : "PythonKit not available"
-        diagnostics["ollama_running"] = pythonBridge.isOllamaRunning ? "✅ Yes" : "❌ No"
-        diagnostics["ollama_binary"] = getOllamaPath() ?? "Not found"
-        diagnostics["installed_models"] = "\(pythonBridge.installedModels.count) total"
-        diagnostics["supported_models"] = "\(availableModels.count) supported"
-        diagnostics["environment_ready"] = isEnvironmentReady ? "✅ Yes" : "❌ No"
-        diagnostics["app_version"] = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "Unknown"
-        diagnostics["app_build"] = Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "Unknown"
-
-        return diagnostics
+        environmentDiagnostics.detailedEnvironmentDiagnostics(
+            mode: settings.mode,
+            frameworkAvailable: frameworkAvailable
+        )
     }
 
     var ollamaLogURL: URL {
-        pythonBridge.ollamaLogURL
+        environmentDiagnostics.ollamaLogURL
     }
 
     var modelsDirectoryURL: URL {
-        pythonBridge.modelsDirectoryURL
+        environmentDiagnostics.modelsDirectoryURL
     }
 
     var lastModelDownloadError: String? {
-        pythonBridge.lastModelDownloadError
+        environmentDiagnostics.lastModelDownloadError
     }
 
     func checkEnvironment() {
-        pythonBridge.checkEnvironment()
-        Task { @MainActor [weak self] in
-            self?.frameworkAvailable = Bundle.main.path(forResource: "python_launcher", ofType: "sh") != nil
+        environmentDiagnostics.checkEnvironment { [weak self] available in
+            self?.frameworkAvailable = available
         }
     }
 
     func downloadModel(_ modelName: String, progress: @escaping (Double) -> Void) async -> Bool {
-        let result = await pythonBridge.downloadModel(modelName, progress: progress)
-        if result {
-            _ = await refreshEnvironmentStatus()
+        await environmentDiagnostics.downloadModel(modelName, progress: progress) { [weak self] in
+            _ = await self?.refreshEnvironmentStatus()
         }
-        return result
     }
 
     var ollamaRunning: Bool {
-        pythonBridge.isOllamaRunning
+        environmentDiagnostics.ollamaRunning
     }
 
     func cancelModelDownload() {
-        pythonBridge.cancelModelDownload()
+        environmentDiagnostics.cancelModelDownload()
     }
 
     var availableModels: [String] {
-        pythonBridge.installedModels.filter { model in
-            let normalized = Self.normalizeModelIdentifier(model)
-            return Self.supportedModelIdentifiers.contains(normalized) && pythonBridge.isModelAvailable(model)
-        }
+        environmentDiagnostics.availableModels
     }
 
     var installedModelCount: Int {
-        pythonBridge.installedModels.count
+        environmentDiagnostics.installedModelCount
     }
 
     var shouldSuppressModelSetupPrompt: Bool {
-        settings.mode == .rules || (hasUsedMetadataScrub && availableModels.isEmpty)
+        environmentDiagnostics.shouldSuppressModelSetupPrompt(
+            mode: settings.mode,
+            hasUsedMetadataScrub: hasUsedMetadataScrub
+        )
+    }
+
+    /// Applies `environmentDiagnostics.refreshEnvironment(...)`'s result to this view model's
+    /// published state (and `settings.model`, on auto-select). Shared by
+    /// `refreshEnvironmentStatus(triggerFirstRunCheck:)` and `attemptEnvironmentRecovery()`, the
+    /// only two call sites that need the raw refresh outcome rather than just its readiness bool.
+    private func applyEnvironmentRefresh(
+        mode: RedactionMode,
+        currentModel: String
+    ) async -> EnvironmentDiagnosticsService.RefreshOutcome {
+        let outcome = await environmentDiagnostics.refreshEnvironment(mode: mode, currentModel: currentModel)
+        frameworkAvailable = outcome.frameworkAvailable
+        if let selectedModel = outcome.selectedModel {
+            settings.model = selectedModel
+        }
+        return outcome
     }
 
     @discardableResult
@@ -2798,7 +2706,7 @@ final class DocumentRedactionViewModel: ObservableObject {
         // Wait for Python initialization to complete before checking framework availability
         // This prevents false "framework missing" errors during the async startup sequence
         let initStart = Date()
-        while isPythonInitializing && pythonInitializationError == nil {
+        while isPythonInitializing, pythonInitializationError == nil {
             if Date().timeIntervalSince(initStart) > 30 {
                 DebugLogger.shared.log(
                     "⚠️ Python initialization timeout in refreshEnvironmentStatus",
@@ -2809,47 +2717,9 @@ final class DocumentRedactionViewModel: ObservableObject {
             try? await Task.sleep(nanoseconds: 100_000_000) // 100ms
         }
 
-        // Check PythonKit + BeeWare framework availability OR CLI subprocess availability
-        let pythonKitAvailable = pythonRunner != nil
-        let cliScriptAvailable = Bundle.main.path(forResource: "marcut_cli_launcher", ofType: "sh") != nil
-
-        // Framework is available if either PythonKit works OR CLI script is available
-        frameworkAvailable = pythonKitAvailable || cliScriptAvailable
-
-        if pythonKitAvailable {
-            DebugLogger.shared.log("✅ PythonKit + BeeWare framework available", component: "DocumentRedactionViewModel")
-        } else if cliScriptAvailable {
-            DebugLogger.shared.log("✅ CLI subprocess launcher available", component: "DocumentRedactionViewModel")
-        } else {
-            DebugLogger.shared.log(
-                "❌ Neither PythonKit nor CLI launcher available",
-                component: "DocumentRedactionViewModel"
-            )
-        }
-
-        // Check Python bridge with error handling
-        // XPC removed - CLI subprocess only (no execution strategy needed)
-        // pythonBridge.setExecutionStrategy(executionStrategy) // Removed - executionStrategy property deleted
-
-        await pythonBridge.refreshEnvironment()
-        DebugLogger.shared.log("✅ Python bridge refresh completed", component: "DocumentRedactionViewModel")
-
-        let ready = isEnvironmentReady
+        let outcome = await applyEnvironmentRefresh(mode: settings.mode, currentModel: settings.model)
+        let ready = outcome.ready
         let hasSupportedModels = !availableModels.isEmpty
-        if hasSupportedModels,
-           !availableModels
-           .contains(where: { Self.normalizeModelIdentifier($0) == Self.normalizeModelIdentifier(settings.model) })
-        {
-            if let first = availableModels.first {
-                settings.model = first
-                DebugLogger.shared.log(
-                    "🎯 Auto-selected available model \(first) as default",
-                    component: "DocumentRedactionViewModel"
-                )
-            }
-        }
-
-        DebugLogger.shared.log("📊 Environment ready status: \(ready)", component: "DocumentRedactionViewModel")
 
         // Enhanced first-run logic with better error guidance
         if triggerFirstRunCheck {

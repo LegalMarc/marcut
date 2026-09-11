@@ -484,12 +484,28 @@ depend on the characterization tests from §3.2 landing first.
    tests pass with call sites routed through `viewModel.progressMonitor`
    (construction-only changes, no assertions changed).
 
-4. **`EnvironmentDiagnosticsService` extraction** — mostly thin
-   forwarding to `pythonBridge`/`AppDelegate.pythonRunner` already;
-   moving it doesn't change what's called, only who calls it. Add a
-   thin characterization test asserting `environmentStatus`'s string
-   output and `isEnvironmentReady`'s boolean for each combination of
-   `frameworkAvailable`/`ollamaRunning`/`availableModels` before moving.
+4. **`EnvironmentDiagnosticsService` extraction** — **done (#105)**:
+   `isEnvironmentReady`, `environmentStatus`, `attemptEnvironmentRecovery`,
+   `getDetailedEnvironmentDiagnostics`, `checkEnvironment`,
+   `refreshEnvironmentStatus`'s core refresh computation, `ollamaRunning`,
+   `availableModels`, `installedModelCount`, `shouldSuppressModelSetupPrompt`,
+   `downloadModel`, `cancelModelDownload`, and `getOllamaPath` moved into an
+   `EnvironmentDiagnosticsService` collaborator that takes `pythonBridge` and
+   a runner-provider closure at construction and returns values from every
+   method rather than reaching back into the view model. The
+   Python-initialization wait loop and the first-run-prompt decision tree
+   inside `refreshEnvironmentStatus(triggerFirstRunCheck:)` stayed on the
+   view model per this slice's own scope note (they depend on
+   `isPythonInitializing`/`hasCompletedFirstRun`/`markFirstRunComplete`,
+   view-model concerns unrelated to environment diagnostics); the view model
+   applies the collaborator's `RefreshOutcome`/`RecoveryOutcome` return
+   values to its own `@Published` `frameworkAvailable`/
+   `shouldShowFirstRunSetup`/`firstRunEntryPoint` and to `settings.model`.
+   #101's diagnostics-matrix characterization tests
+   (`ViewModelCharacterizationTests.swift`, §4 slice-4 diagnostics matrix)
+   pass unmodified against the extracted code, construction-only unchanged.
+   Verification per §3.3: `swift build` + `swift test` green, SwiftFormat
+   lint clean, zero golden diffs.
 
 5. **`AdvancedModeDefaultsMigrator` unification** — the highest-value and
    highest-risk de-duplication (§2.2, §3.2 item 5). Characterization tests
