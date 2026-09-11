@@ -154,17 +154,9 @@ final class DocumentRedactionViewModel: ObservableObject {
         return await self.pythonBridge.waitForModelReadiness(modelName: model)
     }
 
-    /// Presents the share sheet for a finished document. `lazy` for the same reason as
-    /// `llmPreflightCheck`/`modelReadinessCheck` -- the default forwards to the instance method
-    /// `presentSharePicker(for:)`. Overriding this in tests avoids `shareFinalRedactedCopy`
-    /// opening Finder via `NSWorkspace.activateFileViewerSelecting`.
-    lazy var sharePresenter: (URL) -> Bool = { [weak self] url in
-        self?.presentSharePicker(for: url) ?? false
-    }
-
     /// Heartbeat watchdog (B1) + batch-ETA collaborator
     /// (`docs/design/view_controller_decomposition.md` §2.1, slice 3). `lazy` for the same
-    /// two-phase-init reason as `llmPreflightCheck`/`modelReadinessCheck`/`sharePresenter` above --
+    /// two-phase-init reason as `llmPreflightCheck`/`modelReadinessCheck` above --
     /// its closures capture `self` weakly and read/write state (`items`, `hasProcessingDocuments`,
     /// `activeAttemptTokens`, `pythonRunner`, `batchETA`) that isn't available at property-default
     /// evaluation time. `activeAttemptTokens` stays here rather than moving with the rest of the
@@ -188,6 +180,18 @@ final class DocumentRedactionViewModel: ObservableObject {
     lazy var environmentDiagnostics = EnvironmentDiagnosticsService(
         pythonBridge: pythonBridge,
         runnerProvider: { [weak self] in self?.runnerProvider() }
+    )
+
+    /// Share/export flow collaborator (`docs/design/view_controller_decomposition.md` §2.1,
+    /// slice 6). `lazy` for the same two-phase-init reason as `environmentDiagnostics` above --
+    /// `runnerProvider` isn't available at property-default evaluation time.
+    /// `applyMetadataSettingsEnvironment` stays owned by the view model (other call sites besides
+    /// this flow use it too, until #110's `ProcessRunner` extraction).
+    lazy var documentShareService = DocumentShareService(
+        runnerProvider: { [weak self] in self?.runnerProvider() },
+        applyMetadataSettingsEnvironment: { [weak self] settings, context in
+            self?.applyMetadataSettingsEnvironment(settings, context: context)
+        }
     )
 
     init(
@@ -1939,117 +1943,24 @@ final class DocumentRedactionViewModel: ObservableObject {
 
     // MARK: - Output Management
 
+    //
+    // Forwards to `documentShareService` (`docs/design/view_controller_decomposition.md`
+    // §2.1, slice 6); the ContentView.swift call sites are unchanged.
+    // `confirmAndShareReviewCopy`/`presentSharePicker` stay private to the collaborator -- no
+    // other call site needs them.
+
     @discardableResult
     func openRedactedDocument(_ item: DocumentItem) -> Bool {
-        guard let url = item.redactedOutputURL else { return false }
-        return NSWorkspace.shared.open(url)
+        documentShareService.openRedactedDocument(item)
     }
 
     @discardableResult
     func shareDocument(_ item: DocumentItem) -> Bool {
-        guard item.redactedOutputURL != nil || item.scrubOutputURL != nil else {
-            item.errorMessage = "No DOCX output is available to send."
-            return false
-        }
-
-        let alert = NSAlert()
-        alert.messageText = "Send Document"
-        alert.informativeText = "Choose the DOCX you want to send.\n\n"
-            + "Final redacted copy accepts Marcut's redaction Track Changes in a new copy and scrubs metadata before sending.\n\n"
-            + "Review copy sends the current review artifact with Track Changes and metadata exactly as they are in that file."
-        alert.alertStyle = .warning
-        alert.addButton(withTitle: "Send Final Redacted Copy")
-        alert.addButton(withTitle: "Send Review Copy")
-        alert.addButton(withTitle: "Cancel")
-
-        switch alert.runModal() {
-        case .alertFirstButtonReturn:
-            Task { [weak self, weak item] in
-                guard let self, let item else { return }
-                await self.shareFinalRedactedCopy(item)
-            }
-            return true
-        case .alertSecondButtonReturn:
-            return confirmAndShareReviewCopy(item)
-        default:
-            return false
-        }
-    }
-
-    private func confirmAndShareReviewCopy(_ item: DocumentItem) -> Bool {
-        guard let url = item.redactedOutputURL ?? item.scrubOutputURL else { return false }
-
-        let alert = NSAlert()
-        alert.messageText = "Send Review Copy?"
-        alert.informativeText = """
-        This sends the current DOCX review artifact. It may contain recoverable original text in Track Changes and document metadata. Use this only when the recipient should review proposed redactions with full context.
-        """
-        alert.alertStyle = .critical
-        alert.addButton(withTitle: "Send Review Copy")
-        alert.addButton(withTitle: "Cancel")
-
-        guard alert.runModal() == .alertFirstButtonReturn else { return false }
-        return sharePresenter(url)
+        documentShareService.shareDocument(item)
     }
 
     func shareFinalRedactedCopy(_ item: DocumentItem) async {
-        guard let sourceURL = item.redactedOutputURL ?? item.scrubOutputURL else {
-            item.errorMessage = "No DOCX output is available to finalize."
-            return
-        }
-        guard let runner = pythonRunner else {
-            item.errorMessage = "The Python runtime is not available to finalize this document."
-            return
-        }
-
-        let finalURL = Self.finalRedactedCopyURL(for: sourceURL)
-        let previousPreset = getenv("MARCUT_METADATA_PRESET").map { String(cString: $0) }
-        let previousArgs = getenv("MARCUT_METADATA_ARGS").map { String(cString: $0) }
-        let previousSettingsJSON = getenv("MARCUT_METADATA_SETTINGS_JSON").map { String(cString: $0) }
-
-        applyMetadataSettingsEnvironment(.maximumPrivacy, context: "final share copy")
-        defer {
-            restoreEnvironmentValue(previousPreset, forKey: "MARCUT_METADATA_PRESET")
-            restoreEnvironmentValue(previousArgs, forKey: "MARCUT_METADATA_ARGS")
-            restoreEnvironmentValue(previousSettingsJSON, forKey: "MARCUT_METADATA_SETTINGS_JSON")
-        }
-
-        do {
-            let result = try await runner.scrubMetadataOnlyAsync(
-                inputPath: sourceURL.path,
-                outputPath: finalURL.path
-            )
-            guard result.success else {
-                item.errorMessage = result.error ?? "Unable to create the final redacted copy."
-                try? FileManager.default.removeItem(at: finalURL)
-                return
-            }
-            item.errorMessage = nil
-            _ = sharePresenter(finalURL)
-        } catch {
-            item.errorMessage = "Unable to create the final redacted copy: \(error.localizedDescription)"
-            try? FileManager.default.removeItem(at: finalURL)
-        }
-    }
-
-    func restoreEnvironmentValue(_ value: String?, forKey key: String) {
-        if let value {
-            setenv(key, value, 1)
-        } else {
-            unsetenv(key)
-        }
-    }
-
-    @discardableResult
-    private func presentSharePicker(for url: URL) -> Bool {
-        guard FileManager.default.fileExists(atPath: url.path) else { return false }
-        guard let view = NSApp.keyWindow?.contentView else {
-            NSWorkspace.shared.activateFileViewerSelecting([url])
-            return true
-        }
-        let picker = NSSharingServicePicker(items: [url])
-        picker.show(relativeTo: .zero, of: view, preferredEdge: .minY)
-        return true
+        item.errorMessage = await documentShareService.shareFinalRedactedCopy(item)
     }
 
     @discardableResult

@@ -495,7 +495,7 @@ final class ViewModelCharacterizationTests: XCTestCase {
     private func makeShareTestViewModel(runner: ShareCopyFakeRunner) -> DocumentRedactionViewModel {
         let viewModel = DocumentRedactionViewModel(defaults: makeIsolatedDefaults())
         viewModel.runnerProvider = { [weak runner] in runner }
-        viewModel.sharePresenter = { _ in true }
+        viewModel.documentShareService.sharePresenter = { _ in true }
         return viewModel
     }
 

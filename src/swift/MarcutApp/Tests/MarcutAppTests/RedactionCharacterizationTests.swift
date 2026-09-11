@@ -74,7 +74,7 @@ final class RedactionCharacterizationTests: XCTestCase {
             recorder.record("modelReadinessCheck", [model])
             return modelReadyResult
         }
-        viewModel.sharePresenter = { url in
+        viewModel.documentShareService.sharePresenter = { url in
             recorder.record("sharePresenter", [url.path])
             return sharePresenterResult
         }

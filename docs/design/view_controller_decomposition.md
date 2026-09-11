@@ -520,10 +520,29 @@ depend on the characterization tests from §3.2 landing first.
    (which the migrator must also cover, or those two keys must be
    explicitly and separately documented as staying in `SettingsView.init`).
 
-6. **`DocumentShareService` extraction** — self-contained, add the
-   environment-variable save/restore characterization test (§3.2 item 6)
-   first, then move `shareDocument`/`confirmAndShareReviewCopy`/
-   `shareFinalRedactedCopy`/`presentSharePicker`/`restoreEnvironmentValue`.
+6. **`DocumentShareService` extraction** — **done (#107)**:
+   `openRedactedDocument`, `shareDocument`, `confirmAndShareReviewCopy`,
+   `shareFinalRedactedCopy`, `restoreEnvironmentValue`, `presentSharePicker`,
+   and the `sharePresenter` seam (#98) moved into a `DocumentShareService`
+   collaborator that takes the runner provider and
+   `applyMetadataSettingsEnvironment` as constructor closures (the latter
+   stays owned by the view model until #110's `ProcessRunner` extraction,
+   since other call sites besides this flow use it too).
+   `confirmAndShareReviewCopy`/`presentSharePicker` stay private to the
+   collaborator; the view model keeps thin forwarding methods for
+   `openRedactedDocument`/`shareDocument`/`shareFinalRedactedCopy` so
+   `ContentView.swift` call sites are unchanged. `shareFinalRedactedCopy`
+   now reports its error back to the caller by returning it (`String?`)
+   instead of mutating `DocumentItem.errorMessage` itself; the view model's
+   forwarder and the service's own `shareDocument` both apply the returned
+   value the same way `shareFinalRedactedCopy` used to apply it directly, so
+   external behavior (what ends up in `item.errorMessage`) is unchanged. The
+   §3.2 item 6 environment save/restore characterization tests (from #101)
+   pass unmodified, with only their setup helpers (`makeShareTestViewModel`,
+   `runScenario`) updated to set `viewModel.documentShareService
+   .sharePresenter` instead of the now-removed `viewModel.sharePresenter`.
+   Verification per §3.3: `swift build` + `swift test` green, SwiftFormat
+   lint clean, zero golden diffs.
 
 7. **`OutputArtifactManager` extraction** — largest mechanical slice
    (~500+ lines: `applyOutputArtifacts`, output-directory resolution,
