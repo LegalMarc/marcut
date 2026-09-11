@@ -1,0 +1,71 @@
+# Docs index
+
+<!-- docs-sync
+roots: docs/ README.md CLAUDE.md
+exclude: vendor/ node_modules/ .venv*/ .claude/ .git/ .next/ coverage/ .terraform/ .pytest_cache/
+code: build-scripts/ scripts/ src/ tests/
+-->
+
+Read this file first. Each line: `path` — one-sentence scope. anchors: heading-slugs. covers: code, globs.
+
+## (root)
+- `CLAUDE.md` — Agent-facing orientation: architecture, module map, build and test commands, and the repo's hard rules. anchors: project-overview, agent-rules, current-status-july-2026, core-architecture, development-commands, configuration, testing-and-validation, important-notes
+- `README.md` — Public front page for the project: what Marcut does, key features, and how to get started. anchors: -key-features, -screenshots, -documentation, -quick-start-development, -distribution, -contributing, -license
+
+## docs/
+- `docs/BACKLOG.md` — What is shipped, what remains as technical debt, and which major directions carry a design spike. anchors: 1-quality-of-life-qol-improvements, 2-maintainability--technical-debt, 3-major-new-directions-innovation, 4-ci--infrastructure
+- `docs/CHANGELOG.md` — Dated record of every behavioural change, newest first, one entry per landed ticket. anchors: 2026-09-10, 2026-09-09, 2026-09-05, 2026-07-14, 2026-07-04, 2026-07-03, 2026-05-13, 2025-12-28
+- `docs/CONTEXT.md` — Glossary of this repo's domain language: entity, span, cluster, rationale, scrub, hardening.
+- `docs/CONTRIBUTING.md` — How to propose changes: branch and commit conventions, review expectations, and the test gate. anchors: getting-started, development-workflow, pull-request-process, code-style, questions covers: tests/**
+- `docs/DEVELOPER_GUIDE.md` — Building and running Marcut from source, including the mandatory PythonKit and BeeWare framework setup. anchors: -mandatory-architecture-requirement, architecture-overview, build-system-architecture, implementation-details, sandbox-compliance, testing--validation, development-workflow, framework-management covers: build-scripts/**, scripts/**
+- `docs/METADATA_HARDENING.md` — Every metadata and XML scrubbing pass applied to a DOCX, and the size budgets that bound them. anchors: overview, architecture, cleaning-categories, presets, image-exif-stripping, metadata-cleaning-report, cli-arguments, metadata--report-size-budgets-t9-remediation covers: src/python/marcut/docx_pkg/hardening.py, src/python/marcut/docx_pkg/zip_postprocess.py, src/python/marcut/docx_pkg/settings.py
+- `docs/PERFORMANCE_OPTIMIZATION.md` — Profiling data for the LLM redaction path and the optimisations it justifies. anchors: quick-summary, profiling-tools, profiling-results, token-statistics, optimization-recommendations, implementation-notes, monitoring, large-document-consistency-pass-budgets-t10-remediation covers: src/python/marcut/model.py, src/python/marcut/model_enhanced.py, src/python/marcut/chunker.py, src/python/marcut/llm_timing.py
+- `docs/README.md` — Documentation landing page describing what Marcut produces and how to run it. anchors: whats-included, quick-start, repository-structure, next-steps, notarization--distribution-dmg-you-can-share
+- `docs/RELEASE_CHECKLIST.md` — Ordered gate for cutting a release: tests, SBOM, signing, notarization, and verification. anchors: 1-pre-release-checks, 2-security--compliance, 3-packaging, 4-release-assets, 5-post-release covers: scripts/release_preflight.sh, scripts/sh/**, scripts/generate_python_sbom.py
+- `docs/SECURITY.md` — Supported versions and how to report a vulnerability. anchors: supported-versions, reporting-a-vulnerability, security-best-practices, security-hardening-measures
+- `docs/TECHNICAL_ARCHITECTURE.md` — How the rules engine, the LLM passes, and the Swift app fit together end to end. anchors: system-overview, application-architecture, data-flow-architecture, file-system-architecture, network-architecture, performance-architecture, security-architecture, integration-architecture covers: src/python/marcut/pipeline.py, src/python/marcut/unified_redactor.py, src/swift/MarcutApp/Sources/MarcutApp/PythonKitBridge.swift
+- `docs/USER_GUIDE.md` — Running a redaction and reading the Word output and JSON audit report it produces. anchors: macos-app-embedded-runtime, source--cli-from-repo, outputs, troubleshooting covers: src/python/marcut/cli.py
+
+## docs/adr/
+- `docs/adr/0000-template.md` — Template for a new architecture decision record. anchors: status, context, decision, consequences, date
+
+## docs/audits/
+- `docs/audits/deep_bug_sweep_2026-08-29.md` — Superseded. Ten findings from the August 2026 sweep, all since closed; see the remediation status report. anchors: executive-summary, detailed-findings
+- `docs/audits/deep_bug_sweep_implementation_plan_2026-08-29.md` — Superseded. The remediation plan for the August 2026 sweep, never executed as written. anchors: user-review-required, proposed-changes, verification-plan
+- `docs/audits/deep_bug_sweep_walkthrough_2026-08-29.md` — Narrative walkthrough accompanying the August 2026 deep bug sweep. anchors: executive-summary, remediations-implemented, test-verification-summary
+- `docs/audits/pre_public_beta_audit_2026-05-13.md` — The pre-public-beta audit that produced the T0 to T14 remediation stack. anchors: confirmed-findings, needs-manual-verification, public-beta-readiness-assessment
+
+## docs/backlog/
+- `docs/backlog/feature_complete_hardening_review_2026-07-05.md` — The feature-complete hardening survey, issues #36 to #54, now fully closed with several claims refuted. anchors: a-redaction-accuracy--correctness-highest-stakes--missed-pii-is-product-failure, b-app-robustness-swift-side, c-performance, d-customer-experience, e-oss-publication-readiness---resolved-2026-07-05-repo-was-already-public-verified-clean, already-tracked--deliberately-excluded-here
+- `docs/backlog/pre_public_beta_audit_remediation_2026-05-13.md` — The T0 to T14 remediation scope derived from the May 2026 audit, now complete. anchors: stack-layout, t0---review-workflow-and-tracking, t1---consolidate-docx-send-choices, t2---public-runtime-remote-ollama-boundary, t3---owner-only-permissions-for-all-sensitive-reports, t4-----llm-detail-must-not-change-redaction-output, t5---advanced-llm-settings-and-gguf-backend-consistency, t6---hard-cancellation-and-timeout-semantics
+- `docs/backlog/pre_public_beta_audit_tickets.md` — Ticket breakdown for the approved public-beta remediation scope. anchors: t0---backlog-and-review-workflow, t1---loopback-only-inference, t2---generated-python-source-boundary, t3---review-artifact-language, t4---report-handling-hardening, t5---log-and-launch-argument-redaction, t6---cancellation-and-timeout-reliability, t7---report-expansion-limits
+
+## docs/design/
+- `docs/design/bridge_schema_migration.md` — Design spike, now fully implemented: replacing untyped Swift-Python message shapes with validated schemas. anchors: goal, current-state-inventory, approach-comparison, migration-plan-no-big-bang-cutover, cancellationdeadline-and-transactional-write-interaction, out-of-scope-per-ticket covers: src/python/marcut/report_schema.py, src/python/marcut/progress.py, src/swift/MarcutApp/Sources/MarcutApp/PythonKitBridge.swift
+- `docs/design/docx_io_package_split.md` — Design spike, now implemented: the behaviour-parity plan for splitting docx_io into a package. anchors: goal, why-this-is-a-design-spike-not-a-direct-refactor, 1-responsibility-inventory, 2-proposed-package-structure, 3-behavior-parity-verification-plan, 4-recommended-extraction-order covers: src/python/marcut/docx_pkg/**, src/python/marcut/docx_io.py
+- `docs/design/incremental_track_changes_redaction.md` — Design spike, not implemented. Diff-only redaction of revised documents, and the under-redaction risk it carries. anchors: goal, current-state-what-a-diff-only-feature-would-sit-on-top-of, change-detection-approach, correctness--under-redaction-risk-analysis, mvp-recommendation
+- `docs/design/interactive_redaction_mode.md` — Design spike, not implemented. A reviewer-in-the-loop mode for ambiguous spans. anchors: goal, what-ambiguous-already-means-in-the-pipeline, proposed-ui-flow, changes-needed-in-the-json-audit-report--pipeline-output, mvp-recommendation
+- `docs/design/local_rag_cross_document.md` — Design spike, not implemented. Cross-document entity linking, and the client-isolation risk that governs it. anchors: goal, relationship-to-the-existing-clustertable, local-storage-proposal, privacyconfidentiality-analysis, scoped-down-mvp-recommendation
+- `docs/design/multi_model_orchestration.md` — Design spike, not implemented. Escalating low-confidence chunks from a fast model to a larger one. anchors: goal, 1-integration-with-the-existing-two-pass-pipeline, 2-routing-rule-proposal, 3-latencythroughput-tradeoff-analysis, 4-mvp-recommendation
+- `docs/design/redaction_rationale_reporting.md` — Design spike, now implemented. Plain-English redaction rationale and how it is labelled as inference. anchors: goal, current-state-what-this-feature-would-sit-on-top-of, pipeline-integration-point, report-schema-changes, accuracy--hallucination-risk-analysis, mvp-recommendation covers: src/python/marcut/rationale.py, src/python/marcut/report_schema.py
+- `docs/design/streaming_progress.md` — Design spike, Option B implemented. Intra-chunk progress driven by streamed model tokens. anchors: goal, current-state, proposed-mechanism, cancellation--deadline-interaction-t6, mvp-recommendation, heartbeat-timeout-validation-issue-49 covers: src/python/marcut/progress.py, src/python/marcut/llm_timing.py
+- `docs/design/view_controller_decomposition.md` — Design spike, not implemented. Splitting the two largest Swift files, with a behaviour-parity plan. anchors: goal, why-this-is-a-design-spike-not-a-direct-refactor, 1-responsibility-inventory, 2-proposed-target-structure, 3-behavior-parity-verification-plan, 4-recommended-extraction-order covers: src/swift/MarcutApp/Sources/MarcutApp/SettingsView.swift, src/swift/MarcutApp/Sources/MarcutApp/DocumentRedactionViewModel.swift
+- `docs/design/wasm_browser_deployment.md` — Design spike, not implemented. A rules-only browser build, and how it changes the threat model. anchors: goal, 1-feasibility--rules-only-limitation, 2-threat-model-comparison, 3-recommendation
+
+## docs/historical/
+- `docs/historical/LLM_UPGRADE_STABILIZATION_PLAN.md` — Point-in-time snapshot from May 2026. Not maintained. anchors: scope, constraints, cleanup-plan, initial-findings, stabilization-results, verification
+- `docs/historical/MAINTAINER_HANDOFF_COMPENDIUM.md` — Point-in-time maintainer handoff from May 2026. Not maintained. anchors: scope-and-evidence, maintainer-mindset, product-summary, non-negotiable-architecture, current-git-state, repository-shape, runtime-architecture, python-pipeline
+- `docs/historical/README.md` — Explains that everything in this directory is a frozen snapshot.
+- `docs/historical/claude_md_status_september_2024.md` — Archived status file covering the original PythonKit migration history. anchors: current-status-september-2024
+
+## docs/model-benchmarks/
+- `docs/model-benchmarks/framework_agreement_local_llm_benchmark_2026-05-12.md` — Local model comparison on framework-agreement documents, May 2026. anchors: setup, results, readout, recommendation
+- `docs/model-benchmarks/framework_agreement_scored_local_llm_benchmark_2026-05-12.md` — The same comparison scored against ground truth. anchors: ground-truth, scored-results, recommendation
+- `docs/model-benchmarks/gemma4_e2b_fast_alternatives_2026-05-12.md` — Evaluation of faster small-model alternatives, May 2026. anchors: scope, environment-changes, results, preliminary-read, recommended-next-step
+
+## docs/release/
+- `docs/release/entitlement_governance_verification.md` — Source-level verification that the app's entitlements match what it actually needs. anchors: entitlement-sources-reviewed, repeatable-final-artifact-check, final-artifact-verification-2026-07-03, governance-evidence, public-beta-blockers covers: build-scripts/*.entitlements
+- `docs/release/public_beta_qualification.md` — The evidence record qualifying version 0.5.96 for public beta. anchors: scope, current-artifact-status, verification-results, docx-send-semantics, dependency-qualification, signing-and-notarization, remaining-release-blockers, acceptable-based-on-this-pass
+
+## docs/reports/
+- `docs/reports/2026-09-09-deep-bug-sweep-remediation-status.md` — Finding-by-finding status of the August 2026 sweep, with the mechanism that closed each one. anchors: summary, finding-by-finding, finding-9-in-detail, verification, related

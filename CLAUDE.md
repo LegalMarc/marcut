@@ -221,3 +221,7 @@ The macOS app (sandboxed) and the source CLI use different locations:
 - **Source CLI** (`marcut` installed via `pip install -e .`): `~/.marcut/` -- `config.json`, `models/`, `logs/`
 
 Notarization credentials for release builds live at `~/.config/marcut/notarize.env` (owner-only permissions, gitignored, never committed).
+
+## Docs
+
+Read `docs/INDEX.md` first. It lists every document with a one-sentence scope, section anchors, and the code paths it covers. Jump to the exact section; do not scan the tree. Before committing a code change, run `/docs-sync update --staged` and update the affected docs and their INDEX line in the same commit.
