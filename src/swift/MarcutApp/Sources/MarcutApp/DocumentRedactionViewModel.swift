@@ -137,11 +137,51 @@ final class DocumentRedactionViewModel: ObservableObject {
         return PythonBridgeService.shared.isOllamaRunning
     }
 
-    init(powerAssertion: PowerAssertionGuard? = nil) {
+    /// Resolves the embedded-Python runner every call reads through. A closure rather than a
+    /// stored snapshot because `AppDelegate.pythonRunner` is assigned asynchronously after this
+    /// view model is constructed (`MarcutApp.swift`, then the `.pythonRunnerReady` post) -- a
+    /// snapshot taken at `init` would keep reading `nil` forever in the "runner not yet ready"
+    /// branches. Injectable so tests can stand in a fake `RedactionRunning` (#98, #100) without
+    /// touching the real `AppDelegate` global.
+    var runnerProvider: () -> (any RedactionRunning)? = { AppDelegate.pythonRunner }
+
+    /// Every other member of this file reads the runner through here rather than
+    /// `AppDelegate.pythonRunner` directly, so `runnerProvider` is the single seam tests need to
+    /// override.
+    private var pythonRunner: (any RedactionRunning)? {
+        runnerProvider()
+    }
+
+    /// Ollama pre-flight/readiness probe, factored out of `wakeOllamaHealthCheck`'s pattern.
+    /// `lazy` (rather than a plain default value) because the default routes through the
+    /// injected `pythonBridge` instance, which isn't available to a stored property's default
+    /// expression before `init` runs. Called from the enhanced-mode pre-flight check.
+    lazy var llmPreflightCheck: (String) async -> Bool = { [weak self] model in
+        guard let self else { return false }
+        return await self.pythonBridge.ensureOllamaReadyForPythonKit(requiredModel: model)
+    }
+
+    /// Model-readiness probe used just before dispatching to the runner. Same `lazy`-for-`self`
+    /// rationale as `llmPreflightCheck`.
+    lazy var modelReadinessCheck: (String) async -> Bool = { [weak self] model in
+        guard let self else { return false }
+        return await self.pythonBridge.waitForModelReadiness(modelName: model)
+    }
+
+    /// Presents the share sheet for a finished document. `lazy` for the same reason as
+    /// `llmPreflightCheck`/`modelReadinessCheck` -- the default forwards to the instance method
+    /// `presentSharePicker(for:)`. Overriding this in tests avoids `shareFinalRedactedCopy`
+    /// opening Finder via `NSWorkspace.activateFileViewerSelecting`.
+    lazy var sharePresenter: (URL) -> Bool = { [weak self] url in
+        self?.presentSharePicker(for: url) ?? false
+    }
+
+    init(powerAssertion: PowerAssertionGuard? = nil, pythonBridge: PythonBridgeService? = nil) {
         // `.shared` is main-actor isolated, so it can't be a default *parameter* value (that
         // default expression is evaluated in a nonisolated context per Swift's isolation rules);
         // resolving it here in the (main-actor) initializer body avoids that warning.
         self.powerAssertion = powerAssertion ?? .shared
+        self.pythonBridge = pythonBridge ?? .shared
         let center = NotificationCenter.default
         let ready = center.addObserver(forName: .pythonRunnerReady, object: nil, queue: .main) { [weak self] _ in
             guard let self else { return }
@@ -204,8 +244,8 @@ final class DocumentRedactionViewModel: ObservableObject {
             }
         }
 
-        pythonBridge.updateRuleFilter(settings.enabledRules)
-        AppDelegate.pythonRunner?.updateRuleFilter(settings.enabledRules)
+        self.pythonBridge.updateRuleFilter(settings.enabledRules)
+        pythonRunner?.updateRuleFilter(settings.enabledRules)
 
         pendingResumeRecord = PendingBatchJobStore.load()
     }
@@ -234,7 +274,7 @@ final class DocumentRedactionViewModel: ObservableObject {
         DebugLogger.shared.log("DocumentRedactionViewModel deallocated", component: "ViewModel")
     }
 
-    private let pythonBridge: PythonBridgeService = .shared
+    private let pythonBridge: PythonBridgeService
     private var processingTasks: [UUID: Task<Void, Never>] = [:]
     private var heartbeatTasks: [UUID: Task<Void, Never>] = [:]
 
@@ -392,7 +432,7 @@ final class DocumentRedactionViewModel: ObservableObject {
 
     func processAllDocuments(to destination: URL? = nil, includeRetryItems: Bool = false) async {
         // Clear any lingering cancellation flags from previous operations
-        AppDelegate.pythonRunner?.clearCancellationRequest()
+        pythonRunner?.clearCancellationRequest()
 
         // Fresh ETA estimation for every run — never persisted across runs or app launches.
         batchProcessingStartTimes.removeAll()
@@ -438,7 +478,7 @@ final class DocumentRedactionViewModel: ObservableObject {
             processedIDs.insert(item.id)
             // CRITICAL: Clear any lingering cancellation state before starting new document
             // This prevents race conditions where the previous document's cleanup affects the next
-            AppDelegate.pythonRunner?.clearCancellationRequest()
+            pythonRunner?.clearCancellationRequest()
             DebugLogger.shared.log(
                 "🔄 Cleared cancellation state before processing: \(item.url.lastPathComponent)",
                 component: "DocumentRedactionViewModel"
@@ -483,7 +523,7 @@ final class DocumentRedactionViewModel: ObservableObject {
             }
 
             // Clear cancellation again after document completion to ensure clean state
-            AppDelegate.pythonRunner?.clearCancellationRequest()
+            pythonRunner?.clearCancellationRequest()
             DebugLogger.shared.log(
                 "🔄 Cleared cancellation state after completing: \(item.url.lastPathComponent)",
                 component: "DocumentRedactionViewModel"
@@ -524,7 +564,7 @@ final class DocumentRedactionViewModel: ObservableObject {
     func scrubMetadataOnly(to destination: URL? = nil, includeRetryItems: Bool = true) async {
         DebugLogger.shared.log("=== scrubMetadataOnly CALLED ===", component: "DocumentRedactionViewModel")
 
-        AppDelegate.pythonRunner?.clearCancellationRequest()
+        pythonRunner?.clearCancellationRequest()
 
         if Task.isCancelled {
             DebugLogger.shared.log("Metadata scrub cancelled before start", component: "DocumentRedactionViewModel")
@@ -590,7 +630,7 @@ final class DocumentRedactionViewModel: ObservableObject {
         DebugLogger.shared.log("=== metadataReportOnly IN-PLACE CALLED ===", component: "DocumentRedactionViewModel")
         clearMetadataReportError()
 
-        AppDelegate.pythonRunner?.clearCancellationRequest()
+        pythonRunner?.clearCancellationRequest()
 
         if Task.isCancelled {
             DebugLogger.shared.log("Metadata report cancelled before start", component: "DocumentRedactionViewModel")
@@ -611,7 +651,7 @@ final class DocumentRedactionViewModel: ObservableObject {
         let metadataSettings = MetadataCleaningSettings.load()
         applyMetadataSettingsEnvironment(metadataSettings, context: "report only")
 
-        guard let runner = AppDelegate.pythonRunner else {
+        guard let runner = pythonRunner else {
             DebugLogger.shared.log(
                 "❌ Python runtime unavailable for metadata report",
                 component: "DocumentRedactionViewModel"
@@ -657,7 +697,7 @@ final class DocumentRedactionViewModel: ObservableObject {
 
     private func generateMetadataReport(
         for item: DocumentItem,
-        runner: PythonKitRunner,
+        runner: any RedactionRunning,
         destination: URL?
     ) async {
         let originalStatus = item.status
@@ -1004,7 +1044,7 @@ final class DocumentRedactionViewModel: ObservableObject {
         let outputFileName = inputURL.deletingPathExtension().lastPathComponent + " " + label + ".docx"
         let outputPath = destination.appendingPathComponent(outputFileName).path
 
-        guard let runner = AppDelegate.pythonRunner else {
+        guard let runner = pythonRunner else {
             DebugLogger.shared.log("❌ Python runtime unavailable", component: "DocumentRedactionViewModel")
             await MainActor.run {
                 item.status = .failed
@@ -1211,14 +1251,14 @@ final class DocumentRedactionViewModel: ObservableObject {
         let useEnhanced = settings.mode.usesLLM
         let modelName = settings.model
         let backend = settings.backend.lowercased()
-        let runnerStatus = AppDelegate.pythonRunner == nil ? "nil" : "ready"
+        let runnerStatus = pythonRunner == nil ? "nil" : "ready"
         DebugLogger.shared.log(
             "Pre-flight: runner=\(runnerStatus) backend=\(backend)",
             component: "DocumentRedactionViewModel"
         )
         logAdvancedSettingsSnapshot(useEnhanced: useEnhanced, modelName: modelName, backend: backend)
 
-        guard let runner = AppDelegate.pythonRunner else {
+        guard let runner = pythonRunner else {
             DebugLogger.shared.log(
                 "❌ Python runtime unavailable; cannot process document",
                 component: "DocumentRedactionViewModel"
@@ -1252,7 +1292,7 @@ final class DocumentRedactionViewModel: ObservableObject {
 
         // Strict Pre-flight Check for Enhanced Mode
         if useEnhanced {
-            let ready = await pythonBridge.ensureOllamaReadyForPythonKit(requiredModel: modelName)
+            let ready = await llmPreflightCheck(modelName)
             if !ready {
                 DebugLogger.shared.log(
                     "❌ Pre-flight failed: Ollama service or model \(modelName) unavailable",
@@ -1388,7 +1428,7 @@ final class DocumentRedactionViewModel: ObservableObject {
         scrubReportPath: String,
         useEnhanced: Bool,
         modelName: String,
-        runner: PythonKitRunner
+        runner: any RedactionRunning
     ) async {
         runner.clearCancellationRequest()
         // Mint a fresh attempt token for this run (see `activeAttemptTokens`) so a stale
@@ -1432,7 +1472,7 @@ final class DocumentRedactionViewModel: ObservableObject {
         applyMetadataSettingsEnvironment(metadataSettings, context: "redaction")
 
         if useEnhanced {
-            let modelReady = await pythonBridge.waitForModelReadiness(modelName: modelName)
+            let modelReady = await modelReadinessCheck(modelName)
             if !modelReady {
                 item.status = .failed
                 item.errorMessage = "Model \(modelName) is not ready yet. Please try again in a moment."
@@ -1604,7 +1644,7 @@ final class DocumentRedactionViewModel: ObservableObject {
                             component: "DocumentRedactionViewModel"
                         )
                         // Dump Ollama logs to see why the runner crashed
-                        PythonBridgeService.shared.dumpOllamaLogs()
+                        self.pythonBridge.dumpOllamaLogs()
                     } else {
                         if currentItem.errorMessage == nil {
                             currentItem.errorMessage = FailureMessagePresenter.message(forCode: nil)
@@ -1633,7 +1673,7 @@ final class DocumentRedactionViewModel: ObservableObject {
 
     private func awaitPythonOutcome(
         _ resultTask: Task<PythonRunOutcome, Never>,
-        runner: PythonKitRunner
+        runner: any RedactionRunning
     ) async -> PythonRunOutcome {
         if Task.isCancelled {
             resultTask.cancel()
@@ -1650,7 +1690,7 @@ final class DocumentRedactionViewModel: ObservableObject {
     }
 
     func stopProcessing() {
-        if !processingTasks.isEmpty, let runner = AppDelegate.pythonRunner {
+        if !processingTasks.isEmpty, let runner = pythonRunner {
             runner.cancelCurrentOperation(source: "stopProcessing_userStop")
         }
         // Cancel all running tasks
@@ -1678,7 +1718,7 @@ final class DocumentRedactionViewModel: ObservableObject {
             task.cancel()
         }
         heartbeatTasks.removeAll()
-        AppDelegate.pythonRunner?.clearCancellationRequest()
+        pythonRunner?.clearCancellationRequest()
         updateState()
         updateBatchETA()
     }
@@ -1834,7 +1874,7 @@ final class DocumentRedactionViewModel: ObservableObject {
 
         settings = record.settings
         pythonBridge.updateRuleFilter(settings.enabledRules)
-        AppDelegate.pythonRunner?.updateRuleFilter(settings.enabledRules)
+        pythonRunner?.updateRuleFilter(settings.enabledRules)
 
         let urls = record.documentPaths.map { URL(fileURLWithPath: $0) }
         add(urls: urls)
@@ -1876,7 +1916,7 @@ final class DocumentRedactionViewModel: ObservableObject {
             processingTasks.removeValue(forKey: item.id)
         }
         if item.status.isProcessing {
-            AppDelegate.pythonRunner?.cancelCurrentOperation(source: "removeDocument_itemProcessing")
+            pythonRunner?.cancelCurrentOperation(source: "removeDocument_itemProcessing")
         }
         if let hbTask = heartbeatTasks[item.id] {
             hbTask.cancel()
@@ -1946,7 +1986,7 @@ final class DocumentRedactionViewModel: ObservableObject {
         alert.addButton(withTitle: "Cancel")
 
         guard alert.runModal() == .alertFirstButtonReturn else { return false }
-        return presentSharePicker(for: url)
+        return sharePresenter(url)
     }
 
     private func shareFinalRedactedCopy(_ item: DocumentItem) async {
@@ -1954,7 +1994,7 @@ final class DocumentRedactionViewModel: ObservableObject {
             item.errorMessage = "No DOCX output is available to finalize."
             return
         }
-        guard let runner = AppDelegate.pythonRunner else {
+        guard let runner = pythonRunner else {
             item.errorMessage = "The Python runtime is not available to finalize this document."
             return
         }
@@ -1982,7 +2022,7 @@ final class DocumentRedactionViewModel: ObservableObject {
                 return
             }
             item.errorMessage = nil
-            _ = presentSharePicker(for: finalURL)
+            _ = sharePresenter(finalURL)
         } catch {
             item.errorMessage = "Unable to create the final redacted copy: \(error.localizedDescription)"
             try? FileManager.default.removeItem(at: finalURL)
@@ -2364,7 +2404,7 @@ final class DocumentRedactionViewModel: ObservableObject {
         pythonBridge.updateRuleFilter(newSettings.enabledRules)
 
         // Also update the rule filter in PythonKitRunner since that's what actually processes documents
-        AppDelegate.pythonRunner?.updateRuleFilter(newSettings.enabledRules)
+        pythonRunner?.updateRuleFilter(newSettings.enabledRules)
     }
 
     private func applyAdvancedModeDefaultsIfNeeded() {
@@ -2738,7 +2778,7 @@ final class DocumentRedactionViewModel: ObservableObject {
         var diagnostics: [String: String] = [:]
 
         diagnostics["framework_available"] = frameworkAvailable ? "✅ Yes" : "❌ No"
-        diagnostics["framework_path"] = AppDelegate.pythonRunner != nil ? "PythonKit + BeeWare framework" : "PythonKit not available"
+        diagnostics["framework_path"] = pythonRunner != nil ? "PythonKit + BeeWare framework" : "PythonKit not available"
         diagnostics["ollama_running"] = pythonBridge.isOllamaRunning ? "✅ Yes" : "❌ No"
         diagnostics["ollama_binary"] = getOllamaPath() ?? "Not found"
         diagnostics["installed_models"] = "\(pythonBridge.installedModels.count) total"
@@ -2819,7 +2859,7 @@ final class DocumentRedactionViewModel: ObservableObject {
         }
 
         // Check PythonKit + BeeWare framework availability OR CLI subprocess availability
-        let pythonKitAvailable = AppDelegate.pythonRunner != nil
+        let pythonKitAvailable = pythonRunner != nil
         let cliScriptAvailable = Bundle.main.path(forResource: "marcut_cli_launcher", ofType: "sh") != nil
 
         // Framework is available if either PythonKit works OR CLI script is available
@@ -2977,7 +3017,7 @@ final class DocumentRedactionViewModel: ObservableObject {
 
     private func generateScrubHTMLIfMissing(at jsonURL: URL) async -> URL? {
         guard FileManager.default.fileExists(atPath: jsonURL.path) else { return nil }
-        guard let runner = AppDelegate.pythonRunner else { return nil }
+        guard let runner = pythonRunner else { return nil }
 
         if let htmlPath = await runner.generateScrubHTML(from: jsonURL.path), !htmlPath.isEmpty {
             let htmlURL = URL(fileURLWithPath: htmlPath)
@@ -3112,7 +3152,7 @@ extension DocumentRedactionViewModel {
         item.status = .failed
         item.errorMessage = Self.processingStalledMessage
         activeAttemptTokens.removeValue(forKey: item.id)
-        AppDelegate.pythonRunner?.cancelCurrentOperation(source: "heartbeat_watchdog_stall")
+        pythonRunner?.cancelCurrentOperation(source: "heartbeat_watchdog_stall")
         DebugLogger.shared.log(
             "❌ Heartbeat watchdog marked \(item.url.lastPathComponent) failed (processing stalled)",
             component: "HeartbeatWatchdog"
@@ -3175,7 +3215,7 @@ extension DocumentRedactionViewModel {
             activeAttemptTokens.removeValue(forKey: item.id)
             finalizeProcessing(for: item)
         }
-        AppDelegate.pythonRunner?.cancelCurrentOperation(source: "system_wake_health_check_failed")
+        pythonRunner?.cancelCurrentOperation(source: "system_wake_health_check_failed")
     }
 }
 

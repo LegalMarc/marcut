@@ -4,7 +4,13 @@ Status: Design spike (no code changes). Companion to issue #24. Prereq 1
 (#97 -- `PermissionManager` safe under `swift test`) is done: constructing
 `SettingsView` and calling `DocumentRedactionViewModel.processAllDocuments`
 no longer aborts the test process. The two references below to that crash
-risk are now historical; see the note after each.
+risk are now historical; see the note after each. Prereq 2 (#98) is also
+done: `DocumentRedactionViewModel`'s dependency on the embedded Python
+runner, the Ollama bridge, and the share sheet is now injectable
+(`RedactionRunning.swift`, `runnerProvider`, `llmPreflightCheck`,
+`modelReadinessCheck`, `sharePresenter`), with zero behavior change, so a
+recording fake can stand in for `PythonKitRunner` in the golden harness
+(#100).
 
 ## Goal
 

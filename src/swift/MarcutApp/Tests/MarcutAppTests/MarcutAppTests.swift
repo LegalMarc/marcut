@@ -2214,6 +2214,84 @@ final class MarcutAppTests: XCTestCase {
         XCTAssertEqual(item.errorMessage, DocumentRedactionViewModel.wakeHealthCheckFailedMessage)
     }
 
+    // MARK: - RedactionRunning Injection Tests (issue #98)
+
+    /// Minimal `RedactionRunning` fake -- records the last call made to it rather than doing
+    /// anything real, so tests can inject it through `runnerProvider` without constructing a
+    /// `PythonKitRunner` (which starts a worker thread and the embedded interpreter, and so
+    /// cannot be built under `swift test`).
+    private final class FakeRedactionRunner: RedactionRunning {
+        private(set) var updateRuleFilterCalls: [Set<RedactionRule>] = []
+
+        func runEnhancedOllamaWithProgress(
+            inputPath _: String,
+            outputPath _: String,
+            reportPath _: String,
+            model _: String,
+            debug _: Bool,
+            mode _: String,
+            llmSkipConfidence _: Double,
+            llmConcurrency _: Int,
+            chunkTokens _: Int,
+            overlap _: Int,
+            temperature _: Double,
+            seed _: Int,
+            processingStepTimeout _: TimeInterval?,
+            cancellationChecker _: @escaping () -> Bool
+        ) -> (stream: AsyncStream<PythonRunnerProgressUpdate>, result: Task<PythonRunOutcome, Never>) {
+            let stream = AsyncStream<PythonRunnerProgressUpdate> { $0.finish() }
+            let task = Task<PythonRunOutcome, Never> { .success }
+            return (stream: stream, result: task)
+        }
+
+        func scrubMetadataOnlyAsync(
+            inputPath _: String,
+            outputPath _: String
+        ) async throws -> (success: Bool, error: String?, report: [String: Any]?) {
+            (success: true, error: nil, report: nil)
+        }
+
+        func metadataReportOnlyAsync(
+            inputPath _: String,
+            reportPath _: String
+        ) async throws -> (success: Bool, error: String?, report: [String: Any]?, htmlPath: String?) {
+            (success: true, error: nil, report: nil, htmlPath: nil)
+        }
+
+        func generateScrubHTML(from _: String) async -> String? {
+            nil
+        }
+
+        func clearCancellationRequest() {}
+
+        func cancelCurrentOperation(source _: String) {}
+
+        func updateRuleFilter(_ rules: Set<RedactionRule>) {
+            updateRuleFilterCalls.append(rules)
+        }
+    }
+
+    /// `updateSettings(_:)` must dispatch the new rule filter to the injected runner (not just
+    /// `pythonBridge`) through `runnerProvider` -- the seam #98 adds so a recording fake can
+    /// stand in for the real `PythonKitRunner` in the golden harness (#100).
+    func testUpdateSettingsDispatchesRuleFilterToInjectedRunner() {
+        let viewModel = DocumentRedactionViewModel(powerAssertion: PowerAssertionGuard(
+            acquire: { _ in 1 },
+            release: { _ in }
+        ))
+        let fakeRunner = FakeRedactionRunner()
+        viewModel.runnerProvider = { [weak fakeRunner] in fakeRunner }
+
+        var newSettings = RedactionSettings()
+        newSettings.enabledRules = [.email, .phone]
+        viewModel.updateSettings(newSettings)
+
+        XCTAssertEqual(
+            fakeRunner.updateRuleFilterCalls, [[.email, .phone]],
+            "updateSettings must call updateRuleFilter on the runner resolved via runnerProvider exactly once"
+        )
+    }
+
     // MARK: - Failure Report Decoding Tests (issue #89 / bridge schema step 2)
 
     /// A well-formed failure report -- matching the pydantic `FailureReport` model -- must
