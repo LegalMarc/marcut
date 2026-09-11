@@ -1,6 +1,5 @@
 import AppKit
 import SwiftUI
-import UniformTypeIdentifiers
 
 struct SettingsView: View {
     @ObservedObject var viewModel: DocumentRedactionViewModel
@@ -10,21 +9,14 @@ struct SettingsView: View {
     @State private var searchQuery = ""
     @State private var pendingManageModels = false
     @State private var pendingDownloadModel: String? = nil
-    @State private var showingExcludedWordsEditor = false
-    @State private var showingSystemPromptEditor = false
     @State private var showingMetadataEditor = false
     @State private var showingLogViewer = false
     @State private var metadataSettings = MetadataCleaningSettings.load()
-    @State private var isCustomExcludedWords = UserOverridesManager.shared.hasCustomExcludedWords
-    @State private var isCustomSystemPrompt = UserOverridesManager.shared.hasCustomSystemPrompt
-    @State private var excludedWordsDraft = ""
-    @State private var excludedWordsBaseline = ""
-    @State private var systemPromptDraft = ""
-    @State private var systemPromptBaseline = ""
-    @State private var overrideErrorMessage: String?
+    @StateObject private var overridesController = SettingsOverridesController()
     @State private var downloadsAccessError: String?
     @State private var profileErrorMessage: String?
     @State private var profileImportSucceeded = false
+    private let profileIO = SettingsProfileIO()
     @AppStorage(DefaultsKey.advancedModeEnabled.key) private var isAdvancedModeEnabled = true
     @AppStorage(DefaultsKey.advancedAIMode.key) private var advancedAIModeRaw = RedactionMode.rulesOverride.rawValue
     @AppStorage(DefaultsKey.advancedLLMConfidence.key) private var advancedLlmConfidence = RedactionSettings
@@ -35,7 +27,6 @@ struct SettingsView: View {
         UnsavedReportQuitBehavior.warn.rawValue
     @AppStorage(DefaultsKey.appTheme.key) private var appThemeRaw = AppTheme.system.rawValue
     @ObservedObject private var permissionManager = PermissionManager.shared
-    private let overridesManager = UserOverridesManager.shared
 
     private var outputSaveLocationBinding: Binding<OutputSaveLocation> {
         Binding(
@@ -261,25 +252,25 @@ struct SettingsView: View {
                 }
             }
         }
-        .sheet(isPresented: $showingExcludedWordsEditor) {
+        .sheet(isPresented: $overridesController.showingExcludedWordsEditor) {
             OverrideEditorSheet(
                 title: "Edit Excluded Terms",
                 description: "Terms listed here will never be redacted. Matching is case-insensitive, ignores leading determiners (the/a/an/etc.), and treats simple plurals as equivalent (trailing s, (s), or ies -> y). Regex patterns are supported (case-insensitive). In Rules Only and guardrailed Rules + AI modes (Rules Override, Constrained Overrides), ORG/NAME/LOC spans made up only of excluded words and connectors are skipped to prevent over-redaction of legal defined terms.\n\nOne term or regex per line. Comments starting with # are ignored.",
-                text: $excludedWordsDraft,
-                onCancel: { cancelExcludedWordsEditing() },
-                onSave: { saveExcludedWords() },
-                onRestoreDefaults: { restoreExcludedWordsDefaults() },
+                text: $overridesController.excludedWordsDraft,
+                onCancel: { overridesController.cancelExcludedWordsEditing() },
+                onSave: { overridesController.saveExcludedWords() },
+                onRestoreDefaults: { overridesController.restoreExcludedWordsDefaults() },
                 showsMatchPreview: true
             )
         }
-        .sheet(isPresented: $showingSystemPromptEditor) {
+        .sheet(isPresented: $overridesController.showingSystemPromptEditor) {
             OverrideEditorSheet(
                 title: "Edit AI System Prompt",
                 description: "Customize the instruction sent to the language model. Keep the guidance focused on redaction accuracy. Warning: LLM processing time is highly sensitive to prompt length.",
-                text: $systemPromptDraft,
-                onCancel: { cancelSystemPromptEditing() },
-                onSave: { saveSystemPrompt() },
-                onRestoreDefaults: { restoreSystemPromptDefaults() }
+                text: $overridesController.systemPromptDraft,
+                onCancel: { overridesController.cancelSystemPromptEditing() },
+                onSave: { overridesController.saveSystemPrompt() },
+                onRestoreDefaults: { overridesController.restoreSystemPromptDefaults() }
             )
         }
         .sheet(isPresented: $showingMetadataEditor) {
@@ -288,7 +279,11 @@ struct SettingsView: View {
         .sheet(isPresented: $showingLogViewer) {
             LogViewerSheet()
         }
-        .alert("Override Error", isPresented: overrideErrorBinding, presenting: overrideErrorMessage) { _ in
+        .alert(
+            "Override Error",
+            isPresented: overrideErrorBinding,
+            presenting: overridesController.overrideErrorMessage
+        ) { _ in
             Button("OK", role: .cancel) {}
                 .accessibilityIdentifier("settings.overrideError.ok")
         } message: { message in
@@ -549,7 +544,7 @@ struct SettingsView: View {
                         Text("Excluded Terms")
                             .font(.system(size: 14, weight: .medium))
                         Spacer()
-                        if isCustomExcludedWords {
+                        if overridesController.isCustomExcludedWords {
                             Text("Custom List")
                                 .font(.caption2)
                                 .padding(.horizontal, 6)
@@ -573,16 +568,16 @@ struct SettingsView: View {
                         .foregroundColor(CustomColors.secondaryText(for: colorScheme))
 
                     HStack {
-                        Button(isCustomExcludedWords ? "Edit Custom List…" : "Customize…") {
-                            openExcludedWordsEditor()
+                        Button(overridesController.isCustomExcludedWords ? "Edit Custom List…" : "Customize…") {
+                            overridesController.openExcludedWordsEditor()
                         }
                         .buttonStyle(.bordered)
                         .controlSize(.small)
                         .accessibilityIdentifier("settings.excludedWords.edit")
 
-                        if isCustomExcludedWords {
+                        if overridesController.isCustomExcludedWords {
                             Button("Reset to Defaults") {
-                                resetExcludedWordsToDefault()
+                                overridesController.resetExcludedWordsToDefault()
                             }
                             .buttonStyle(.bordered)
                             .controlSize(.small)
@@ -715,7 +710,7 @@ struct SettingsView: View {
                         Text("AI System Prompt")
                             .font(.system(size: 13, weight: .medium))
                         Spacer()
-                        if isCustomSystemPrompt {
+                        if overridesController.isCustomSystemPrompt {
                             Text("Custom")
                                 .font(.caption2)
                                 .padding(.horizontal, 6)
@@ -735,16 +730,18 @@ struct SettingsView: View {
                     }
 
                     HStack(spacing: 8) {
-                        Button(isCustomSystemPrompt ? "Edit Custom Prompt…" : "Customize Prompt…") {
-                            openSystemPromptEditor()
+                        Button(
+                            overridesController.isCustomSystemPrompt ? "Edit Custom Prompt…" : "Customize Prompt…"
+                        ) {
+                            overridesController.openSystemPromptEditor()
                         }
                         .buttonStyle(.bordered)
                         .controlSize(.small)
                         .accessibilityIdentifier("settings.systemPrompt.edit")
 
-                        if isCustomSystemPrompt {
+                        if overridesController.isCustomSystemPrompt {
                             Button("Reset to Defaults") {
-                                resetSystemPromptToDefault()
+                                overridesController.resetSystemPromptToDefault()
                             }
                             .buttonStyle(.bordered)
                             .controlSize(.small)
@@ -1080,10 +1077,10 @@ struct SettingsView: View {
 
     private var overrideErrorBinding: Binding<Bool> {
         Binding(
-            get: { overrideErrorMessage != nil },
+            get: { overridesController.overrideErrorMessage != nil },
             set: {
                 if !$0 {
-                    overrideErrorMessage = nil
+                    overridesController.overrideErrorMessage = nil
                 }
             }
         )
@@ -1104,60 +1101,14 @@ struct SettingsView: View {
 
     private func exportSettingsProfile() {
         let profile = RedactionProfile(metadataCleaningSettings: metadataSettings, redactionSettings: localSettings)
-
-        let data: Data
-        do {
-            data = try profile.encoded()
-        } catch {
-            profileErrorMessage = "Could not prepare the profile for export: \(error.localizedDescription)"
-            return
-        }
-
-        let panel = NSSavePanel()
-        panel.title = "Export Settings Profile"
-        panel.nameFieldStringValue = "Marcut Settings Profile.json"
-        panel.allowedContentTypes = [UTType.json]
-        panel.canCreateDirectories = true
-        panel.directoryURL = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first
-
-        guard panel.runModal() == .OK, let destinationURL = panel.url else { return }
-
-        let securityScopedURL = destinationURL.deletingLastPathComponent()
-        let didStartAccess = securityScopedURL.startAccessingSecurityScopedResource()
-        defer {
-            if didStartAccess {
-                securityScopedURL.stopAccessingSecurityScopedResource()
-            }
-        }
-
-        do {
-            try data.write(to: destinationURL, options: .atomic)
-        } catch {
-            profileErrorMessage = "Could not write the profile file: \(error.localizedDescription)"
+        if let error = profileIO.exportProfile(profile) {
+            profileErrorMessage = error
         }
     }
 
     private func importSettingsProfile() {
-        let panel = NSOpenPanel()
-        panel.title = "Import Settings Profile"
-        panel.canChooseDirectories = false
-        panel.canChooseFiles = true
-        panel.allowsMultipleSelection = false
-        panel.allowedContentTypes = [UTType.json]
-        panel.directoryURL = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first
-
-        guard panel.runModal() == .OK, let sourceURL = panel.url else { return }
-
-        let didStartAccess = sourceURL.startAccessingSecurityScopedResource()
-        defer {
-            if didStartAccess {
-                sourceURL.stopAccessingSecurityScopedResource()
-            }
-        }
-
         do {
-            let data = try Data(contentsOf: sourceURL)
-            let profile = try RedactionProfile.decoded(from: data)
+            guard let profile = try profileIO.importProfile() else { return }
             // Replace current values wholesale — no merging with existing settings.
             localSettings = profile.redactionSettings
             metadataSettings = profile.metadataCleaningSettings
@@ -1264,81 +1215,5 @@ struct SettingsView: View {
         case .rules:
             "Rules Only"
         }
-    }
-
-    private func openExcludedWordsEditor() {
-        do {
-            let text = try overridesManager.loadExcludedWords()
-            excludedWordsBaseline = text
-            excludedWordsDraft = text
-            showingExcludedWordsEditor = true
-        } catch {
-            overrideErrorMessage = error.localizedDescription
-        }
-    }
-
-    private func openSystemPromptEditor() {
-        do {
-            let text = try overridesManager.loadSystemPrompt()
-            systemPromptBaseline = text
-            systemPromptDraft = text
-            showingSystemPromptEditor = true
-        } catch {
-            overrideErrorMessage = error.localizedDescription
-        }
-    }
-
-    private func saveExcludedWords() {
-        do {
-            try overridesManager.saveExcludedWords(excludedWordsDraft)
-            excludedWordsBaseline = excludedWordsDraft
-            showingExcludedWordsEditor = false
-            isCustomExcludedWords = true
-        } catch {
-            overrideErrorMessage = error.localizedDescription
-        }
-    }
-
-    private func resetExcludedWordsToDefault() {
-        overridesManager.restoreDefaultExcludedWords()
-        isCustomExcludedWords = false
-    }
-
-    private func cancelExcludedWordsEditing() {
-        excludedWordsDraft = excludedWordsBaseline
-        showingExcludedWordsEditor = false
-    }
-
-    private func restoreExcludedWordsDefaults() {
-        do {
-            excludedWordsDraft = try overridesManager.defaultExcludedWords()
-        } catch {
-            overrideErrorMessage = error.localizedDescription
-        }
-    }
-
-    private func saveSystemPrompt() {
-        do {
-            try overridesManager.saveSystemPrompt(systemPromptDraft)
-            systemPromptBaseline = systemPromptDraft
-            showingSystemPromptEditor = false
-            isCustomSystemPrompt = true
-        } catch {
-            overrideErrorMessage = error.localizedDescription
-        }
-    }
-
-    private func resetSystemPromptToDefault() {
-        overridesManager.restoreDefaultSystemPrompt()
-        isCustomSystemPrompt = false
-    }
-
-    private func cancelSystemPromptEditing() {
-        systemPromptDraft = systemPromptBaseline
-        showingSystemPromptEditor = false
-    }
-
-    private func restoreSystemPromptDefaults() {
-        systemPromptDraft = overridesManager.defaultSystemPromptText()
     }
 }

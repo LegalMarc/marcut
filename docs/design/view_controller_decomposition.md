@@ -253,11 +253,19 @@ DocumentRedactionViewModel (stays, ~400–500 lines)
 ```
 SettingsView.swift (2,136 lines: form layout + search)
 ├── AppTheme.swift — done (#103): moved, no logic change
-├── SettingsProfileIO (NEW file) — exportSettingsProfile, importSettingsProfile
-├── OverrideEditingViewModel or SettingsOverridesController (NEW) — excluded-words
-│   and system-prompt open/save/cancel/restore functions, backed by
-│   UserOverridesManager.shared (already a singleton service — this mostly
-│   moves @State-driven glue code, not logic)
+├── SettingsProfileIO.swift — done (#108): exportSettingsProfile/importSettingsProfile
+│   moved verbatim, with panel presentation made injectable (`presentSavePanel`/
+│   `presentOpenPanel` closures defaulting to a real NSSavePanel/NSOpenPanel) so the
+│   encode/write and read/decode paths are testable without driving a modal panel;
+│   SettingsView keeps localSettings/metadataSettings/profileErrorMessage/
+│   profileImportSucceeded since they're core view state read elsewhere too
+├── SettingsOverridesController.swift — done (#108): excluded-words and system-prompt
+│   open/save/cancel/restore functions plus their draft/baseline/flag state moved into
+│   an `ObservableObject`, backed by UserOverridesManager.shared (already a singleton
+│   service — this mostly moved @State-driven glue code, not logic); SettingsView binds
+│   to it via `@StateObject` since (unlike the view-model collaborators in §2.1, which
+│   keep @Published state on DocumentRedactionViewModel) SettingsView has no separate
+│   model object of its own to hold that state
 ├── AdvancedModeDefaultsMigrator (NEW, shared) — the UserDefaults
 │   seeding/migration block from SettingsView.init AND
 │   DocumentRedactionViewModel.applyAdvancedModeDefaultsIfNeeded, unified
