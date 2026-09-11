@@ -34,7 +34,7 @@ import concurrent.futures
 from dataclasses import dataclass
 from .cancellation import ProcessingDeadlineExceeded, check_processing_deadline, remaining_seconds
 from .model_config import uses_llama_cpp_backend
-from .progress import validate_mass_event
+from .progress import serialize_mass_event, validate_mass_event
 from .rationale import RationaleOrigin, rationale_mentions_text
 from .model import (
     parse_llm_response,
@@ -1217,9 +1217,13 @@ class IntelligentRedactionPipeline:
             # Only `mass_total`/`chunk_start`/`chunk_end` propagate to the
             # caller. Tests must therefore assert on emitted events, never
             # rely on a green run to prove a payload validated.
-            validate_mass_event(payload)
+            validated_event = validate_mass_event(payload)
             try:
-                message = json.dumps(payload)
+                # Serialize the validated model, not the input `payload`
+                # dict, so a value pydantic coerced on the way in crosses
+                # the bridge in its coerced form (#95) -- see
+                # serialize_mass_event's docstring.
+                message = serialize_mass_event(validated_event)
                 display = status_message or message
                 # Tracker dispatch is best-effort and guarded on its own --
                 # ProgressUpdate is a pydantic dataclass (bridge schema

@@ -2,6 +2,7 @@
 Tests for the progress.py module - progress tracking and time estimation.
 """
 
+import json
 import os
 import re
 import time
@@ -15,6 +16,7 @@ from marcut.progress import (
     TimeEstimator, ProgressUpdate, ProgressTracker,
     create_progress_callback,
     MassEvent, SWIFT_HANDLED_MASS_EVENT_TYPES, validate_mass_event,
+    serialize_mass_event,
 )
 
 REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
@@ -524,3 +526,70 @@ class TestMassEventModels:
         swift_types = _swift_handled_mass_event_types()
         assert model_types == swift_types
         assert SWIFT_HANDLED_MASS_EVENT_TYPES == swift_types
+
+
+class TestSerializeMassEvent:
+    """`serialize_mass_event` serializes the *validated* model, not the
+    raw input dict `emit_mass_event` was handed (issue #95). Pydantic's
+    coercion is lax, so a payload like `{"value": "4200"}` validates but,
+    serialized as the original dict, would carry the string across the
+    bridge where Swift expects a number.
+
+    One case per real emit site pins that the change is a no-op for every
+    payload shape those sites actually produce (`model_enhanced.py`'s
+    `emit_mass_event` call sites); the coercion case proves the guard
+    actually does something."""
+
+    def test_mass_total_byte_identical(self):
+        payload = {"type": "mass_total", "value": 4200}
+        assert serialize_mass_event(validate_mass_event(payload)) == json.dumps(payload)
+
+    def test_chunk_start_byte_identical(self):
+        payload = {"type": "chunk_start", "size": 500, "estimated_time": 30.0}
+        assert serialize_mass_event(validate_mass_event(payload)) == json.dumps(payload)
+
+    def test_chunk_end_byte_identical(self):
+        payload = {"type": "chunk_end", "size": 500}
+        assert serialize_mass_event(validate_mass_event(payload)) == json.dumps(payload)
+
+    def test_keepalive_without_chunk_info_byte_identical(self):
+        """The keepalive emit site only adds `chunk`/`total` keys once a
+        chunk is in flight -- confirm the omitted-key shape round-trips
+        without picking up explicit `null`s from the optional fields'
+        defaults."""
+        payload = {"type": "keepalive", "message": "AI processing..."}
+        assert serialize_mass_event(validate_mass_event(payload)) == json.dumps(payload)
+
+    def test_keepalive_with_chunk_info_byte_identical(self):
+        payload = {
+            "type": "keepalive", "message": "still running", "chunk": 2, "total": 5,
+        }
+        assert serialize_mass_event(validate_mass_event(payload)) == json.dumps(payload)
+
+    def test_token_progress_with_eval_count_byte_identical(self):
+        payload = {
+            "type": "token_progress", "chunk_index": 0, "chars": 120, "eval_count": 30,
+        }
+        assert serialize_mass_event(validate_mass_event(payload)) == json.dumps(payload)
+
+    def test_token_progress_without_eval_count_byte_identical(self):
+        """The emit site always passes `eval_count` explicitly (`None` on
+        every intermediate streamed line), unlike keepalive's omitted
+        optional fields -- confirm that explicit `null` is preserved rather
+        than dropped by `exclude_unset`."""
+        payload = {
+            "type": "token_progress", "chunk_index": 0, "chars": 120, "eval_count": None,
+        }
+        assert serialize_mass_event(validate_mass_event(payload)) == json.dumps(payload)
+
+    def test_coercible_wrong_typed_value_emits_coerced_value(self):
+        """The bug this ticket closes: a numeric string in a field pydantic
+        types as `int` validates (lax coercion) but, serialized from the
+        original dict, would still carry the string. Serializing the
+        validated model must emit the coerced int instead."""
+        payload = {"type": "mass_total", "value": "4200"}
+        raw = json.dumps(payload)
+        coerced = serialize_mass_event(validate_mass_event(payload))
+        assert coerced != raw
+        assert json.loads(coerced)["value"] == 4200
+        assert isinstance(json.loads(coerced)["value"], int)

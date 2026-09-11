@@ -2,6 +2,7 @@
 Progress tracking and time estimation for Marcut redaction pipeline.
 """
 
+import json
 import time
 from typing import Annotated, Any, Callable, Dict, Literal, Optional, Union
 from dataclasses import dataclass
@@ -259,6 +260,27 @@ def validate_mass_event(payload: Dict[str, Any]) -> MassEvent:
     per-call model construction beyond what validation itself requires.
     """
     return _MASS_EVENT_ADAPTER.validate_python(payload)
+
+
+def serialize_mass_event(event: MassEvent) -> str:
+    """Serialize an already-validated `MassEvent` for the stdout mass-event
+    channel the Swift bridge reads.
+
+    Callers used to serialize the raw input dict they handed to
+    `validate_mass_event` instead of the validated model it returned (#95).
+    Pydantic's default coercion is lax -- a payload like
+    `{"type": "mass_total", "value": "4200"}` validates cleanly (the string
+    coerces to an int) -- so serializing the original dict let an
+    uncoerced value cross the bridge even though validation "passed".
+    Serializing the model here closes that gap.
+
+    `exclude_unset=True` reproduces `json.dumps(payload)`'s behavior of
+    omitting fields the caller never included (e.g. `KeepaliveEvent`'s
+    optional `chunk`/`total` when no chunk is in flight yet) rather than
+    emitting them as explicit `null`s that were never in the original
+    payload.
+    """
+    return json.dumps(event.model_dump(exclude_unset=True))
 
 
 class ProgressTracker:
