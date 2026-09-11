@@ -2,7 +2,7 @@ import Foundation
 
 /// A single completed-document sample used to estimate batch processing throughput.
 ///
-/// `size` is a relative work signal — `DocumentRedactionViewModel.documentSizeSignal(for:)`
+/// `size` is a relative work signal — `ProgressMonitor.documentSizeSignal(for:)`
 /// prefers a document's extracted word count (a much better proxy for rules/LLM processing
 /// cost than raw file bytes, since a DOCX's compressed byte size can vary independently of
 /// its actual text content) and falls back to file byte size when word count isn't available.

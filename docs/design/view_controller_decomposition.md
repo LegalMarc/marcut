@@ -465,11 +465,24 @@ depend on the characterization tests from §3.2 landing first.
    download → complete) is deferred to the next release's smoke check per
    #103's notes, since it has no automated coverage today per §3.1.
 
-3. **`ProgressMonitor` extraction** (`mapPhaseToStage`, `extractChunkInfo`,
-   ETA math) — these are the most nearly-pure functions in
-   `DocumentRedactionViewModel`. Add characterization tests (§3.2 items 2–3)
-   in a preceding PR, then extract into a `ProgressMonitor` type owned by
-   the view model. Verification per §3.3.
+3. **`ProgressMonitor` extraction** — **done (#104)**: heartbeat/stall
+   watchdog (`ensureHeartbeatMonitorRunning`, `failStalledDocument`) and
+   batch-ETA estimation (`recordBatchETASample`, `updateBatchETA`,
+   `documentSizeSignal`), plus progress mapping (`applyPythonKitProgress`,
+   `mapPhaseToStage`, `extractChunkInfo`) — these were the most
+   nearly-pure functions in `DocumentRedactionViewModel` — moved into a
+   `ProgressMonitor` type owned by the view model via constructor closures
+   (an items snapshot, `hasProcessingDocuments`, a "fail this item"
+   callback, and a `batchETA` sink), so the collaborator never reaches
+   back into the view model. `activeAttemptTokens` stays on the view model
+   until #111 per the issue's own note. Progress-mapping's `private
+   extension` visibility gap (blocking `@testable import` coverage,
+   flagged in `ViewModelCharacterizationTests.swift`) was incidentally
+   resolved by the move: those methods are now ordinary internal instance
+   methods on `ProgressMonitor`. Verification per §3.3: `swift build` +
+   `swift test` green, zero golden diffs, #101's ETA characterization
+   tests pass with call sites routed through `viewModel.progressMonitor`
+   (construction-only changes, no assertions changed).
 
 4. **`EnvironmentDiagnosticsService` extraction** — mostly thin
    forwarding to `pythonBridge`/`AppDelegate.pythonRunner` already;

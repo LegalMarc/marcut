@@ -176,6 +176,25 @@ final class DocumentRedactionViewModel: ObservableObject {
         self?.presentSharePicker(for: url) ?? false
     }
 
+    /// Heartbeat watchdog (B1) + batch-ETA collaborator
+    /// (`docs/design/view_controller_decomposition.md` §2.1, slice 3). `lazy` for the same
+    /// two-phase-init reason as `llmPreflightCheck`/`modelReadinessCheck`/`sharePresenter` above --
+    /// its closures capture `self` weakly and read/write state (`items`, `hasProcessingDocuments`,
+    /// `activeAttemptTokens`, `pythonRunner`, `batchETA`) that isn't available at property-default
+    /// evaluation time. `activeAttemptTokens` stays here rather than moving with the rest of the
+    /// heartbeat state until #111.
+    lazy var progressMonitor = ProgressMonitor(
+        itemsProvider: { [weak self] in self?.items ?? [] },
+        hasProcessingDocuments: { [weak self] in self?.hasProcessingDocuments ?? false },
+        failItem: { [weak self] item in
+            guard let self else { return }
+            self.activeAttemptTokens.removeValue(forKey: item.id)
+            self.pythonRunner?.cancelCurrentOperation(source: "heartbeat_watchdog_stall")
+            self.finalizeProcessing(for: item)
+        },
+        batchETASink: { [weak self] eta in self?.batchETA = eta }
+    )
+
     init(
         powerAssertion: PowerAssertionGuard? = nil,
         pythonBridge: PythonBridgeService? = nil,
@@ -262,11 +281,6 @@ final class DocumentRedactionViewModel: ObservableObject {
         }
         processingTasks.removeAll()
 
-        for (_, task) in heartbeatTasks {
-            task.cancel()
-        }
-        heartbeatTasks.removeAll()
-
         for token in pythonInitObservers {
             NotificationCenter.default.removeObserver(token)
         }
@@ -286,7 +300,6 @@ final class DocumentRedactionViewModel: ObservableObject {
     /// production; every call site keeps its plain-argument form unchanged.
     let defaults: UserDefaults
     private var processingTasks: [UUID: Task<Void, Never>] = [:]
-    private var heartbeatTasks: [UUID: Task<Void, Never>] = [:]
 
     /// Identifies the *current* processing attempt for a document, keyed by item id. A fresh
     /// token is minted each time `processDocumentWithPythonKit` starts a run. The completion
@@ -301,19 +314,6 @@ final class DocumentRedactionViewModel: ObservableObject {
     /// would silently overwrite the newer attempt's live status.
     private var activeAttemptTokens: [UUID: UUID] = [:]
 
-    // MARK: - Batch ETA Tracking
-
-    /// Wall-clock time each document started processing in the current run, keyed by item id.
-    /// Used to compute a per-document duration sample once the document reaches a terminal state.
-    var batchProcessingStartTimes: [UUID: Date] = [:]
-    /// (duration, size) samples for documents completed so far in the current run. Reset at the
-    /// start of every `processAllDocuments` call.
-    var batchETASamples: [BatchETASample] = []
-    private let heartbeatTimeout: TimeInterval = 120.0
-    /// How often the heartbeat watchdog re-checks a processing document for staleness. Small
-    /// relative to `heartbeatTimeout` so a stall is reported soon after crossing the threshold,
-    /// without busy-polling.
-    private let heartbeatPollInterval: TimeInterval = 5.0
     /// Shown when the heartbeat watchdog or the bridge-level watchdog (`PythonRunOutcome
     /// .stalled`) gives up on a document. Covers both "this call itself timed out" and "the
     /// embedded engine was already marked unavailable by an earlier stall" -- restarting the
@@ -424,8 +424,8 @@ final class DocumentRedactionViewModel: ObservableObject {
         }
 
         // Word count is a much better proxy for batch-ETA weighting than raw
-        // file byte size (see documentSizeSignal); best-effort only -- a nil
-        // result just means recordBatchETASample falls back to file size.
+        // file byte size (see ProgressMonitor.documentSizeSignal); best-effort only -- a nil
+        // result just means ProgressMonitor.recordBatchETASample falls back to file size.
         if let words = await extractWordCount(at: item.url) {
             item.wordCount = words
             DebugLogger.shared.log(
@@ -445,8 +445,8 @@ final class DocumentRedactionViewModel: ObservableObject {
         pythonRunner?.clearCancellationRequest()
 
         // Fresh ETA estimation for every run — never persisted across runs or app launches.
-        batchProcessingStartTimes.removeAll()
-        batchETASamples.removeAll()
+        progressMonitor.batchProcessingStartTimes.removeAll()
+        progressMonitor.batchETASamples.removeAll()
         batchETA = nil
 
         let shouldLog = DebugPreferences.isEnabled()
@@ -1227,7 +1227,7 @@ final class DocumentRedactionViewModel: ObservableObject {
             item.status = .processing
             item.lastOperation = .redaction
             item.lastDestinationURL = destination
-            batchProcessingStartTimes[item.id] = Date()
+            progressMonitor.batchProcessingStartTimes[item.id] = Date()
             updateState()
         }
 
@@ -1562,9 +1562,13 @@ final class DocumentRedactionViewModel: ObservableObject {
                         return
                     }
 
-                    self.ensureHeartbeatMonitorRunning(for: currentItem)
+                    self.progressMonitor.ensureHeartbeatMonitorRunning(for: currentItem)
 
-                    self.applyPythonKitProgress(updateSnapshot, to: currentItem, isEnhanced: enhancedMode)
+                    self.progressMonitor.applyPythonKitProgress(
+                        updateSnapshot,
+                        to: currentItem,
+                        isEnhanced: enhancedMode
+                    )
                 }
             }
             DebugLogger.shared.log(
@@ -1721,13 +1725,10 @@ final class DocumentRedactionViewModel: ObservableObject {
         }
         processingTasks.removeAll()
 
-        for (_, task) in heartbeatTasks {
-            task.cancel()
-        }
-        heartbeatTasks.removeAll()
+        progressMonitor.cancelAllHeartbeats()
         pythonRunner?.clearCancellationRequest()
         updateState()
-        updateBatchETA()
+        progressMonitor.updateBatchETA()
     }
 
     func retryDocument(_ item: DocumentItem, destination: URL? = nil, operation: DocumentOperation) {
@@ -1928,10 +1929,7 @@ final class DocumentRedactionViewModel: ObservableObject {
         if item.status.isProcessing {
             pythonRunner?.cancelCurrentOperation(source: "removeDocument_itemProcessing")
         }
-        if let hbTask = heartbeatTasks[item.id] {
-            hbTask.cancel()
-            heartbeatTasks.removeValue(forKey: item.id)
-        }
+        progressMonitor.cancelHeartbeat(for: item.id)
         // See `stopProcessing` for why this matters: a wedged call's completion can still fire
         // after the document is gone from `items`, so drop its token rather than let it resolve
         // silently against a (by then, unrelated) reused id.
@@ -2488,16 +2486,13 @@ final class DocumentRedactionViewModel: ObservableObject {
 
     func finalizeProcessing(for item: DocumentItem) {
         processingTasks.removeValue(forKey: item.id)
-        if let hbTask = heartbeatTasks[item.id] {
-            hbTask.cancel()
-            heartbeatTasks.removeValue(forKey: item.id)
-        }
+        progressMonitor.cancelHeartbeat(for: item.id)
         // Clean up progress animations for all terminal states
         item.cleanupProgressAnimations()
         item.releaseSecurityScope()
-        recordBatchETASample(for: item)
+        progressMonitor.recordBatchETASample(for: item)
         updateState()
-        updateBatchETA()
+        progressMonitor.updateBatchETA()
 
         // Auto-wipe secure temp storage if idle
         if !hasProcessingDocuments {
@@ -2505,59 +2500,6 @@ final class DocumentRedactionViewModel: ObservableObject {
                 DebugLogger.shared.log(msg, component: "SecurityCleanup")
             }
         }
-    }
-
-    /// Records a (duration, size) sample for the batch ETA estimator once a document that
-    /// actually ran (completed or failed) reaches a terminal state. Cancelled documents are
-    /// skipped — their elapsed time isn't a meaningful processing-rate signal.
-    func recordBatchETASample(for item: DocumentItem) {
-        guard let startedAt = batchProcessingStartTimes.removeValue(forKey: item.id) else { return }
-        guard item.status == .completed || item.status == .failed else { return }
-
-        let duration = Date().timeIntervalSince(startedAt)
-        guard duration > 0 else { return }
-
-        let size = documentSizeSignal(for: item)
-        guard size > 0 else { return }
-
-        batchETASamples.append(BatchETASample(duration: duration, size: size))
-    }
-
-    /// Recomputes `batchETA` from samples collected so far in this run plus the size signal
-    /// for documents still queued or in-flight. Clears the estimate once no documents remain
-    /// in a processing state, or while there isn't enough data yet.
-    func updateBatchETA() {
-        guard hasProcessingDocuments else {
-            batchETA = nil
-            return
-        }
-
-        let remainingSizes = items
-            .filter { $0.status.isProcessing || $0.status == .validDocument }
-            .map { documentSizeSignal(for: $0) }
-
-        batchETA = BatchETACalculator.estimate(samples: batchETASamples, remainingSizes: remainingSizes)
-    }
-
-    /// Relative "work" signal for a document, used for batch ETA estimation
-    /// (`BatchETACalculator`). Prefers the word count extracted from
-    /// `word/document.xml` during validation (`extractWordCount`, wired in
-    /// `checkDocument`) over raw file byte size -- a DOCX's compressed byte
-    /// size can vary independently of its actual text content (embedded
-    /// images/styles inflate size without adding rules/LLM processing work),
-    /// so word count is a much better predictor of how long a document will
-    /// take. Falls back to file byte size when word count isn't available
-    /// yet (e.g. validation hasn't completed for this item).
-    func documentSizeSignal(for item: DocumentItem) -> Int64 {
-        if let words = item.wordCount, words > 0 {
-            return Int64(words)
-        }
-        guard let attributes = try? FileManager.default.attributesOfItem(atPath: item.url.path),
-              let size = attributes[.size] as? Int64
-        else {
-            return 0
-        }
-        return size
     }
 
     /// Pure, testable parse of failure-report JSON `Data`. Returns the same tuple
@@ -3091,85 +3033,6 @@ final class DocumentRedactionViewModel: ObservableObject {
     }
 }
 
-// MARK: - Heartbeat Monitoring (B1 watchdog)
-
-//
-// Detects a genuinely wedged embedded Python call: one where not even the keepalive signal
-// Python emits roughly every 3s during a long LLM call (`send_keepalive` in
-// `model_enhanced.py`) is getting through, which only happens if the interpreter itself is
-// stuck (GIL held forever, blocked in native C code) rather than merely slow. A single
-// long-but-alive chunk still refreshes `item.lastHeartbeat` via that keepalive, so watching for
-// prolonged *total* silence (`heartbeatTimeout`, not a per-chunk gap) is what avoids the false
-// positives that got an earlier version of this mechanism disabled: it used a 30s per-chunk-gap
-// threshold that fired on legitimately slow (but alive) chunks. `heartbeatTimeout` (120s of no
-// progress signal at all, whether chunk boundary or keepalive) plus the keepalive protocol above
-// is the fix for that.
-//
-// This is deliberately independent from, and fires much sooner than, the separate bridge-level
-// watchdog in `PythonKitBridge.swift` (`PythonBridgeError.workerStalled` / `PythonRunOutcome
-// .stalled`): that one exists to eventually reclaim the worker thread itself and stop future
-// calls from silently queuing behind it forever, but its bound is necessarily generous (tens of
-// minutes) so it doesn't cut off a legitimate long run before that run's own configured timeout
-// would. This one exists to give the *user* a fast, specific "processing stalled" signal instead
-// of a progress bar that silently stops moving forever.
-extension DocumentRedactionViewModel {
-    func ensureHeartbeatMonitorRunning(for item: DocumentItem) {
-        guard heartbeatTasks[item.id] == nil else { return }
-
-        let itemId = item.id
-        let timeout = heartbeatTimeout
-        let pollInterval = heartbeatPollInterval
-
-        let task = Task { @MainActor [weak self] in
-            while !Task.isCancelled {
-                guard let self else { return }
-                guard let currentItem = self.items.first(where: { $0.id == itemId }) else {
-                    self.heartbeatTasks.removeValue(forKey: itemId)
-                    return
-                }
-                guard currentItem.status == .processing else {
-                    // Reached a terminal state through the normal completion path (or was
-                    // stopped/removed) -- nothing left for the watchdog to do.
-                    self.heartbeatTasks.removeValue(forKey: itemId)
-                    return
-                }
-                if let last = currentItem.lastHeartbeat {
-                    let elapsed = Date().timeIntervalSince(last)
-                    if elapsed >= timeout {
-                        DebugLogger.shared.log(
-                            "⏱️ Heartbeat watchdog: no progress signal for \(String(format: "%.0f", elapsed))s (>= \(String(format: "%.0f", timeout))s) on \(currentItem.url.lastPathComponent); marking stalled",
-                            component: "HeartbeatWatchdog"
-                        )
-                        self.failStalledDocument(currentItem)
-                        return
-                    }
-                }
-                try? await Task.sleep(nanoseconds: UInt64(pollInterval * 1_000_000_000))
-            }
-        }
-        heartbeatTasks[item.id] = task
-    }
-
-    /// Marks a document that has gone silent past `heartbeatTimeout` as failed with a
-    /// user-facing "processing stalled" message, invalidates its attempt token (see
-    /// `activeAttemptTokens`) so a late completion from the still-wedged underlying call can't
-    /// resurrect it, and best-effort requests cancellation of the underlying run -- best-effort
-    /// only, since PythonKit cannot forcibly reclaim a call already stuck in native code (see
-    /// `PythonBridgeError`).
-    func failStalledDocument(_ item: DocumentItem) {
-        guard item.status == .processing else { return }
-        item.status = .failed
-        item.errorMessage = Self.processingStalledMessage
-        activeAttemptTokens.removeValue(forKey: item.id)
-        pythonRunner?.cancelCurrentOperation(source: "heartbeat_watchdog_stall")
-        DebugLogger.shared.log(
-            "❌ Heartbeat watchdog marked \(item.url.lastPathComponent) failed (processing stalled)",
-            component: "HeartbeatWatchdog"
-        )
-        finalizeProcessing(for: item)
-    }
-}
-
 // MARK: - Sleep/Wake Handling (B5)
 
 ///
@@ -3225,94 +3088,6 @@ extension DocumentRedactionViewModel {
             finalizeProcessing(for: item)
         }
         pythonRunner?.cancelCurrentOperation(source: "system_wake_health_check_failed")
-    }
-}
-
-// MARK: - Progress Mapping
-
-private extension DocumentRedactionViewModel {
-    func applyPythonKitProgress(
-        _ update: PythonRunnerProgressUpdate,
-        to item: DocumentItem,
-        isEnhanced: Bool
-    ) {
-        let stage = mapPhaseToStage(
-            identifier: update.phaseIdentifier,
-            displayName: update.phaseDisplayName,
-            isEnhancedMode: isEnhanced
-        )
-
-        if item.currentStage != stage {
-            item.concludeCurrentStage()
-            item.beginStage(stage)
-        }
-
-        if let message = update.message, !message.isEmpty {
-            let handledMassEvent = item.ingestProgressPayload(message)
-            if !handledMassEvent {
-                DebugLogger.shared.log("Progress update: \(message)", component: "DocumentProgress")
-            }
-        }
-
-        if let chunkInfo = extractChunkInfo(from: update) {
-            if item.isMassTrackingActive, stage == .enhancedDetection {
-                item.recordHeartbeatOnly(chunkIndex: chunkInfo.chunk, totalChunks: chunkInfo.total)
-            } else {
-                item.recordHeartbeat(chunkIndex: chunkInfo.chunk, totalChunks: chunkInfo.total)
-            }
-        }
-
-        let shouldApplyProgress = !(item.isMassTrackingActive && stage == .enhancedDetection)
-        if shouldApplyProgress {
-            if let overall = update.overallProgress {
-                item.setExplicitProgress(overall)
-            } else if let phaseFraction = update.phaseProgress {
-                item.applyStageProgressFraction(phaseFraction)
-            }
-        }
-    }
-
-    func mapPhaseToStage(identifier: String?, displayName: String?, isEnhancedMode: Bool) -> ProcessingStage {
-        let candidate = (identifier ?? displayName ?? "").lowercased()
-        if candidate.contains("preflight") || candidate.contains("loading") {
-            return .preflight
-        } else if candidate.contains("rule") || candidate.contains("structured") {
-            return .ruleDetection
-        } else if candidate.contains("analysis") {
-            return .ruleDetection
-        } else if candidate.contains("validation") {
-            return .llmValidation
-        } else if candidate.contains("llm") || candidate.contains("ai") || candidate.contains("extraction") {
-            return .enhancedDetection
-        } else if candidate.contains("merge") {
-            return .merging
-        } else if candidate.contains("track") || candidate.contains("output") || candidate.contains("complete") {
-            return .outputGeneration
-        }
-        return isEnhancedMode ? .enhancedDetection : .ruleDetection
-    }
-
-    func extractChunkInfo(from update: PythonRunnerProgressUpdate) -> (chunk: Int, total: Int)? {
-        if let chunk = update.chunk, let total = update.total, total > 0 {
-            return (chunk, total)
-        }
-
-        if let message = update.message,
-           let match = message.range(of: #"Processing chunk\s+(\d+)\s*/\s*(\d+)"#, options: .regularExpression)
-        {
-            let substring = message[match]
-            let numbers = substring.replacingOccurrences(of: "Processing chunk", with: "")
-            let parts = numbers.split(separator: "/").map { $0.trimmingCharacters(in: .whitespaces) }
-            if parts.count == 2,
-               let chunk = Int(parts[0]),
-               let total = Int(parts[1]),
-               total > 0
-            {
-                return (chunk, total)
-            }
-        }
-
-        return nil
     }
 }
 
@@ -3692,7 +3467,7 @@ extension DocumentRedactionViewModel {
 
     /// Extracts a word-count signal for a DOCX by parsing `word/document.xml`'s
     /// text runs -- used as the "size" signal for batch ETA weighting
-    /// (`documentSizeSignal`) instead of raw file byte size. A DOCX's
+    /// (`ProgressMonitor.documentSizeSignal`) instead of raw file byte size. A DOCX's
     /// compressed byte size can vary independently of its actual text content
     /// (embedded images/styles inflate file size without adding processing
     /// work; a text-heavy, lightly-formatted document can be small on disk

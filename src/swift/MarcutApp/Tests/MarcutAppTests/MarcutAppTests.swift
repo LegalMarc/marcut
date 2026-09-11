@@ -1143,8 +1143,8 @@ final class MarcutAppTests: XCTestCase {
         XCTAssertFalse(worker.isCurrentlyStalled())
     }
 
-    /// The user-facing half of the fix: `DocumentRedactionViewModel` reuses the existing
-    /// heartbeat plumbing (`lastHeartbeat`, `heartbeatTasks`) to detect a document whose
+    /// The user-facing half of the fix: `DocumentRedactionViewModel`'s `ProgressMonitor`
+    /// collaborator reuses the existing heartbeat plumbing (`lastHeartbeat`) to detect a document whose
     /// embedded call has gone completely silent, and fails it instead of leaving its progress
     /// bar frozen forever with no error and no way to recover short of a force-quit.
     func testHeartbeatWatchdogMarksStalledProcessingDocumentFailed() async throws {
@@ -1155,7 +1155,7 @@ final class MarcutAppTests: XCTestCase {
         item.lastHeartbeat = Date().addingTimeInterval(-999)
         viewModel.items = [item]
 
-        viewModel.ensureHeartbeatMonitorRunning(for: item)
+        viewModel.progressMonitor.ensureHeartbeatMonitorRunning(for: item)
 
         let deadline = Date().addingTimeInterval(5.0)
         while item.status == .processing, Date() < deadline {
@@ -1179,7 +1179,7 @@ final class MarcutAppTests: XCTestCase {
         item.lastHeartbeat = Date() // fresh -- processing is alive and well
         viewModel.items = [item]
 
-        viewModel.ensureHeartbeatMonitorRunning(for: item)
+        viewModel.progressMonitor.ensureHeartbeatMonitorRunning(for: item)
         try await Task.sleep(nanoseconds: 300_000_000)
 
         XCTAssertEqual(item.status, .processing, "A document with a recent heartbeat must not be marked failed")
@@ -2033,7 +2033,7 @@ final class MarcutAppTests: XCTestCase {
         XCTAssertEqual(acquireCount, 1, "Transitioning into a processing state must acquire the assertion exactly once")
         XCTAssertEqual(releaseCount, 0)
 
-        viewModel.ensureHeartbeatMonitorRunning(for: item)
+        viewModel.progressMonitor.ensureHeartbeatMonitorRunning(for: item)
 
         let deadline = Date().addingTimeInterval(5.0)
         while item.status == .processing, Date() < deadline {

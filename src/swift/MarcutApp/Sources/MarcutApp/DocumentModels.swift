@@ -507,7 +507,7 @@ final class DocumentItem: Identifiable, ObservableObject {
             // rather than an accidental fall-through to `default` (issue
             // #93): the progress bar and heartbeat are already driven by
             // chunk_start/chunk_end and keepalive above. On the PythonKit
-            // path (DocumentRedactionViewModel's `applyPythonKitProgress`)
+            // path (`ProgressMonitor.applyPythonKitProgress`)
             // this JSON never actually reaches here -- `emit_mass_event`
             // gives token_progress an explicit `status_message`, so the
             // rich `ProgressUpdate.message` carries a human-readable

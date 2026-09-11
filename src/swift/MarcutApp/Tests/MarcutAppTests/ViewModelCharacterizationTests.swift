@@ -7,22 +7,17 @@ import XCTest
 /// Tests only -- no production code changes. Every test here calls the real production method
 /// through `@testable import MarcutApp`; none reimplement the logic under test.
 ///
-/// ## Missing seam: progress mapping (§3.2 item 2)
+/// ## Formerly missing seam: progress mapping (§3.2 item 2) -- resolved by #104
 ///
 /// `mapPhaseToStage(identifier:displayName:isEnhancedMode:)`, `extractChunkInfo(from:)`, and
-/// `applyPythonKitProgress(_:to:isEnhanced:)` live inside a `private extension
-/// DocumentRedactionViewModel` block (`DocumentRedactionViewModel.swift`, "MARK: - Progress
-/// Mapping"). Swift scopes `private extension` members to the declaring file, so
-/// `@testable import MarcutApp` from this file cannot reach them -- unlike every other target in
-/// this ticket (`updateState`, `applyOutputArtifacts`, `recordBatchETASample`, `updateBatchETA`,
-/// `documentSizeSignal`, `shareFinalRedactedCopy`, `restoreEnvironmentValue`, `resumePendingJob`,
-/// `discardPendingJob`, `environmentStatus`, `isEnvironmentReady`), which #99 already widened
-/// from `private` to `internal`. #99's scope list did not include this specific extension, so it
-/// was missed. Per this issue's own "Out of scope" note ("If a target cannot be reached, report
-/// the missing seam; do not add it here"), this is reported rather than worked around: a
-/// follow-up, visibility-only ticket (same shape as #99 -- widen the extension's declaration
-/// from `private extension` to `extension`, no other edit) is needed before item 2 can get
-/// direct-call coverage here.
+/// `applyPythonKitProgress(_:to:isEnhanced:)` used to live inside a `private extension
+/// DocumentRedactionViewModel` block, which Swift scopes to the declaring file -- unreachable
+/// from `@testable import MarcutApp` here. #104 (`docs/design/view_controller_decomposition.md`
+/// §2.1/§4 slice 3) moved them into `ProgressMonitor` as ordinary (internal) instance methods
+/// as part of extracting the heartbeat/ETA collaborator, which incidentally resolves this seam
+/// too -- reachable now as `viewModel.progressMonitor.mapPhaseToStage(...)` etc. No direct-call
+/// tests were added here for them as part of that move (out of #104's scope); a follow-up could
+/// still add coverage for item 2 now that the seam is open.
 ///
 /// ## Missing seam (narrower): "models present" rows of the environment-status matrix (item 6)
 ///
@@ -210,19 +205,19 @@ final class ViewModelCharacterizationTests: XCTestCase {
         let item = DocumentItem(url: fileURL)
         item.wordCount = 250
         XCTAssertEqual(
-            viewModel.documentSizeSignal(for: item), 250,
+            viewModel.progressMonitor.documentSizeSignal(for: item), 250,
             "Word count must win over file byte size when both are available"
         )
 
         item.wordCount = nil
         XCTAssertEqual(
-            viewModel.documentSizeSignal(for: item), Int64(payload.count),
+            viewModel.progressMonitor.documentSizeSignal(for: item), Int64(payload.count),
             "File byte size is the fallback once word count is unavailable"
         )
 
         item.wordCount = 0
         XCTAssertEqual(
-            viewModel.documentSizeSignal(for: item), Int64(payload.count),
+            viewModel.progressMonitor.documentSizeSignal(for: item), Int64(payload.count),
             "A zero word count is not a usable signal either -- falls back the same as nil"
         )
     }
@@ -230,7 +225,7 @@ final class ViewModelCharacterizationTests: XCTestCase {
     func testDocumentSizeSignalIsZeroWhenFileIsUnreadable() {
         let viewModel = DocumentRedactionViewModel(defaults: makeIsolatedDefaults())
         let item = DocumentItem(url: URL(fileURLWithPath: "/nonexistent/\(UUID().uuidString).docx"))
-        XCTAssertEqual(viewModel.documentSizeSignal(for: item), 0)
+        XCTAssertEqual(viewModel.progressMonitor.documentSizeSignal(for: item), 0)
     }
 
     func testRecordBatchETASampleSkipsCancelledAndUntrackedItems() {
@@ -238,16 +233,19 @@ final class ViewModelCharacterizationTests: XCTestCase {
 
         // Never started (not in `batchProcessingStartTimes`) -- nothing to record.
         let neverStarted = createTestDocumentItem(status: .completed)
-        viewModel.recordBatchETASample(for: neverStarted)
-        XCTAssertTrue(viewModel.batchETASamples.isEmpty)
+        viewModel.progressMonitor.recordBatchETASample(for: neverStarted)
+        XCTAssertTrue(viewModel.progressMonitor.batchETASamples.isEmpty)
 
         // Started, but cancelled rather than completed/failed -- not a meaningful rate signal.
         let cancelled = createTestDocumentItem(status: .cancelled)
-        viewModel.batchProcessingStartTimes[cancelled.id] = Date().addingTimeInterval(-5)
-        viewModel.recordBatchETASample(for: cancelled)
-        XCTAssertTrue(viewModel.batchETASamples.isEmpty, "A cancelled document must not contribute a sample")
+        viewModel.progressMonitor.batchProcessingStartTimes[cancelled.id] = Date().addingTimeInterval(-5)
+        viewModel.progressMonitor.recordBatchETASample(for: cancelled)
+        XCTAssertTrue(
+            viewModel.progressMonitor.batchETASamples.isEmpty,
+            "A cancelled document must not contribute a sample"
+        )
         XCTAssertNil(
-            viewModel.batchProcessingStartTimes[cancelled.id],
+            viewModel.progressMonitor.batchProcessingStartTimes[cancelled.id],
             "The start time is still consumed even when no sample is recorded"
         )
     }
@@ -256,15 +254,15 @@ final class ViewModelCharacterizationTests: XCTestCase {
         let viewModel = DocumentRedactionViewModel(defaults: makeIsolatedDefaults())
         let item = createTestDocumentItem(status: .completed)
         item.wordCount = 1000
-        viewModel.batchProcessingStartTimes[item.id] = Date().addingTimeInterval(-2)
+        viewModel.progressMonitor.batchProcessingStartTimes[item.id] = Date().addingTimeInterval(-2)
 
-        viewModel.recordBatchETASample(for: item)
+        viewModel.progressMonitor.recordBatchETASample(for: item)
 
-        XCTAssertEqual(viewModel.batchETASamples.count, 1)
-        let sample = try XCTUnwrap(viewModel.batchETASamples.first)
+        XCTAssertEqual(viewModel.progressMonitor.batchETASamples.count, 1)
+        let sample = try XCTUnwrap(viewModel.progressMonitor.batchETASamples.first)
         XCTAssertEqual(sample.size, 1000)
         XCTAssertGreaterThanOrEqual(sample.duration, 2.0)
-        XCTAssertNil(viewModel.batchProcessingStartTimes[item.id], "The start time must be consumed")
+        XCTAssertNil(viewModel.progressMonitor.batchProcessingStartTimes[item.id], "The start time must be consumed")
     }
 
     func testUpdateBatchETAIsNilBelowMinimumSamplesAndClearsWhenNothingIsProcessing() {
@@ -280,19 +278,19 @@ final class ViewModelCharacterizationTests: XCTestCase {
         )
 
         // One sample: below `BatchETACalculator.minimumSamples` (2) -- must stay nil.
-        viewModel.batchETASamples = [BatchETASample(duration: 10, size: 500)]
-        viewModel.updateBatchETA()
+        viewModel.progressMonitor.batchETASamples = [BatchETASample(duration: 10, size: 500)]
+        viewModel.progressMonitor.updateBatchETA()
         XCTAssertNil(viewModel.batchETA, "A single sample is not enough data for an estimate")
 
         // A second sample crosses the minimum -- an estimate should now appear.
-        viewModel.batchETASamples.append(BatchETASample(duration: 10, size: 500))
-        viewModel.updateBatchETA()
+        viewModel.progressMonitor.batchETASamples.append(BatchETASample(duration: 10, size: 500))
+        viewModel.progressMonitor.updateBatchETA()
         XCTAssertNotNil(viewModel.batchETA, "Two samples meets BatchETACalculator.minimumSamples")
 
         // Once nothing is left processing/queued, the estimate is cleared outright.
         processingItem.status = .completed
         viewModel.updateState()
-        viewModel.updateBatchETA()
+        viewModel.progressMonitor.updateBatchETA()
         XCTAssertNil(viewModel.batchETA, "No processing/queued documents left means no ETA to show")
     }
 
