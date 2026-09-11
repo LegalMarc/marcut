@@ -1,6 +1,10 @@
 # Design Spike: Decomposing SettingsView.swift and DocumentRedactionViewModel.swift
 
-Status: Design spike (no code changes). Companion to issue #24.
+Status: Design spike (no code changes). Companion to issue #24. Prereq 1
+(#97 -- `PermissionManager` safe under `swift test`) is done: constructing
+`SettingsView` and calling `DocumentRedactionViewModel.processAllDocuments`
+no longer aborts the test process. The two references below to that crash
+risk are now historical; see the note after each.
 
 ## Goal
 
@@ -25,10 +29,16 @@ variables set as side effects (`applyAdvancedSettingsEnvironment()`,
 `applyMetadataSettingsEnvironment()`) that a later method silently depends
 on. Today's test suite
 (`src/swift/MarcutApp/Tests/MarcutAppTests/MarcutAppTests.swift`) explicitly
-avoids instantiating `SettingsView` for rendering
+avoided instantiating `SettingsView` for rendering
 (comment at line 469: "A view-rendering test that instantiates `SettingsView`
-… `SettingsView` transitively initializes `PermissionManager.shared`") and
-covers `DocumentRedactionViewModel` only through a handful of pure static
+… `SettingsView` transitively initializes `PermissionManager.shared`") --
+now fixed by #97: `SettingsView` construction and `processAllDocuments` are
+both exercised directly (`testSettingsViewConstructsWithoutCrashingUnderSwiftTest`,
+`testProcessAllDocumentsWithNoItemsCompletesWithoutCrashing`); a full
+`NSHostingView` render to assert on-screen elements is still out of reach,
+but for an unrelated reason (no `.app` bundle/Xcode project in this repo's
+build, so there is no way to visually confirm rendered output either way) --
+and covers `DocumentRedactionViewModel` only through a handful of pure static
 helpers (`finalRedactedCopyURL`, `makeSensitiveReportFilePrivate`) plus
 `updateState()`'s boolean-flag logic reimplemented inline in test code
 (line 130: "This matches the logic in `DocumentRedactionViewModel
@@ -250,9 +260,11 @@ From `src/swift/MarcutApp/Tests/MarcutAppTests/MarcutAppTests.swift`:
 - Pending-batch-job persistence — exercised indirectly around line 1070
   against `PendingBatchJobStore`, not against
   `DocumentRedactionViewModel` directly.
-- No test instantiates `SettingsView` or `FirstRunSetupView` for rendering
-  (explicitly called out at line 469 as unsafe due to `PermissionManager
-  .shared` side effects triggered by `SettingsView.body`).
+- No test instantiates `SettingsView` or `FirstRunSetupView` for a full
+  `NSHostingView` render. Plain construction is no longer unsafe (#97 guards
+  `PermissionManager.shared`'s `UNUserNotificationCenter` access), but this
+  repo has no `.app` bundle/Xcode project to render against, so on-screen
+  assertions (e.g. an `NSSearchField` being present) remain out of reach.
 - No test exercises `processDocument`, `processDocumentWithPythonKit`,
   `shareDocument`, `applyOutputArtifacts`, or any of the report-saving
   methods — these require a live (or mocked) `PythonKitRunner` and touch

@@ -5,6 +5,24 @@ import UserNotifications
 @MainActor class PermissionManager: NSObject, ObservableObject {
     static let shared = PermissionManager()
 
+    /// `UNUserNotificationCenter.current()`, but only when this process is actually running
+    /// inside a real `.app` bundle. Under the `swift test` CLI runner there is no host app
+    /// bundle, and `UNUserNotificationCenter.current()` raises an uncaught
+    /// `NSInternalInconsistencyException` ("bundleProxyForCurrentProcess is nil") that aborts
+    /// the whole test process. Every call site routes through this instead of calling
+    /// `.current()` directly so the class -- and anything that transitively constructs it, like
+    /// `SettingsView` -- stays safe to construct under `swift test`.
+    ///
+    /// Guarding on `Bundle.main.bundleURL.pathExtension` rather than `Bundle.main.bundleIdentifier`
+    /// is deliberate: under `swift test`, `bundleIdentifier` is non-nil
+    /// (`com.apple.dt.xctest.tool`), so that check would not distinguish the two environments.
+    /// The shipped app always has a `.app` bundle URL (`scripts/sh/build_swift_only.sh` writes
+    /// `CFBundleIdentifier` into a real `.app`).
+    private static let notificationCenter: UNUserNotificationCenter? = {
+        guard Bundle.main.bundleURL.pathExtension == "app" else { return nil }
+        return .current()
+    }()
+
     @Published var notificationStatus: UNAuthorizationStatus = .notDetermined
 
     /// Local preference: Should we send notifications?
@@ -24,7 +42,14 @@ import UserNotifications
 
         // CRITICAL FIX: Ensure notification delegate is set immediately.
         // This allows banners to appear even if the app is in the foreground.
-        UNUserNotificationCenter.current().delegate = self
+        if let center = Self.notificationCenter {
+            center.delegate = self
+        } else {
+            DebugLogger.shared.log(
+                "🔕 No host app bundle (swift test runner) -- skipping notification delegate wiring",
+                component: "PermissionManager"
+            )
+        }
 
         // DEFERRED: We no longer check automatically on init to avoid startup prompts.
     }
@@ -44,7 +69,13 @@ enum PermissionError: LocalizedError {
 extension PermissionManager: UNUserNotificationCenterDelegate {
     /// Step 1.5: Request Notification Permissions
     func requestNotificationPermission() async throws {
-        let center = UNUserNotificationCenter.current()
+        guard let center = Self.notificationCenter else {
+            DebugLogger.shared.log(
+                "🔕 No host app bundle (swift test runner) -- cannot request notification permission",
+                component: "PermissionManager"
+            )
+            throw PermissionError.notificationPermissionDenied
+        }
         // Delegate needed to show notifications while app is in foreground
         center.delegate = self
 
@@ -97,7 +128,15 @@ extension PermissionManager: UNUserNotificationCenterDelegate {
         // Create a unique ID or reuse? Unique for history.
         let request = UNNotificationRequest(identifier: UUID().uuidString, content: content, trigger: nil)
 
-        UNUserNotificationCenter.current().add(request) { error in
+        guard let center = Self.notificationCenter else {
+            DebugLogger.shared.log(
+                "🔕 No host app bundle (swift test runner) -- skipping notification send",
+                component: "PermissionManager"
+            )
+            return
+        }
+
+        center.add(request) { error in
             if let error {
                 DebugLogger.shared.log(
                     "❌ Failed to schedule notification: \(error.localizedDescription)",
@@ -114,7 +153,13 @@ extension PermissionManager: UNUserNotificationCenterDelegate {
 
     /// Force request without checks (User triggered)
     func forceRequestNotificationPermission() async throws {
-        let center = UNUserNotificationCenter.current()
+        guard let center = Self.notificationCenter else {
+            DebugLogger.shared.log(
+                "🔕 No host app bundle (swift test runner) -- cannot force-request notification permission",
+                component: "PermissionManager"
+            )
+            throw PermissionError.notificationPermissionDenied
+        }
         center.delegate = self
 
         DebugLogger.shared.log("🚨 Force-requesting notification permission...", component: "PermissionManager")
@@ -137,7 +182,17 @@ extension PermissionManager: UNUserNotificationCenterDelegate {
 
     /// Explicit refresh of status (called on view appear)
     func refreshNotificationStatus() async {
-        let settings = await UNUserNotificationCenter.current().notificationSettings()
+        guard let center = Self.notificationCenter else {
+            DebugLogger.shared.log(
+                "🔕 No host app bundle (swift test runner) -- reporting notification status as not determined",
+                component: "PermissionManager"
+            )
+            await MainActor.run {
+                self.notificationStatus = .notDetermined
+            }
+            return
+        }
+        let settings = await center.notificationSettings()
         await MainActor.run {
             self.notificationStatus = settings.authorizationStatus
         }

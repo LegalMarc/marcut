@@ -441,12 +441,14 @@ final class MarcutAppTests: XCTestCase {
     //
     // NOTE: These tests inject fake closures for `modelDownloadAuthorizationRequester` and
     // `modelDownloadCompletionNotifier` instead of exercising the real `PermissionManager.shared`
-    // / `UNUserNotificationCenter` path. As documented above (see the `.searchable` test removal
-    // note), calling `UNUserNotificationCenter.current()` under the `swift test` CLI runner (no
-    // host app bundle) raises an uncaught `NSInternalInconsistencyException` and aborts the whole
-    // test process. Injecting fakes lets us verify the call-site behavior (called once on
-    // success, with the correct model name, and never called on failure) without touching that
-    // code path.
+    // / `UNUserNotificationCenter` path. Calling `UNUserNotificationCenter.current()` under the
+    // `swift test` CLI runner (no host app bundle) used to raise an uncaught
+    // `NSInternalInconsistencyException` and abort the whole test process; `PermissionManager`
+    // now guards every `.current()` call behind a bundle check and no-ops under `swift test`
+    // (#97), so that abort risk is gone. The fakes stay here anyway: they let us assert the
+    // call-site behavior precisely (called once on success, with the correct model name, and
+    // never called on failure) without depending on `UNUserNotificationCenter`'s own async,
+    // side-effecting delivery pipeline.
 
     func testModelDownloadNotifierFiresOnSuccessWithModelName() {
         let bridge = PythonBridgeService()
@@ -618,21 +620,43 @@ final class MarcutAppTests: XCTestCase {
         XCTAssertFalse(SettingsView.matchesSearch("Chunk Overlap", query: "temperature"))
     }
 
-    // NOTE: A view-rendering test that instantiates `SettingsView` (e.g. via `NSHostingView`) to
-    // assert an `NSSearchField` is present was attempted here but had to be removed: constructing
-    // `SettingsView` transitively initializes `PermissionManager.shared`, which calls
-    // `UNUserNotificationCenter.current()`. Under the `swift test` CLI runner (no host app
-    // bundle), that call raises an uncaught `NSInternalInconsistencyException`
-    // ("bundleProxyForCurrentProcess is nil") and aborts the entire test process, taking every
-    // other test down with it. This is a pre-existing environment limitation, not something
-    // introduced by the `.searchable`/`NavigationStack` fix below. This repo builds via Swift
-    // Package Manager only (no .app bundle/Xcode project is produced), so there is no way to
-    // manually launch the packaged app to visually confirm the search field either. The fix
-    // itself — `SettingsView.body` now wraps its `Form` in a `NavigationStack` so `.searchable`
-    // renders under both the `Settings {}` scene and the `.sheet` presentation — is standard,
-    // documented SwiftUI/AppKit behavior (`.searchable` requires a navigation container ancestor
-    // to materialize its search field on macOS); reviewers with an Xcode/app-bundle build should
-    // confirm visually as a follow-up.
+    /// NOTE: A view-rendering test that instantiates `SettingsView` (e.g. via `NSHostingView`) to
+    /// assert an `NSSearchField` is present is still out of reach: this repo builds via Swift
+    /// Package Manager only (no .app bundle/Xcode project is produced), so there is no way to
+    /// manually launch the packaged app to visually confirm the search field. The
+    /// `.searchable`/`NavigationStack` fix below -- `SettingsView.body` wraps its `Form` in a
+    /// `NavigationStack` so `.searchable` renders under both the `Settings {}` scene and the
+    /// `.sheet` presentation -- is standard, documented SwiftUI/AppKit behavior (`.searchable`
+    /// requires a navigation container ancestor to materialize its search field on macOS);
+    /// reviewers with an Xcode/app-bundle build should confirm visually as a follow-up.
+    ///
+    /// What the test below *does* cover: constructing `SettingsView` transitively initializes
+    /// `PermissionManager.shared`, which used to call `UNUserNotificationCenter.current()` and
+    /// abort the entire `swift test` process under the CLI runner (no host app bundle -- see
+    /// `PermissionManager.notificationCenter`, #97). That call is now guarded and no-ops outside
+    /// a real `.app` bundle, so simply constructing `SettingsView` here proves the process
+    /// survives.
+    func testSettingsViewConstructsWithoutCrashingUnderSwiftTest() {
+        let viewModel = createTestViewModel()
+        let view = SettingsView(viewModel: viewModel)
+        XCTAssertTrue(view.viewModel === viewModel)
+    }
+
+    // MARK: - Notification Crash Guard Tests (issue #97)
+
+    /// `processAllDocuments` always ends by calling `PermissionManager.shared
+    /// .sendSystemNotification`, even with zero items -- that call used to abort the whole
+    /// `swift test` process (no host app bundle). Running it end-to-end here with an empty item
+    /// list proves the guard in `PermissionManager.notificationCenter` holds for every path that
+    /// reaches a system notification, not only for view construction.
+    func testProcessAllDocumentsWithNoItemsCompletesWithoutCrashing() async {
+        let viewModel = createTestViewModel()
+        XCTAssertTrue(viewModel.items.isEmpty)
+
+        await viewModel.processAllDocuments()
+
+        XCTAssertTrue(viewModel.items.isEmpty)
+    }
 
     // MARK: - Settings Profile Export/Import Tests
 
@@ -2110,9 +2134,11 @@ final class MarcutAppTests: XCTestCase {
         )
         let bridge = PythonBridgeService(autoStartOllama: false, allowOllamaService: false, powerAssertion: powerGuard)
         // See the "Model Download Notification Tests" note above: `downloadModel` fires this
-        // before its `allowOllamaService` guard, so it must be stubbed here too, or the real
-        // closure's `PermissionManager.shared`/`UNUserNotificationCenter` access aborts the
-        // `swift test` CLI process (asynchronously, on an unrelated later test).
+        // before its `allowOllamaService` guard, so it is stubbed here too so the test asserts
+        // on the requester/notifier call sites directly rather than on
+        // `PermissionManager.shared`/`UNUserNotificationCenter`'s own delivery pipeline
+        // (that access itself is guarded and no longer aborts the `swift test` CLI process --
+        // see `PermissionManager.notificationCenter`, #97).
         bridge.modelDownloadAuthorizationRequester = {}
         bridge.modelDownloadCompletionNotifier = { _ in }
 
