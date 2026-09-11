@@ -30,6 +30,25 @@ item/flag/environment state afterward. Every extraction slice below
 before and after its change and get zero golden diffs; the harness's own
 header doc-comment (in `RedactionCharacterizationHarness.swift`) is the
 canonical description of what is snapshotted and how to re-baseline.
+Prereq 5 (#101) is also done for six of its seven targets:
+`Tests/MarcutAppTests/ViewModelCharacterizationTests.swift` adds direct-call
+characterization tests for `updateState()` (incl. the power-assertion
+begin/end edge and `PendingBatchJobStore` persistence/dedupe), the batch ETA
+math, `applyOutputArtifacts`, `shareFinalRedactedCopy`'s environment
+save/restore, the `environmentStatus`/`isEnvironmentReady` diagnostics
+matrix, and pending-job recovery (`resumePendingJob`/`discardPendingJob`).
+The seventh target, progress mapping (`mapPhaseToStage`/`extractChunkInfo`/
+`applyPythonKitProgress`), remains untested: those three live inside a
+`private extension DocumentRedactionViewModel` block that #99's widening
+pass did not cover, so `@testable import MarcutApp` cannot reach them from a
+different file. A follow-up, visibility-only ticket (same shape as #99 --
+widen that one extension from `private extension` to `extension`, no other
+edit) is needed before that slice's characterization test can be added; see
+`ViewModelCharacterizationTests.swift`'s header for the full note. The two
+reimplemented-logic tests `updateState()`'s coverage used to rely on
+(`MarcutAppTests.swift`, formerly `testFinishedProcessingStateLogic`/
+`testProcessingStateLogic`, plus the unrelated `testPreparingStateLogic`
+dead test) are removed now that real coverage exists.
 
 ## Goal
 

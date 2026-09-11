@@ -112,43 +112,6 @@ final class MarcutAppTests: XCTestCase {
         XCTAssertNotNil(contentView, "ContentView should be created successfully")
     }
 
-    // MARK: - Dynamic Button State Tests (Task 1.4)
-
-    func testFinishedProcessingStateLogic() {
-        // Test the logic behind finished processing state
-        // Since we can't mock the final class, we test the logic directly
-
-        let hasCompletedDocuments = true
-        let hasProcessingDocuments = false
-        let hasValidDocuments = false
-
-        // This matches the logic in DocumentRedactionViewModel.updateState()
-        let hasFinishedProcessing = hasCompletedDocuments && !hasProcessingDocuments && !hasValidDocuments
-
-        XCTAssertTrue(hasFinishedProcessing, "Should be finished when completed but no processing or valid docs")
-    }
-
-    func testProcessingStateLogic() {
-        // Test different processing state combinations
-
-        // Active processing
-        let activeProcessing = true
-        let completedDocs = false
-        let validDocs = false
-
-        XCTAssertTrue(activeProcessing, "Should be processing")
-        XCTAssertFalse(completedDocs && !activeProcessing && !validDocs, "Should not be finished while processing")
-
-        // Ready to process
-        let readyToProcess = false
-        let hasValidDocsReady = true
-        let hasCompletedReady = false
-
-        XCTAssertTrue(hasValidDocsReady, "Should have valid documents")
-        XCTAssertFalse(readyToProcess, "Should not be processing")
-        XCTAssertFalse(hasCompletedReady && !readyToProcess && !hasValidDocsReady, "Should not be finished")
-    }
-
     // MARK: - Model Selection Tests (Task 1.5)
 
     func testModelSelectionOptions() {
@@ -268,26 +231,6 @@ final class MarcutAppTests: XCTestCase {
             "Swift Resources/models.json has drifted from src/python/marcut/models.json"
         )
         XCTAssertEqual(swiftContents, assetsContents, "Swift Resources/models.json has drifted from assets/models.json")
-    }
-
-    // MARK: - Progress Indicator Tests (Task 1.6)
-
-    func testPreparingStateLogic() {
-        // Test the preparing state logic that should prevent beach balls
-
-        // Simulate the preparing state
-        var isPreparing = false
-
-        // Test initial state
-        XCTAssertFalse(isPreparing, "Should not be preparing initially")
-
-        // Simulate clicking redact button
-        isPreparing = true
-        XCTAssertTrue(isPreparing, "Should be in preparing state after button click")
-
-        // Simulate completion of file dialog
-        isPreparing = false
-        XCTAssertFalse(isPreparing, "Should exit preparing state after file dialog")
     }
 
     // MARK: - Accessibility Identifier Tests
