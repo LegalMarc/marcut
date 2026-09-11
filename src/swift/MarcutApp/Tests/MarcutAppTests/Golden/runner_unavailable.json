@@ -1,0 +1,45 @@
+{
+  "envAfter" : {
+    "MARCUT_METADATA_ARGS" : "--no-clean-statistics --no-clean-created-date --no-clean-modified-date --no-clean-language --no-clean-review-comments-visible --no-clean-track-changes --no-clean-mail-merge --no-clean-ink-annotations --no-clean-headers-footers --no-clean-watermarks --no-clean-hyperlinks --no-clean-fonts --no-clean-glossary --no-clean-style-names --no-clean-chart-labels --no-clean-form-defaults --no-clean-language-settings --no-clean-custom-xml-parts --no-clean-nonstandard-xml --no-clean-microsoft-extensions --no-clean-unknown-rels --no-clean-orphaned-parts --no-clean-alternate-content --no-clean-scale-crop --no-clean-hyperlinks-changed --no-clean-spell-grammar --no-clean-doc-vars",
+    "MARCUT_METADATA_PRESET" : "balanced",
+    "MARCUT_METADATA_SETTINGS_JSON" : "{\"cleanActiveX\":true,\"cleanAltText\":true,\"cleanAlternateContent\":false,\"cleanAppVersion\":true,\"cleanApplication\":true,\"cleanAuthor\":true,\"cleanCategory\":true,\"cleanChartLabels\":false,\"cleanComments\":true,\"cleanCompany\":true,\"cleanContentStatus\":true,\"cleanCreatedDate\":false,\"cleanCustomProperties\":true,\"cleanCustomXMLParts\":false,\"cleanDataBindings\":true,\"cleanDigitalSignatures\":true,\"cleanDocSecurity\":true,\"cleanDocumentGUID\":true,\"cleanDocumentVariables\":false,\"cleanDocumentVersions\":true,\"cleanEmbeddedFonts\":false,\"cleanExternalLinks\":true,\"cleanFastSaveData\":true,\"cleanFormDefaults\":false,\"cleanGlossary\":false,\"cleanHeadersFooters\":false,\"cleanHiddenText\":true,\"cleanHyperlinkBase\":true,\"cleanHyperlinkURLs\":false,\"cleanHyperlinksChanged\":false,\"cleanIdentifier\":true,\"cleanImageEXIF\":true,\"cleanInkAnnotations\":false,\"cleanInternalURLs\":true,\"cleanInvisibleObjects\":true,\"cleanKeywords\":true,\"cleanLanguage\":false,\"cleanLanguageSettings\":false,\"cleanLastModifiedBy\":true,\"cleanLastPrinted\":true,\"cleanLinksUpToDate\":true,\"cleanMailMerge\":false,\"cleanManager\":true,\"cleanMicrosoftExtensionXML\":false,\"cleanModifiedDate\":false,\"cleanNonstandardXML\":false,\"cleanOLEObjects\":true,\"cleanOLESources\":true,\"cleanOrphanedParts\":false,\"cleanPrinterSettings\":true,\"cleanRSIDs\":true,\"cleanReviewCommentsHidden\":true,\"cleanReviewCommentsVisible\":false,\"cleanRevisionNumber\":true,\"cleanScaleCrop\":false,\"cleanSharedDoc\":true,\"cleanSpellGrammarState\":false,\"cleanStatistics\":false,\"cleanStyleNames\":false,\"cleanSubject\":true,\"cleanTemplate\":true,\"cleanThumbnail\":true,\"cleanTitle\":true,\"cleanTotalEditingTime\":true,\"cleanTrackChanges\":false,\"cleanUNCPaths\":true,\"cleanUnknownRelationships\":false,\"cleanUserPaths\":true,\"cleanVBAMacros\":true,\"cleanVersion\":true,\"cleanWatermarks\":false}"
+  },
+  "envBefore" : {
+
+  },
+  "events" : [
+
+  ],
+  "flagsAfter" : {
+    "batchETAIsNil" : true,
+    "hasCompletedDocuments" : false,
+    "hasDocuments" : true,
+    "hasFailedDocuments" : true,
+    "hasFinishedProcessing" : false,
+    "hasProcessingDocuments" : false,
+    "hasValidDocuments" : true,
+    "metadataReportErrorMessage" : "Metadata reports are unavailable until the AI engine finishes starting.",
+    "metadataReportNeedsPermissionRetry" : false
+  },
+  "itemsAfter" : [
+    {
+      "errorMessage" : "Processing unavailable: embedded Python runtime not initialized. Please restart the app.",
+      "lastDestinationURL" : "<TMP>",
+      "lastOperation" : "redaction",
+      "name" : "Consent.docx",
+      "status" : "failed"
+    },
+    {
+      "errorMessage" : "Processing unavailable: Python runtime not initialized.",
+      "lastDestinationURL" : "<TMP>",
+      "lastOperation" : "scrub",
+      "name" : "Consent.docx",
+      "status" : "failed"
+    },
+    {
+      "name" : "Consent.docx",
+      "status" : "validDocument"
+    }
+  ],
+  "scenario" : "runner_unavailable"
+}

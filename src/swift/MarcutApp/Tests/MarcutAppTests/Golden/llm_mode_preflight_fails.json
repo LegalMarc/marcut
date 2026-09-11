@@ -1,0 +1,66 @@
+{
+  "envAfter" : {
+
+  },
+  "envBefore" : {
+
+  },
+  "events" : [
+    {
+      "args" : [
+
+      ],
+      "envAtCall" : {
+
+      },
+      "method" : "clearCancellationRequest"
+    },
+    {
+      "args" : [
+
+      ],
+      "envAtCall" : {
+
+      },
+      "method" : "clearCancellationRequest"
+    },
+    {
+      "args" : [
+        "qwen2.5:14b"
+      ],
+      "envAtCall" : {
+
+      },
+      "method" : "llmPreflightCheck"
+    },
+    {
+      "args" : [
+
+      ],
+      "envAtCall" : {
+
+      },
+      "method" : "clearCancellationRequest"
+    }
+  ],
+  "flagsAfter" : {
+    "batchETAIsNil" : true,
+    "hasCompletedDocuments" : false,
+    "hasDocuments" : true,
+    "hasFailedDocuments" : true,
+    "hasFinishedProcessing" : false,
+    "hasProcessingDocuments" : false,
+    "hasValidDocuments" : false,
+    "metadataReportNeedsPermissionRetry" : false
+  },
+  "itemsAfter" : [
+    {
+      "errorMessage" : "AI service is not ready (missing model or offline). Please restart the app or redownload the model. Check App Log in Settings.",
+      "lastDestinationURL" : "<TMP>",
+      "lastOperation" : "redaction",
+      "name" : "Consent.docx",
+      "status" : "failed"
+    }
+  ],
+  "scenario" : "llm_mode_preflight_fails"
+}

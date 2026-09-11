@@ -16,7 +16,20 @@ accept an injected `UserDefaults` suite (default `.standard`, every
 production call site unchanged), and every §3.2 characterization target
 listed in #99 is widened from `private` to `internal`, so tests can seed
 preference state and stored ETA/batch properties without touching real
-`UserDefaults.standard` or reaching for reflection.
+`UserDefaults.standard` or reaching for reflection. Prereq 4 (#100) is also
+done: `Tests/MarcutAppTests/RecordingRedactionRunner.swift`,
+`RedactionCharacterizationHarness.swift`, and
+`RedactionCharacterizationTests.swift` add a scripted `RedactionRunning`
+fake plus a golden-snapshot harness (20 scenarios under
+`Tests/MarcutAppTests/Golden/`) pinning exactly what the view model hands
+the Python runner -- method, arguments, and the nine-key `MARCUT_*`
+environment allowlist at the moment of the call -- and the resulting
+item/flag/environment state afterward. Every extraction slice below
+(#103-#111) must run
+`swift test --package-path src/swift/MarcutApp --filter RedactionCharacterizationTests`
+before and after its change and get zero golden diffs; the harness's own
+header doc-comment (in `RedactionCharacterizationHarness.swift`) is the
+canonical description of what is snapshotted and how to re-baseline.
 
 ## Goal
 

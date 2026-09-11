@@ -1,0 +1,41 @@
+{
+  "envAfter" : {
+
+  },
+  "envBefore" : {
+
+  },
+  "events" : [
+    {
+      "args" : [
+        "<TMP>/Consent.docx",
+        "<TMP>/Consent Final Redacted.docx"
+      ],
+      "envAtCall" : {
+        "MARCUT_METADATA_ARGS" : "",
+        "MARCUT_METADATA_PRESET" : "maximum",
+        "MARCUT_METADATA_SETTINGS_JSON" : "{\"cleanActiveX\":true,\"cleanAltText\":true,\"cleanAlternateContent\":true,\"cleanAppVersion\":true,\"cleanApplication\":true,\"cleanAuthor\":true,\"cleanCategory\":true,\"cleanChartLabels\":true,\"cleanComments\":true,\"cleanCompany\":true,\"cleanContentStatus\":true,\"cleanCreatedDate\":true,\"cleanCustomProperties\":true,\"cleanCustomXMLParts\":true,\"cleanDataBindings\":true,\"cleanDigitalSignatures\":true,\"cleanDocSecurity\":true,\"cleanDocumentGUID\":true,\"cleanDocumentVariables\":true,\"cleanDocumentVersions\":true,\"cleanEmbeddedFonts\":true,\"cleanExternalLinks\":true,\"cleanFastSaveData\":true,\"cleanFormDefaults\":true,\"cleanGlossary\":true,\"cleanHeadersFooters\":true,\"cleanHiddenText\":true,\"cleanHyperlinkBase\":true,\"cleanHyperlinkURLs\":true,\"cleanHyperlinksChanged\":true,\"cleanIdentifier\":true,\"cleanImageEXIF\":true,\"cleanInkAnnotations\":true,\"cleanInternalURLs\":true,\"cleanInvisibleObjects\":true,\"cleanKeywords\":true,\"cleanLanguage\":true,\"cleanLanguageSettings\":true,\"cleanLastModifiedBy\":true,\"cleanLastPrinted\":true,\"cleanLinksUpToDate\":true,\"cleanMailMerge\":true,\"cleanManager\":true,\"cleanMicrosoftExtensionXML\":true,\"cleanModifiedDate\":true,\"cleanNonstandardXML\":true,\"cleanOLEObjects\":true,\"cleanOLESources\":true,\"cleanOrphanedParts\":true,\"cleanPrinterSettings\":true,\"cleanRSIDs\":true,\"cleanReviewCommentsHidden\":true,\"cleanReviewCommentsVisible\":true,\"cleanRevisionNumber\":true,\"cleanScaleCrop\":true,\"cleanSharedDoc\":true,\"cleanSpellGrammarState\":true,\"cleanStatistics\":true,\"cleanStyleNames\":true,\"cleanSubject\":true,\"cleanTemplate\":true,\"cleanThumbnail\":true,\"cleanTitle\":true,\"cleanTotalEditingTime\":true,\"cleanTrackChanges\":true,\"cleanUNCPaths\":true,\"cleanUnknownRelationships\":true,\"cleanUserPaths\":true,\"cleanVBAMacros\":true,\"cleanVersion\":true,\"cleanWatermarks\":true}"
+      },
+      "method" : "scrubMetadataOnlyAsync"
+    }
+  ],
+  "flagsAfter" : {
+    "batchETAIsNil" : true,
+    "hasCompletedDocuments" : true,
+    "hasDocuments" : true,
+    "hasFailedDocuments" : false,
+    "hasFinishedProcessing" : true,
+    "hasProcessingDocuments" : false,
+    "hasValidDocuments" : false,
+    "metadataReportNeedsPermissionRetry" : false
+  },
+  "itemsAfter" : [
+    {
+      "errorMessage" : "Unable to finalize.",
+      "name" : "Consent.docx",
+      "redactedOutputURL" : "<TMP>/Consent.docx",
+      "status" : "completed"
+    }
+  ],
+  "scenario" : "share_final_copy_result_failure"
+}
