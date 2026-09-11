@@ -16,8 +16,19 @@ final class UserOverridesManager {
         fileManager.fileExists(atPath: overridesSystemPromptURL.path)
     }
 
-    private init() {
-        overridesDirectory = UserOverridesManager.resolveOverridesDirectory(fileManager: fileManager)
+    /// `.shared` (the only production call path) always passes `nil`, which resolves the real,
+    /// shared `~/Library/Application Support/MarcutApp/Overrides` (and App Group container)
+    /// directory via `resolveOverridesDirectory` -- synchronous filesystem I/O including a
+    /// `.write_test` probe write. Tests construct their own instance with
+    /// `overridesDirectoryOverride` pointed at a throwaway directory instead, so `swift test`
+    /// never touches that real, shared, non-sandboxed state.
+    init(overridesDirectoryOverride: URL? = nil) {
+        if let overridesDirectoryOverride {
+            overridesDirectory = overridesDirectoryOverride
+            try? fileManager.createDirectory(at: overridesDirectoryOverride, withIntermediateDirectories: true)
+        } else {
+            overridesDirectory = UserOverridesManager.resolveOverridesDirectory(fileManager: fileManager)
+        }
         // No seeding - we use bundled defaults until user customizes
         syncEnvironment()
     }

@@ -19,6 +19,16 @@ final class MarcutAppTests: XCTestCase {
         DocumentRedactionViewModel(defaults: defaults)
     }
 
+    /// A `SettingsOverridesController` backed by a fresh, throwaway `UserOverridesManager`
+    /// instance pointed at a temp directory -- never `.shared` -- so constructing `SettingsView`
+    /// in tests never touches the real, shared `~/Library/Application Support/MarcutApp/Overrides`
+    /// directory or its synchronous `.write_test` probe write.
+    private func makeIsolatedOverridesController() -> SettingsOverridesController {
+        let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let overridesManager = UserOverridesManager(overridesDirectoryOverride: tempDir)
+        return SettingsOverridesController(overridesManager: overridesManager)
+    }
+
     /// Test helper for resolving sample file URLs from the repo root
     private func sampleFileURL(_ name: String) -> URL {
         let testFile = URL(fileURLWithPath: #filePath)
@@ -578,11 +588,31 @@ final class MarcutAppTests: XCTestCase {
     /// abort the entire `swift test` process under the CLI runner (no host app bundle -- see
     /// `PermissionManager.notificationCenter`, #97). That call is now guarded and no-ops outside
     /// a real `.app` bundle, so simply constructing `SettingsView` here proves the process
-    /// survives.
+    /// survives. It injects an isolated `overridesController` (see
+    /// `makeIsolatedOverridesController()`) rather than letting the default
+    /// `SettingsOverridesController()` resolve `UserOverridesManager.shared` and its real,
+    /// shared Application Support directory.
     func testSettingsViewConstructsWithoutCrashingUnderSwiftTest() {
         let viewModel = createTestViewModel()
-        let view = SettingsView(viewModel: viewModel)
+        let view = SettingsView(viewModel: viewModel, overridesController: makeIsolatedOverridesController())
         XCTAssertTrue(view.viewModel === viewModel)
+    }
+
+    /// Proves the test seam added for #106's `AdvancedModeDefaultsMigrationTests` actually
+    /// isolates `UserOverridesManager` from the real, shared, non-sandboxed
+    /// `~/Library/Application Support/MarcutApp/Overrides` directory: a manager constructed with
+    /// `overridesDirectoryOverride` reads and writes only under that injected directory.
+    func testUserOverridesManagerUsesInjectedDirectoryInsteadOfRealApplicationSupport() throws {
+        let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+        let manager = UserOverridesManager(overridesDirectoryOverride: tempDir)
+
+        try manager.saveExcludedWords("acme corp")
+
+        let expectedURL = tempDir.appendingPathComponent("excluded-words.txt")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: expectedURL.path))
+        XCTAssertEqual(manager.activeExcludedWordsURL, expectedURL)
+        XCTAssertFalse(manager.activeExcludedWordsURL.path.contains("Library/Application Support/MarcutApp"))
     }
 
     // MARK: - Notification Crash Guard Tests (issue #97)
