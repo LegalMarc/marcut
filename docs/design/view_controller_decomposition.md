@@ -251,9 +251,8 @@ DocumentRedactionViewModel (stays, ~400–500 lines)
 ### 2.2 `SettingsView.swift` split
 
 ```
-SettingsView.swift (stays, ~700–800 lines: form layout + search)
-├── AppTheme (already a clean, self-contained enum — could move to its own
-│   file trivially, lowest risk of anything in this doc)
+SettingsView.swift (2,136 lines: form layout + search)
+├── AppTheme.swift — done (#103): moved, no logic change
 ├── SettingsProfileIO (NEW file) — exportSettingsProfile, importSettingsProfile
 ├── OverrideEditingViewModel or SettingsOverridesController (NEW) — excluded-words
 │   and system-prompt open/save/cancel/restore functions, backed by
@@ -263,15 +262,16 @@ SettingsView.swift (stays, ~700–800 lines: form layout + search)
 │   seeding/migration block from SettingsView.init AND
 │   DocumentRedactionViewModel.applyAdvancedModeDefaultsIfNeeded, unified
 │   into one function both call, removing today's duplication
-├── OverrideEditorSheet.swift (NEW file) — already a private, decoupled view
-├── ExcludedWordMatchPreview.swift (NEW file) — already decoupled
-├── ScrollableTextEditor.swift (NEW file) — already decoupled
-├── ModelSelectionRow.swift (NEW file, shared) — used by both SettingsView
-│   and FirstRunSetupView
-├── FeatureRow.swift (NEW file) — used only by FirstRunSetupView but tiny/generic
-└── FirstRunSetupView.swift (NEW file) — the entire onboarding wizard is
-    already a distinct `View` with no reach into SettingsView's private
-    state; this is a pure file-move, not a logic split
+├── OverrideEditorSheet.swift — done (#103): moved, no logic change
+├── ExcludedWordMatchPreview.swift — done (#103): moved, no logic change
+├── ScrollableTextEditor.swift — done (#103): moved, no logic change
+├── ModelSelectionRow.swift — done (#103): moved, no logic change (shared by
+│   SettingsView and FirstRunSetupView)
+├── FeatureRow.swift — done (#103): moved, no logic change (used only by
+│   FirstRunSetupView but tiny/generic)
+└── FirstRunSetupView.swift — done (#103): moved, no logic change; the
+    entire onboarding wizard was already a distinct `View` with no reach
+    into SettingsView's private state
 ```
 
 The `SettingsView` split is materially lower-risk than the view model split:
@@ -448,19 +448,22 @@ conventions. Slices 1–3 require no characterization tests beyond what they
 add themselves (their targets are already pure or nearly pure); slices 4+
 depend on the characterization tests from §3.2 landing first.
 
-1. **File-only moves, zero logic risk** — extract `AppTheme`,
-   `OverrideEditorSheet`, `ExcludedWordMatchPreview`, `ScrollableTextEditor`,
-   `FeatureRow`, and `ModelSelectionRow` out of `SettingsView.swift` into
-   their own files (no code changes, pure `struct`/`enum` relocation with
-   `import` adjustments). ~6 new files, 0 files touched for logic.
-   Verification: `swift build` + `swift test` green; no test assertions
-   should need to change since nothing but file boundaries moved.
+1. **File-only moves, zero logic risk** — **done (#103)**: extracted
+   `AppTheme`, `OverrideEditorSheet`, `ExcludedWordMatchPreview`,
+   `ScrollableTextEditor`, `FeatureRow`, and `ModelSelectionRow` out of
+   `SettingsView.swift` into their own files (no code changes beyond the
+   `private struct` → `struct` access widening the ticket's own extraction
+   rules require for `OverrideEditorSheet`, `ExcludedWordMatchPreview`, and
+   `ScrollableTextEditor`, now used cross-file). `swift build` + `swift test`
+   green, zero golden diffs, no test assertions changed.
 
-2. **`FirstRunSetupView` → its own file** — same as above but larger
-   (~365 lines); it's already a self-contained `View` with its own
-   `@State`. Verification: same as above, plus a manual click-through of
-   the onboarding flow (welcome → model selection → download → complete)
-   since it has no automated coverage today per §3.1.
+2. **`FirstRunSetupView` → its own file** — **done (#103)**, merged into
+   the same PR as slice 1 per that issue's scope (both are pure file
+   moves): the onboarding wizard moved unchanged into
+   `FirstRunSetupView.swift`. Verification: same as above. The manual
+   click-through of the onboarding flow (welcome → model selection →
+   download → complete) is deferred to the next release's smoke check per
+   #103's notes, since it has no automated coverage today per §3.1.
 
 3. **`ProgressMonitor` extraction** (`mapPhaseToStage`, `extractChunkInfo`,
    ETA math) — these are the most nearly-pure functions in
