@@ -132,7 +132,9 @@ enum RedactionCharacterizationHarness {
             .map(fixturePath)
             .filter { !fileManager.fileExists(atPath: $0) }
         guard missing.isEmpty else {
-            throw XCTSkip("Confidential local-only fixture(s) not present, skipping: \(missing.joined(separator: ", "))")
+            throw XCTSkip(
+                "Confidential local-only fixture(s) not present, skipping: \(missing.joined(separator: ", "))"
+            )
         }
     }
 
