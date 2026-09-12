@@ -1851,44 +1851,12 @@ final class DocumentRedactionViewModel: ObservableObject {
     }
 
     func applyAdvancedModeDefaultsIfNeeded() {
-        if defaults.object(forKey: DefaultsKey.advancedModeEnabled.key) == nil {
-            defaults.set(hasCompletedFirstRun, forKey: DefaultsKey.advancedModeEnabled.key)
-        }
-        if defaults.object(forKey: DefaultsKey.advancedAIMode.key) == nil {
-            let seedMode = settings.mode.usesLLM ? settings.mode : .rulesOverride
-            defaults.set(seedMode.rawValue, forKey: DefaultsKey.advancedAIMode.key)
-        }
-        if defaults.object(forKey: DefaultsKey.advancedLLMConfidence.key) == nil {
-            defaults.set(settings.llmConfidenceThreshold, forKey: DefaultsKey.advancedLLMConfidence.key)
-        }
-        if defaults.object(forKey: DefaultsKey.advancedLLMConfidenceMigratedTo99.key) == nil {
-            if let storedConfidence = defaults.object(forKey: DefaultsKey.advancedLLMConfidence.key) as? NSNumber,
-               storedConfidence.intValue == 95
-            {
-                defaults.set(
-                    RedactionSettings.standardNormalModeConfidence,
-                    forKey: DefaultsKey.advancedLLMConfidence.key
-                )
-            }
-            defaults.set(true, forKey: DefaultsKey.advancedLLMConfidenceMigratedTo99.key)
-        }
-
-        let advancedEnabled = defaults.bool(forKey: DefaultsKey.advancedModeEnabled.key)
-        let storedModeRaw = defaults.string(forKey: DefaultsKey.advancedAIMode.key) ?? RedactionMode.rulesOverride
-            .rawValue
-        let storedMode = RedactionMode(rawValue: storedModeRaw) ?? .rulesOverride
-        let normalizedMode = storedMode == .rules ? .rulesOverride : storedMode
-        let storedConfidence = defaults.integer(forKey: DefaultsKey.advancedLLMConfidence.key)
-        let resolvedConfidence = storedConfidence
-
-        if advancedEnabled {
-            if settings.mode != .rules {
-                settings.mode = normalizedMode
-            }
-            settings.llmConfidenceThreshold = resolvedConfidence
-        } else {
-            settings.applyStandardNormalModeDefaults(keepingMode: settings.mode == .rules)
-        }
+        AdvancedModeDefaultsMigrator.apply(
+            defaults: defaults,
+            hasCompletedFirstRun: hasCompletedFirstRun,
+            settings: &settings,
+            seedSettingsViewOnlyKeys: false
+        )
     }
 
     func initializeDebugSync() {

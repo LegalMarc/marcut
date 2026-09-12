@@ -146,60 +146,12 @@ struct SettingsView: View {
         {
             initialSettings.model = first
         }
-        if defaults.object(forKey: DefaultsKey.advancedModeEnabled.key) == nil {
-            defaults.set(viewModel.hasCompletedFirstRun, forKey: DefaultsKey.advancedModeEnabled.key)
-        }
-        if defaults.object(forKey: DefaultsKey.advancedAIMode.key) == nil {
-            let seedMode = initialSettings.mode.usesLLM ? initialSettings.mode : .rulesOverride
-            defaults.set(seedMode.rawValue, forKey: DefaultsKey.advancedAIMode.key)
-        }
-        if defaults.object(forKey: DefaultsKey.advancedLLMConfidence.key) == nil {
-            defaults.set(initialSettings.llmConfidenceThreshold, forKey: DefaultsKey.advancedLLMConfidence.key)
-        }
-        if defaults.object(forKey: DefaultsKey.advancedLLMConfidenceMigratedTo99.key) == nil {
-            if let storedConfidence = defaults.object(forKey: DefaultsKey.advancedLLMConfidence.key) as? NSNumber,
-               storedConfidence.intValue == 95
-            {
-                defaults.set(
-                    RedactionSettings.standardNormalModeConfidence,
-                    forKey: DefaultsKey.advancedLLMConfidence.key
-                )
-            }
-            defaults.set(true, forKey: DefaultsKey.advancedLLMConfidenceMigratedTo99.key)
-        }
-        if defaults.object(forKey: DefaultsKey.outputSaveLocationPreference.key) == nil {
-            if let legacy = defaults
-                .object(forKey: DefaultsKey.legacyMetadataReportAlwaysSaveToDownloads.key) as? Bool
-            {
-                let mapped = legacy ? OutputSaveLocation.downloads.rawValue : OutputSaveLocation.alwaysAsk.rawValue
-                defaults.set(mapped, forKey: DefaultsKey.outputSaveLocationPreference.key)
-            } else {
-                defaults.set(
-                    OutputSaveLocation.alwaysAsk.rawValue,
-                    forKey: DefaultsKey.outputSaveLocationPreference.key
-                )
-            }
-        }
-        if defaults.object(forKey: DefaultsKey.unsavedReportQuitBehavior.key) == nil {
-            defaults.set(UnsavedReportQuitBehavior.warn.rawValue, forKey: DefaultsKey.unsavedReportQuitBehavior.key)
-        }
-
-        let advancedEnabled = defaults.bool(forKey: DefaultsKey.advancedModeEnabled.key)
-        let storedModeRaw = defaults.string(forKey: DefaultsKey.advancedAIMode.key) ?? RedactionMode.rulesOverride
-            .rawValue
-        let storedMode = RedactionMode(rawValue: storedModeRaw) ?? .rulesOverride
-        let normalizedMode = storedMode == .rules ? .rulesOverride : storedMode
-        let storedConfidence = defaults.integer(forKey: DefaultsKey.advancedLLMConfidence.key)
-        let resolvedConfidence = storedConfidence
-
-        if advancedEnabled {
-            if initialSettings.mode != .rules {
-                initialSettings.mode = normalizedMode
-            }
-            initialSettings.llmConfidenceThreshold = resolvedConfidence
-        } else {
-            initialSettings.applyStandardNormalModeDefaults(keepingMode: initialSettings.mode == .rules)
-        }
+        AdvancedModeDefaultsMigrator.apply(
+            defaults: defaults,
+            hasCompletedFirstRun: viewModel.hasCompletedFirstRun,
+            settings: &initialSettings,
+            seedSettingsViewOnlyKeys: true
+        )
 
         self._localSettings = State(initialValue: initialSettings)
     }

@@ -266,7 +266,7 @@ SettingsView.swift (2,136 lines: form layout + search)
 │   to it via `@StateObject` since (unlike the view-model collaborators in §2.1, which
 │   keep @Published state on DocumentRedactionViewModel) SettingsView has no separate
 │   model object of its own to hold that state
-├── AdvancedModeDefaultsMigrator (NEW, shared) — the UserDefaults
+├── AdvancedModeDefaultsMigrator.swift — done (#106): the UserDefaults
 │   seeding/migration block from SettingsView.init AND
 │   DocumentRedactionViewModel.applyAdvancedModeDefaultsIfNeeded, unified
 │   into one function both call, removing today's duplication
@@ -285,16 +285,16 @@ SettingsView.swift (2,136 lines: form layout + search)
 The `SettingsView` split is materially lower-risk than the view model split:
 most of the boundaries above are already-separate `struct`s or
 `private func` groups with no shared mutable state beyond `@State` that
-stays local to the file being moved. The one genuine cross-cutting risk is
-`AdvancedModeDefaultsMigrator`: today `SettingsView.init` and
+stays local to the file being moved. The one genuine cross-cutting risk was
+`AdvancedModeDefaultsMigrator`: `SettingsView.init` and
 `DocumentRedactionViewModel.applyAdvancedModeDefaultsIfNeeded()` each
-independently read/seed the same `DefaultsKey` values on every
-view-construction / view-model-init, and they are not byte-for-byte
-identical (`SettingsView.init` additionally seeds
+independently read/seeded the same `DefaultsKey` values on every
+view-construction / view-model-init, and they were not byte-for-byte
+identical (`SettingsView.init` additionally seeded
 `outputSaveLocationPreference` and `unsavedReportQuitBehavior`, which
-`applyAdvancedModeDefaultsIfNeeded` does not touch). Unifying them is
-valuable (it is the actual duplication `backlog.md` flags) but must be its
-own slice with characterization tests proving both call sites still end up
+`applyAdvancedModeDefaultsIfNeeded` did not touch). Unifying them was
+valuable (it was the actual duplication `backlog.md` flagged) but had to be
+its own slice with characterization tests proving both call sites still end up
 with identical `UserDefaults` state afterward — see §4, Slice 5.
 
 ---
@@ -515,18 +515,26 @@ depend on the characterization tests from §3.2 landing first.
    Verification per §3.3: `swift build` + `swift test` green, SwiftFormat
    lint clean, zero golden diffs.
 
-5. **`AdvancedModeDefaultsMigrator` unification** — the highest-value and
-   highest-risk de-duplication (§2.2, §3.2 item 5). Characterization tests
-   must land and pass against *both* existing call sites first; the
-   unification PR should keep the merged function's parameters explicit
-   enough (e.g. `hasCompletedFirstRun: Bool`, `seedModeIfLLM: RedactionMode?`)
-   that `SettingsView.init` and
-   `DocumentRedactionViewModel.applyAdvancedModeDefaultsIfNeeded()` can both
-   call the same function and produce identical `UserDefaults` state to
-   today, including `SettingsView.init`'s extra
-   `outputSaveLocationPreference`/`unsavedReportQuitBehavior` seeding
-   (which the migrator must also cover, or those two keys must be
-   explicitly and separately documented as staying in `SettingsView.init`).
+5. **`AdvancedModeDefaultsMigrator` unification** — **done (#106)**: the
+   highest-value and highest-risk de-duplication (§2.2, §3.2 item 5).
+   `#102`'s characterization matrix landed and passed against both existing
+   call sites first; this PR then moved the seeding block (all four
+   `advanced*` `DefaultsKey` writes plus the 95->99 one-time confidence
+   migration) and the shared post-seeding `mode`/`llmConfidenceThreshold`
+   resolution — proven byte-identical across both sites by the matrix —
+   into one `AdvancedModeDefaultsMigrator.apply(defaults:hasCompletedFirstRun
+   :settings:seedSettingsViewOnlyKeys:)` static function, called from both
+   `SettingsView.init` and
+   `DocumentRedactionViewModel.applyAdvancedModeDefaultsIfNeeded()`. Per the
+   issue's own decision point, `outputSaveLocationPreference`/
+   `unsavedReportQuitBehavior` seeding (with the legacy
+   `legacyMetadataReportAlwaysSaveToDownloads` mapping) stayed
+   `SettingsView.init`-only rather than moving to view-model launch time —
+   `seedSettingsViewOnlyKeys` gates it, `false` from the view model and
+   `true` from `SettingsView`, so #102's matrix (including its two named
+   drift-point tests) passes unmodified, byte-for-byte. Verification per
+   §3.3: `swift build` + `swift test` green, SwiftFormat lint clean, zero
+   golden diffs.
 
 6. **`DocumentShareService` extraction** — **done (#107)**:
    `openRedactedDocument`, `shareDocument`, `confirmAndShareReviewCopy`,
