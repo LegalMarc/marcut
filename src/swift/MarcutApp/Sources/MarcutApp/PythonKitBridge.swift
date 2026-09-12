@@ -50,6 +50,95 @@ private extension PythonObject {
     func toOptionalDouble() -> Double? {
         Double(self)
     }
+
+    func toOptionalInt() -> Int? {
+        Int(self)
+    }
+}
+
+/// Reconstructs the small JSON payload `DocumentModels.swift`'s
+/// `ingestProgressPayload` expects for one mass-event `ProgressEvent`
+/// (issue #96) -- read directly off the live `PythonObject`'s own
+/// attributes, a local/native operation, not a round trip through Python's
+/// `json.dumps`. Field sets mirror `progress.py`'s mass-event models
+/// exactly (`MassTotalEvent`, `ChunkStartEvent`, `ChunkEndEvent`,
+/// `KeepaliveEvent`, `TokenProgressEvent`); `phase_update` and any
+/// unrecognized `type` return `nil` since neither ever crosses this
+/// channel.
+private func massEventJSONString(_ event: PythonObject, type: String) -> String? {
+    var dict: [String: Any] = ["type": type]
+    switch type {
+    case "mass_total":
+        guard let value = event.value.toOptionalInt() else { return nil }
+        dict["value"] = value
+    case "chunk_start":
+        guard let size = event.size.toOptionalInt() else { return nil }
+        dict["size"] = size
+        dict["estimated_time"] = event.estimated_time.toOptionalDouble() ?? 0.0
+        if let chunkIndex = event.chunk_index.toOptionalInt(), let totalChunks = event.total_chunks.toOptionalInt() {
+            dict["chunk_index"] = chunkIndex
+            dict["total_chunks"] = totalChunks
+        }
+    case "chunk_end":
+        guard let size = event.size.toOptionalInt() else { return nil }
+        dict["size"] = size
+        if let chunkIndex = event.chunk_index.toOptionalInt(), let totalChunks = event.total_chunks.toOptionalInt() {
+            dict["chunk_index"] = chunkIndex
+            dict["total_chunks"] = totalChunks
+        }
+    case "keepalive":
+        dict["message"] = event.message.toOptionalString() ?? ""
+        if let chunk = event.chunk.toOptionalInt(), let total = event.total.toOptionalInt() {
+            dict["chunk"] = chunk
+            dict["total"] = total
+        }
+    case "token_progress":
+        guard let chunkIndex = event.chunk_index.toOptionalInt(),
+              let chars = event.chars.toOptionalInt()
+        else {
+            return nil
+        }
+        dict["chunk_index"] = chunkIndex
+        dict["chars"] = chars
+        if let evalCount = event.eval_count.toOptionalInt() {
+            dict["eval_count"] = evalCount
+        }
+    default:
+        return nil
+    }
+    guard let data = try? JSONSerialization.data(withJSONObject: dict),
+          let json = String(data: data, encoding: .utf8)
+    else {
+        return nil
+    }
+    return json
+}
+
+/// Reads `chunk_index`/`total_chunks` off a `chunk_start`/`chunk_end` mass event, for the
+/// `PythonRunnerProgressUpdate.chunk`/`.total` struct fields `ProgressMonitor.extractChunkInfo`
+/// reads to refresh `DocumentItem.lastHeartbeat` (issue #96 round-2 fix).
+///
+/// Only `LlamaCppRedactionPipeline.process_document` populates these two fields on its
+/// `ChunkStartEvent`/`ChunkEndEvent` emissions (see `progress.py`'s docstring on
+/// `ChunkStartEvent`) -- that backend has no keepalive thread, so a chunk boundary is its only
+/// heartbeat signal. Ollama leaves them unset, so this returns `nil` for Ollama's chunk events
+/// and their heartbeat keeps coming from `KeepaliveEvent`'s own `chunk`/`total` fields instead
+/// (parsed directly out of the JSON `message` by `DocumentModels.swift`'s `ingestProgressPayload`,
+/// not through this struct-field path).
+///
+/// `chunkIndex` is 0-based on the wire (matching `TokenProgressEvent.chunk_index`'s convention);
+/// this returns it as a 1-based "current chunk number" (`chunkIndex + 1`) to match the
+/// pre-#96 raw 3-tuple's `(i + 1, total_chunks, ...)` numbering that `extractChunkInfo`'s
+/// heartbeat/progress-fraction math was originally built against.
+private func massEventChunkInfo(_ event: PythonObject, type: String) -> (chunk: Int, total: Int)? {
+    guard type == "chunk_start" || type == "chunk_end",
+          let chunkIndex = event.chunk_index.toOptionalInt(),
+          let totalChunks = event.total_chunks.toOptionalInt(),
+          totalChunks > 0
+    else {
+        return nil
+    }
+    return (chunkIndex + 1, totalChunks)
 }
 
 private typealias PyGILState_STATE = Int32
@@ -1539,37 +1628,55 @@ public final class PythonKitRunner {
                 let progressCallback: PythonObject = {
                     guard let heartbeat else { return Python.None }
                     let function = PythonFunction { args, _ in
-                        guard let firstArg = args.first else {
+                        // One channel (bridge schema migration follow-up, issue #96):
+                        // every progress-event producer in Python now dispatches through
+                        // `progress_callback` with exactly one positional argument, an
+                        // already-validated `ProgressEvent` instance -- either the rich
+                        // `phase_update` or one of the five mass-event shapes. There is no
+                        // more callback-arity-dependent multi-arg shape to fall back to.
+                        guard args.count == 1, let event = args.first else {
                             return Python.None
                         }
 
-                        // Rich ProgressUpdate object path
-                        if args.count == 1 {
-                            let update = firstArg
-                            let identifier = update.phase.toOptionalString()?.nilIfEmptyOrNone()
-                            let displayName = update.phase_name.toOptionalString()?.nilIfEmptyOrNone()
-                            let phaseProgress = update.phase_progress.toOptionalDouble()
-                            let overall = update.overall_progress.toOptionalDouble()
-                            let message = update.message.toOptionalString()?.nilIfEmptyOrNone()
-                            let payload = PythonRunnerProgressUpdate(
+                        let eventType = event.type.toOptionalString() ?? ""
+
+                        if eventType == "phase_update" {
+                            // Rich phase-level update: read attributes directly off the
+                            // live PythonObject (no serialization cost -- this is the
+                            // infrequent side of the channel, per the maintainer's Option
+                            // B decision on issue #96).
+                            let identifier = event.phase.toOptionalString()?.nilIfEmptyOrNone()
+                            let displayName = event.phase_name.toOptionalString()?.nilIfEmptyOrNone()
+                            let phaseProgress = event.phase_progress.toOptionalDouble()
+                            let overall = event.overall_progress.toOptionalDouble()
+                            let message = event.message.toOptionalString()?.nilIfEmptyOrNone()
+                            heartbeat(PythonRunnerProgressUpdate(
                                 phaseIdentifier: identifier,
                                 phaseDisplayName: displayName,
                                 phaseProgress: phaseProgress,
                                 overallProgress: overall,
                                 message: message
-                            )
-                            heartbeat(payload)
-                        } else {
-                            let chunk = Int(args[0]) ?? 0
-                            let total = args.count > 1 ? Int(args[1]) ?? 0 : 0
-                            let message = args.count > 2 ? args[2].toOptionalString()?.nilIfEmptyOrNone() : nil
-                            heartbeat(
-                                PythonRunnerProgressUpdate(
-                                    chunk: chunk,
-                                    total: total,
-                                    message: message
-                                )
-                            )
+                            ))
+                        } else if let message = massEventJSONString(event, type: eventType) {
+                            // mass_total/chunk_start/chunk_end/keepalive/token_progress:
+                            // reconstruct the small JSON payload from the event's own attributes
+                            // (a local, native operation -- not a round trip through
+                            // Python's json.dumps) and hand it to the same
+                            // `ingestProgressPayload` string-based parser the
+                            // subprocess/stdout channel already uses, so there is one
+                            // switch, not two, deciding what each event type means.
+                            //
+                            // `massEventChunkInfo` additionally threads llama.cpp's
+                            // chunk_index/total_chunks onto the struct's own chunk/total fields
+                            // (issue #96 round-2 fix) -- see its doc comment for why only
+                            // llama.cpp's events carry these and why that's necessary for its
+                            // heartbeat to survive a slow-but-alive chunk.
+                            let chunkInfo = massEventChunkInfo(event, type: eventType)
+                            heartbeat(PythonRunnerProgressUpdate(
+                                chunk: chunkInfo?.chunk,
+                                total: chunkInfo?.total,
+                                message: message
+                            ))
                         }
                         return Python.None
                     }

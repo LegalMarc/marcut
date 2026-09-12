@@ -33,7 +33,7 @@ def _ollama_host_arg() -> str:
 try:
     from marcut.pipeline import run_redaction_enhanced
     from marcut.preflight import check_ollama_installed, check_ollama_running, check_model_available
-    from marcut.progress import create_progress_callback, ProgressUpdate
+    from marcut.progress import create_progress_callback
     from marcut.progress_widgets import EnhancedProgressFrame
     IMPORTS_SUCCESS = True
 except ImportError as e:
@@ -501,10 +501,18 @@ class MarcutGUI:
             # Update progress
             self.progress_text.config(text="Processing document with AI model...")
             
-            # Create progress callback for enhanced UI
-            def update_progress_ui(update: ProgressUpdate):
+            # Create progress callback for enhanced UI. The single
+            # progress_callback registered for a run (bridge schema
+            # migration follow-up, issue #96) now receives every
+            # `ProgressEvent` variant, not only the rich `ProgressUpdate`
+            # this UI understands, so mass events (which don't carry
+            # `phase_progress`/`phase_name`/etc.) must be skipped rather
+            # than passed to `update_progress`.
+            def update_progress_ui(update):
                 """Update the enhanced progress UI safely from background thread."""
                 try:
+                    if getattr(update, "type", None) != "phase_update":
+                        return
                     self.root.after(0, lambda: self.enhanced_progress.update_progress(
                         update.phase_progress,
                         update.overall_progress,

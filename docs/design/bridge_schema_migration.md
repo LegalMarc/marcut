@@ -98,6 +98,131 @@ now warns instead of disappearing silently (the three non-field sentinels
 `--preset-none`/`--no-clean-review-comments`/`--clean-review-comments` stay
 silent). `MARCUT_PROCESSING_DEADLINE_MONOTONIC` is untouched, per this
 doc's explicit fail-open exclusion above.
+Step 6 (the follow-up step 4 deliberately deferred) implemented (issue #96)
+-- the three overlapping progress mechanisms (rich `ProgressUpdate`, the
+five `emit_mass_event` shapes, and their raw `print()` to stdout) are one
+channel now. `progress.py`'s `ProgressUpdate` is promoted from a
+`pydantic.dataclasses.dataclass` to a `BaseModel` carrying a `type:
+Literal["phase_update"]` discriminator, joining the five mass-event models
+in one `ProgressEvent` union (`validate_progress_event`/
+`serialize_progress_event`, renamed from `validate_mass_event`/
+`serialize_mass_event`); `MassEvent` (the five non-phase_update members)
+stays a separate, narrower union purely so `SWIFT_HANDLED_MASS_EVENT_TYPES`
+-- now itself *derived* from it rather than hand-typed, per this ticket's
+own Notes on the risk of restating one side of a parity pin -- can keep
+describing exactly the JSON channel `ingestProgressPayload` parses, without
+`phase_update` (which never crosses that channel) polluting the set. Every
+producer now dispatches through one call shape,
+`progress_callback(validated_event)` (`model_enhanced.py`'s new
+`_emit_progress_event` helper), with no callback-arity detection: this
+retires two bugs the design writeup on the issue found mid-flight rather
+than preserving them --
+(1) `IntelligentRedactionPipeline.process_document` used to build a second,
+redundant `ProgressTracker` around every mass event whenever
+`progress_callback`'s signature happened to be `inspect.signature`-readable
+(true for the CLI's plain callback, never true for the PythonKit bridge's
+`PyCFunction`), silently diverging what the CLI and the packaged app each
+received for the same logical event; and
+(2) `LlamaCppRedactionPipeline.process_document` bypassed the schema
+entirely, calling `progress_callback` with a raw, unvalidated `(chunk,
+total, message)` 3-tuple -- it now emits a `chunk_start`/`chunk_end` pair
+per chunk through the same helper, deliberately without
+`mass_total`/`keepalive`/`token_progress` (this backend stays sparser by
+design, not by omission). Per the maintainer's Option B decision (posted on
+the issue): the in-process PythonKit bridge still reads the rich
+`phase_update`'s fields as live `PythonObject` attributes (no serialization
+cost on the infrequent side of the channel); for the five mass-event types
+it reconstructs the same small JSON payload from the event's own
+attributes locally in Swift (`PythonKitBridge.swift`'s
+`massEventJSONString`, not a round trip through Python's `json.dumps`) and
+hands it to the same `ingestProgressPayload` string parser the
+subprocess/stdout channel already used, so there is one switch deciding
+what each mass-event type means, not two. `PythonBridge.swift`'s
+`runRedactionWithCLI`/`parseMARCUTProgress` (the `MARCUT_PROGRESS:`/
+`MARCUT_STATUS:` text-line protocol `cli.py` still prints for a human
+running `marcut` on a terminal) had zero callers in the app target and are
+deleted.
+
+Fix round 1 (per this ticket's own Notes -- "the hottest path in the
+codebase, firing many times per document. Keep the per-event cost at or
+below what it is today and say so with a measurement"): a 20000-iteration
+microbenchmark comparing `_emit_progress_event` against a faithful
+reconstruction of the dispatch it replaces (the `inspect.signature` arity
+check plus, on the branch it selects, either `ProgressTracker.update_phase`
+or the `progress_callback(0, 0, display)` fallback) was run on both
+production callback shapes. PythonKit-bridge shape (`tracker` always
+`None`, matching the shipped app): ~3.2us/event old vs. ~3.0-3.3us/event
+new -- flat to slightly faster. CLI shape (old code built and updated a
+second `ProgressTracker` per mass event): ~5.1-6.5us/event old vs.
+~3.0us/event new -- 40-50% faster, since that second tracker update is
+retired and the outer per-phase tracker now owns phase-level updates
+exclusively. Neither callback shape regresses.
+
+Fix round 1 also corrected a second issue: the PythonKit bridge's
+`keepalive` branch initially surfaced `chunk`/`total` as separate typed
+fields on `PythonRunnerProgressUpdate`, in addition to the reconstructed
+JSON message every other mass-event type uses. Tracing the actual shipped
+app's behavior (not merely what the old code was theoretically capable of)
+showed this was a real, undisclosed regression: `tracker` is always `None`
+on the in-process PythonKit path (its callback is an uninspectable
+`PyCFunction`, confirmed by `ProgressTracker.__init__`'s own pre-existing
+docstring), so the pre-#96 3-tuple dispatch's `elif progress_callback:
+progress_callback(0, 0, display)` branch always sent literal `chunk=0,
+total=0` and a human-readable `display` string that never contained
+"Processing chunk N/M" (that phrasing required a real tracker) --
+`extractChunkInfo` therefore never matched a keepalive tick on the shipped
+app, and its chunk readout stayed at "Chunk pending" for the whole
+LLM-extraction phase. `model_enhanced.py`'s `send_keepalive` (unchanged)
+already always populates real `chunk`/`total` values once chunking starts,
+so surfacing them as typed fields would have made the readout start
+advancing live on every ~3s keepalive tick -- a visible behavior change the
+ticket's "progress bar behaves identically... for an Ollama run" bar rules
+out, and not one of the two changes the maintainer's Option B decision
+authorized. `keepalive` now goes through the same generic
+`massEventJSONString` path as `mass_total`/`chunk_start`/`chunk_end`/
+`token_progress`, so its packaged-app observable behavior matches its
+pre-#96 (silently inert) state.
+
+Fix round 2 (a reviewer-caught regression that exhausted 3 review rounds on
+the round-1 implementation above): round 1's `ChunkStartEvent`/
+`ChunkEndEvent` carried no chunk-index/total-chunks fields, so
+`massEventJSONString`'s reconstructed payload never populated
+`PythonRunnerProgressUpdate.chunk`/`.total`, and `extractChunkInfo`
+(`ProgressMonitor.swift`) therefore never matched a llama.cpp chunk
+boundary. That backend has no keepalive thread (`send_keepalive` is
+Ollama-only) and never emits `mass_total`, so its chunk_start/chunk_end
+pair is its *only* heartbeat signal during LLM_EXTRACTION — before this
+ticket, that signal came from the pre-#96 raw 3-tuple's real `chunk`/`total`
+values landing in the same two struct fields via the old arity-branch code
+path. Losing it meant a llama.cpp run whose aggregate per-chunk time
+exceeded the 120s heartbeat-watchdog timeout (`ProgressMonitor
+.heartbeatTimeout`), even with no single chunk that slow, was wrongly
+marked "processing stalled" — a live regression against this ticket's own
+"progress bar behaves identically... for a llama.cpp run" acceptance
+criterion, uncaught by any mechanical check (`pytest`, `swift build`/`test`,
+`ruff`, `swiftformat`) because nothing exercised
+`ProgressMonitor`/`DocumentItem` heartbeat state through a simulated
+llama.cpp chunk sequence.
+
+The fix: `ChunkStartEvent`/`ChunkEndEvent` (`progress.py`) gain optional
+`chunk_index`/`total_chunks` fields, populated only by
+`LlamaCppRedactionPipeline.process_document`'s emit sites (`chunk_index` is
+the loop's own 0-based index, `total_chunks` the chunk count) — Ollama
+leaves both unset, since its own `KeepaliveEvent.chunk`/`.total` already
+cover this. `massEventJSONString` (`PythonKitBridge.swift`) includes both
+in the reconstructed JSON when present; a new `massEventChunkInfo` helper
+reads them directly off the live `PythonObject` and returns a 1-based
+`(chunk, total)` pair (matching the pre-#96 3-tuple's `i + 1` numbering),
+which the progress callback closure now threads into
+`PythonRunnerProgressUpdate.chunk`/`.total` so `extractChunkInfo`'s
+existing struct-field branch fires again — no change to `extractChunkInfo`
+itself. A new Swift test
+(`testLlamaCppChunkEventsRefreshHeartbeatAcrossAggregateStallWindow`,
+`MarcutAppTests.swift`) drives a simulated 5-chunk llama.cpp sequence whose
+per-chunk gap (100s) stays under the 120s watchdog window while its
+aggregate (1000s) exceeds it, asserting the heartbeat never goes stale at
+any single boundary — closing the exact coverage gap that let the
+regression pass every mechanical check undetected.
 
 ## Goal
 
@@ -444,6 +569,8 @@ shippable and independently revertable:
      larger behavioral change (it would touch `ProgressTracker.__init__`'s
      signature-detection logic, `progress.py:132-144`) better scoped as its
      own follow-up once steps 1–3 have proven the pattern in production.
+     **Done (#96)**: see "Step 6" above for the one-channel consolidation
+     this deferred to, once steps 1-5 had proven the pattern out.
 5. **Env-var JSON blobs (Inventory §1) are explicitly out of scope for a
    schema migration** — they're small enough (one JSON object, one CLI-arg
    string, one float scalar) that the existing `isinstance(decoded, dict)`

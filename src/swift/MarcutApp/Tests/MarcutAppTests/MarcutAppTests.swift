@@ -1216,6 +1216,79 @@ final class MarcutAppTests: XCTestCase {
         viewModel.stopProcessing()
     }
 
+    /// Regression test for issue #96 round 2: `LlamaCppRedactionPipeline.process_document` has
+    /// no keepalive thread (`send_keepalive` in model_enhanced.py only exists on the Ollama
+    /// path) and emits no `mass_total`, so its `chunk_start`/`chunk_end` events are its *only*
+    /// heartbeat signal during LLM_EXTRACTION. Before #96's round-1 unification, a raw 3-tuple
+    /// `(chunk, total, message)` populated `PythonRunnerProgressUpdate.chunk`/`.total` on every
+    /// chunk boundary, which `extractChunkInfo` used to refresh `item.lastHeartbeat`. Moving
+    /// those events onto the validated `ProgressEvent` schema silently dropped that signal
+    /// (`ChunkStartEvent`/`ChunkEndEvent` carried no chunk-index/total fields), so a llama.cpp
+    /// run whose *aggregate* chunk-processing time exceeded the 120s heartbeat-watchdog timeout
+    /// -- even with many small chunks, none individually slow -- was wrongly marked "processing
+    /// stalled". The round-2 fix threads `chunk_index`/`total_chunks` back through
+    /// `massEventJSONString`/`PythonRunnerProgressUpdate`. This test drives a 5-chunk llama.cpp
+    /// sequence whose simulated per-chunk gap (100s) stays under the 120s watchdog window while
+    /// its aggregate (1000s) comfortably exceeds it, and asserts the heartbeat never goes stale
+    /// at any single boundary.
+    func testLlamaCppChunkEventsRefreshHeartbeatAcrossAggregateStallWindow() {
+        let viewModel = createTestViewModel()
+        let item = createTestDocumentItem(status: .processing)
+        viewModel.items = [item]
+
+        // Settle into the LLM-extraction stage once, outside the timing-sensitive loop below --
+        // `beginStage` itself refreshes `lastHeartbeat`, and the assertions below must be
+        // credited to the chunk events, not to this initial stage transition.
+        item.beginStage(.enhancedDetection)
+
+        let totalChunks = 5
+        let simulatedChunkDuration: TimeInterval = 100.0 // < 120s watchdog timeout, per chunk
+        // A regenerated heartbeat must read as freshly "now" -- asserting only that it stays
+        // under the 120s watchdog window would pass trivially even with a completely broken
+        // refresh, since each iteration only backdates it by 100s to begin with. This tight
+        // bound is what actually would have caught the round-1 regression (chunk/total always
+        // nil, so `extractChunkInfo` returned nil and the backdated value was left untouched).
+        let freshnessBound: TimeInterval = 2.0
+
+        for chunkIndex in 0 ..< totalChunks {
+            // Simulate a slow-but-alive chunk: the heartbeat is already 100s stale by the time
+            // this chunk's start event arrives.
+            item.lastHeartbeat = Date().addingTimeInterval(-simulatedChunkDuration)
+            let startMessage = "{\"type\":\"chunk_start\",\"size\":400,\"estimated_time\":30.0," +
+                "\"chunk_index\":\(chunkIndex),\"total_chunks\":\(totalChunks)}"
+            viewModel.progressMonitor.applyPythonKitProgress(
+                PythonRunnerProgressUpdate(chunk: chunkIndex + 1, total: totalChunks, message: startMessage),
+                to: item,
+                isEnhanced: true
+            )
+            XCTAssertLessThan(
+                Date().timeIntervalSince(item.lastHeartbeat ?? .distantPast),
+                freshnessBound,
+                "chunk_start for chunk \(chunkIndex + 1)/\(totalChunks) must refresh the heartbeat to now"
+            )
+
+            item.lastHeartbeat = Date().addingTimeInterval(-simulatedChunkDuration)
+            let endMessage = """
+            {"type":"chunk_end","size":400,"chunk_index":\(chunkIndex),"total_chunks":\(totalChunks)}
+            """
+            viewModel.progressMonitor.applyPythonKitProgress(
+                PythonRunnerProgressUpdate(chunk: chunkIndex + 1, total: totalChunks, message: endMessage),
+                to: item,
+                isEnhanced: true
+            )
+            XCTAssertLessThan(
+                Date().timeIntervalSince(item.lastHeartbeat ?? .distantPast),
+                freshnessBound,
+                "chunk_end for chunk \(chunkIndex + 1)/\(totalChunks) must refresh the heartbeat to now"
+            )
+        }
+
+        // Aggregate simulated elapsed time (5 chunks x 2 events x 100s = 1000s) comfortably
+        // exceeds the 120s watchdog window; the document must still read as healthy since every
+        // chunk boundary refreshed the heartbeat individually.
+        XCTAssertEqual(item.status, .processing, "A live multi-chunk llama.cpp run must not read as stalled")
+    }
+
     // MARK: - Disk Space Preflight Tests (issue #44 / B2: destination writability + free space)
 
     /// `validateDestination` must actually attempt a write, not just check existence -- an

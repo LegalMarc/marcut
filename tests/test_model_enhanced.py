@@ -328,19 +328,23 @@ def test_intelligent_pipeline_sends_seed_to_chunk_extraction(monkeypatch):
     assert captured == {"model_id": "test-model", "temperature": 0.3, "seed": 456}
 
 
-# --- emit_mass_event's 3-arg progress_callback dispatch (#92) --------------
+# --- emit_mass_event's single-arg progress_callback dispatch (#92, #96) ---
 #
-# This is the path the shipping Swift app actually uses for LLM-extraction
-# progress: the bridge's callback is an unintrospectable `PyCFunction`, so
-# `accepts_progress_update` is False, `tracker` stays None, and
-# `emit_mass_event` falls through to the 3-arg `progress_callback(0, 0,
-# display)` branch below.
+# Every progress-event producer in this module dispatches through
+# `_emit_progress_event`, which calls `progress_callback` with exactly one
+# positional argument: the validated `ProgressEvent` object itself. There is
+# no callback-arity detection and no second, wrapped representation -- both
+# the CLI's rich callback and the packaged app's PythonKit-bridge callback
+# now receive the identical shape for the identical event (issue #96 folded
+# in the bug where they used to diverge: see
+# test_mass_events_are_not_rewrapped_as_phase_updates below for the
+# regression pin on that fix).
 
-def test_emit_mass_event_dispatches_three_arg_progress_callback(monkeypatch):
+def test_emit_mass_event_dispatches_single_arg_progress_callback(monkeypatch):
     calls = []
 
-    def cb(chunk, total, message):
-        calls.append((chunk, total, message))
+    def cb(event):
+        calls.append(event)
 
     monkeypatch.setattr("marcut.model.ollama_extract", lambda *a, **k: [])
     monkeypatch.setattr(model_enhanced, "needs_validation", lambda entity, doc_context: False)
@@ -354,24 +358,60 @@ def test_emit_mass_event_dispatches_three_arg_progress_callback(monkeypatch):
         suppressed=[],
     )
 
-    assert calls, "3-arg progress_callback was never invoked"
-    chunk, total, message = calls[0]
-    assert (chunk, total) == (0, 0)
-    payload = json.loads(message)
-    assert payload["type"] == "mass_total"
+    assert calls, "progress_callback was never invoked"
+    from marcut.progress import MassTotalEvent
+    assert isinstance(calls[0], MassTotalEvent)
+
+
+def test_mass_events_are_not_rewrapped_as_phase_updates(monkeypatch):
+    """The bug issue #96 folded in: `process_document` used to build a
+    second, redundant `ProgressTracker` around every mass event whenever
+    `progress_callback`'s signature happened to be introspectable via
+    `inspect.signature` (true for the CLI's plain-Python callback, never
+    true for the PythonKit bridge's `PyCFunction`-backed one) -- so the CLI
+    silently received a `phase_update`-typed `ProgressUpdate` for every
+    mass event instead of the mass event itself. A single-arg callback
+    (the shape both the CLI and the packaged app actually register) must
+    now receive the *raw* mass-event objects, never a `ProgressUpdate`."""
+    calls = []
+
+    def cb(event):
+        calls.append(event)
+
+    monkeypatch.setattr("marcut.model.ollama_extract", lambda *a, **k: [])
+    monkeypatch.setattr(model_enhanced, "needs_validation", lambda entity, doc_context: False)
+
+    pipeline = model_enhanced.IntelligentRedactionPipeline("test-model", temperature=0.1, seed=1)
+    pipeline.process_document(
+        "John Smith",
+        [{"text": "John Smith", "start": 0, "end": 10}],
+        progress_callback=cb,
+        warnings=[],
+        suppressed=[],
+    )
+
+    from marcut.progress import ProgressUpdate
+    assert calls, "progress_callback was never invoked"
+    assert not any(isinstance(c, ProgressUpdate) for c in calls), (
+        "a mass event was re-wrapped as a phase_update ProgressUpdate: "
+        f"{calls!r}"
+    )
+    types_seen = {c.type for c in calls}
+    assert "mass_total" in types_seen
+    assert "chunk_end" in types_seen
 
 
 def test_emit_mass_event_validation_error_is_not_swallowed(monkeypatch):
     """emit_mass_event wraps its serialization/dispatch in a bare
     `except Exception: pass` -- but validation must run before that guard
     (issue #93 Notes: "a malformed event is a programming error and should
-    surface"). Simulate a malformed payload by making validate_mass_event
+    surface"). Simulate a malformed payload by making validate_progress_event
     raise, and confirm the exception actually propagates out of
     process_document instead of being caught and dropped."""
     def boom(payload):
         raise ValueError("simulated malformed mass-event payload")
 
-    monkeypatch.setattr(model_enhanced, "validate_mass_event", boom)
+    monkeypatch.setattr(model_enhanced, "validate_progress_event", boom)
     monkeypatch.setattr("marcut.model.ollama_extract", lambda *a, **k: [])
     monkeypatch.setattr(model_enhanced, "needs_validation", lambda entity, doc_context: False)
 
@@ -468,14 +508,14 @@ def test_token_progress_validation_failure_is_swallowed_by_stream_callback(monke
     model.py's `except Exception: pass` around on_token_progress, so the run
     completes normally and the events simply vanish -- which is exactly why
     a green suite is not evidence that token_progress payloads validate."""
-    real_validate = model_enhanced.validate_mass_event
+    real_validate = model_enhanced.validate_progress_event
 
     def reject_token_progress(payload):
         if payload.get("type") == "token_progress":
             raise ValueError("simulated malformed token_progress payload")
         return real_validate(payload)
 
-    monkeypatch.setattr(model_enhanced, "validate_mass_event", reject_token_progress)
+    monkeypatch.setattr(model_enhanced, "validate_progress_event", reject_token_progress)
     monkeypatch.setattr(model_module.requests, "post", _fake_stream_without_eval_count)
     monkeypatch.setattr(model_enhanced, "needs_validation", lambda entity, doc_context: False)
 
@@ -494,15 +534,14 @@ def test_token_progress_validation_failure_is_swallowed_by_stream_callback(monke
     assert [e for e in events if e.get("type") == "chunk_end"]
 
 
-def test_emit_mass_event_falls_back_to_two_arg_callback_on_type_error(monkeypatch):
-    """A callback that only accepts two positional args still doesn't take
-    the rich single-arg ProgressUpdate path (accepts_progress_update requires
-    exactly one positional param), so it hits the 3-arg branch, raises
-    TypeError, and must fall back to the 2-arg call at line 1204."""
-    calls = []
-
-    def cb(chunk, total):
-        calls.append((chunk, total))
+def test_emit_mass_event_still_prints_when_progress_callback_raises(monkeypatch, capsys):
+    """A `progress_callback` that raises must not prevent the stdout
+    mass-event print, which is the channel the Swift bridge's
+    subprocess/stdout path parses independently of any callback
+    (`_emit_progress_event` guards the `progress_callback(validated_event)`
+    call in its own `except Exception: pass`, separate from the print)."""
+    def cb(event):
+        raise RuntimeError("simulated progress_callback failure")
 
     monkeypatch.setattr("marcut.model.ollama_extract", lambda *a, **k: [])
     monkeypatch.setattr(model_enhanced, "needs_validation", lambda entity, doc_context: False)
@@ -516,48 +555,6 @@ def test_emit_mass_event_falls_back_to_two_arg_callback_on_type_error(monkeypatc
         suppressed=[],
     )
 
-    assert calls, "2-arg fallback was never invoked"
-    assert calls[0] == (0, 0)
-
-
-def test_emit_mass_event_still_prints_when_tracker_dispatch_raises(monkeypatch, capsys):
-    """ProgressUpdate is a pydantic dataclass (bridge schema migration step
-    4a) and tracker.update_phase() can raise ValidationError. That must not
-    also swallow the stdout mass-event print, which is the channel the Swift
-    bridge parses independently of the tracker."""
-    import marcut.progress as progress_module
-
-    call_count = {"n": 0}
-    original_update_phase = progress_module.ProgressTracker.update_phase
-
-    def flaky_update_phase(self, phase, progress=0.0, message=None):
-        # Only fail the emit_mass_event() dispatches, which pass the raw
-        # JSON payload as `message` (no status_message override). Other
-        # call sites in process_document/process_single_chunk pass plain
-        # text and are out of scope for this test -- they must keep working
-        # exactly as before.
-        if message and message.startswith("{"):
-            call_count["n"] += 1
-            raise RuntimeError("simulated ValidationError from tracker.update_phase")
-        return original_update_phase(self, phase, progress, message)
-
-    monkeypatch.setattr(progress_module.ProgressTracker, "update_phase", flaky_update_phase)
-    monkeypatch.setattr("marcut.model.ollama_extract", lambda *a, **k: [])
-    monkeypatch.setattr(model_enhanced, "needs_validation", lambda entity, doc_context: False)
-
-    def cb(update):
-        pass
-
-    pipeline = model_enhanced.IntelligentRedactionPipeline("test-model", temperature=0.1, seed=1)
-    pipeline.process_document(
-        "John Smith",
-        [{"text": "John Smith", "start": 0, "end": 10}],
-        progress_callback=cb,
-        warnings=[],
-        suppressed=[],
-    )
-
-    assert call_count["n"] > 0, "tracker.update_phase was never invoked from emit_mass_event"
     printed = capsys.readouterr().out
     mass_total_lines = [
         json.loads(line) for line in printed.splitlines()
@@ -1075,6 +1072,89 @@ def test_llama_cpp_process_document_succeeds_without_failures(monkeypatch):
     assert spans[0]["text"] == "John Smith"
     assert text[spans[0]["start"]:spans[0]["end"]] == "John Smith"
     assert warnings == []
+
+
+# --- Issue #96: llama.cpp progress folded into the unified schema ----------
+#
+# `LlamaCppRedactionPipeline.process_document` used to call `progress_callback`
+# directly with a raw, unvalidated `(chunk, total, message)` 3-tuple --
+# bypassing `validate_progress_event`/the `ProgressEvent` schema entirely,
+# the only producer in the codebase that did. It now emits a
+# `chunk_start`/`chunk_end` pair per chunk through the same
+# `_emit_progress_event` helper the Ollama path uses, deliberately without
+# `mass_total`/`keepalive`/`token_progress` (this backend stays sparser).
+
+def test_llama_cpp_process_document_emits_chunk_start_and_chunk_end(monkeypatch):
+    def fake_extract_entities(chunk_text, doc_context):
+        return []
+
+    pipeline = LlamaCppRedactionPipeline(model_path="/fake/path/model.gguf", temperature=0.1, seed=42)
+    monkeypatch.setattr(pipeline, "extract_entities", fake_extract_entities)
+
+    calls = []
+
+    def cb(event):
+        calls.append(event)
+
+    text = "John Smith signed. Jane Doe witnessed."
+    chunks = [
+        {"start": 0, "end": 19, "text": text[0:19]},
+        {"start": 19, "end": len(text), "text": text[19:]},
+    ]
+    pipeline.process_document(text, chunks, progress_callback=cb, warnings=[])
+
+    from marcut.progress import ChunkStartEvent, ChunkEndEvent
+    assert [type(c) for c in calls] == [
+        ChunkStartEvent, ChunkEndEvent, ChunkStartEvent, ChunkEndEvent,
+    ]
+    assert calls[0].size == len(chunks[0]["text"])
+    assert calls[0].estimated_time == 30.0
+    assert calls[1].size == len(chunks[0]["text"])
+    # No mass_total/keepalive/token_progress -- this backend stays sparser
+    # than the Ollama path by design, not by omission.
+    assert {c.type for c in calls} == {"chunk_start", "chunk_end"}
+
+    # Issue #96 round-2 fix: this backend has no keepalive thread, so
+    # chunk_index/total_chunks are its only heartbeat signal
+    # (`PythonKitBridge.swift`'s `extractChunkInfo`/`massEventChunkInfo`
+    # read them to refresh `DocumentItem.lastHeartbeat`). A regression here
+    # would silently reintroduce the "processing stalled" false failure the
+    # round-2 reviewer caught, so pin both fields on every emitted event
+    # rather than just the event type.
+    assert [c.chunk_index for c in calls] == [0, 0, 1, 1]
+    assert [c.total_chunks for c in calls] == [2, 2, 2, 2]
+
+
+def test_llama_cpp_process_document_emits_chunk_end_even_on_extraction_failure(monkeypatch):
+    """Mirrors the Ollama path's behavior: a chunk that fails extraction
+    (after retries) still gets its `chunk_end` event, so the progress bar
+    doesn't stall on a failed chunk."""
+    def always_fails(chunk_text, doc_context):
+        raise RuntimeError("simulated extraction failure")
+
+    pipeline = LlamaCppRedactionPipeline(model_path="/fake/path/model.gguf", temperature=0.1, seed=42)
+    monkeypatch.setattr(pipeline, "extract_entities", always_fails)
+    monkeypatch.setattr(time, "sleep", lambda *_a, **_k: None)
+
+    calls = []
+
+    def cb(event):
+        calls.append(event)
+
+    text = "John Smith signed."
+    with pytest.raises(model_enhanced.LLMChunkExtractionFailed):
+        pipeline.process_document(
+            text, [{"start": 0, "end": len(text), "text": text}],
+            progress_callback=cb, warnings=[],
+        )
+
+    from marcut.progress import ChunkStartEvent, ChunkEndEvent
+    assert [type(c) for c in calls] == [ChunkStartEvent, ChunkEndEvent]
+    # A failed chunk's chunk_end must still carry chunk_index/total_chunks
+    # -- the heartbeat must keep advancing even through a chunk that
+    # ultimately fails extraction (see the round-2 fix rationale above).
+    assert [c.chunk_index for c in calls] == [0, 0]
+    assert [c.total_chunks for c in calls] == [1, 1]
 
 
 # --- Issue #68: redaction-rationale data layer (Option B) -------------------

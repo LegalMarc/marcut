@@ -21,7 +21,6 @@ elif not isinstance(sys.stdout, io.TextIOWrapper):
     except Exception:
         pass
 
-import inspect
 import json
 import math
 import os
@@ -34,7 +33,7 @@ import concurrent.futures
 from dataclasses import dataclass
 from .cancellation import ProcessingDeadlineExceeded, check_processing_deadline, remaining_seconds
 from .model_config import uses_llama_cpp_backend
-from .progress import serialize_mass_event, validate_mass_event
+from .progress import serialize_progress_event, validate_progress_event
 from .rationale import RationaleOrigin, rationale_mentions_text
 from .model import (
     parse_llm_response,
@@ -1156,6 +1155,58 @@ class LLMChunkExtractionFailed(RuntimeError):
         )
 
 
+def _emit_progress_event(progress_callback, payload: Dict[str, Any]) -> None:
+    """Validate one progress-event payload dict, print its JSON
+    serialization to stdout for the subprocess/stdout channel
+    (`DocumentModels.swift`'s `ingestProgressPayload`), and -- if a
+    `progress_callback` was registered for this run -- dispatch the
+    validated event object through it as the single positional argument.
+
+    This is the one call shape every mass-event producer in this module
+    uses (bridge schema migration follow-up, issue #96): both
+    `IntelligentRedactionPipeline.process_document` and
+    `LlamaCppRedactionPipeline.process_document` route through this same
+    function rather than each building their own ad-hoc dispatch (the
+    Ollama path used to also build a second, redundant `ProgressTracker`
+    around whatever the outer `_collect_enhanced_spans` tracker was
+    already doing whenever `progress_callback`'s signature happened to be
+    introspectable via `inspect.signature`, which silently diverged the
+    CLI's and the packaged app's mass-event delivery shape; the llama.cpp
+    path bypassed validation and this whole schema entirely, calling
+    `progress_callback` with a raw `(chunk, total, message)` 3-tuple. See
+    issue #96's design comment for the full trace of both bugs.)
+
+    Validation runs before the guard below and is deliberately not caught
+    here -- a malformed payload is a programming error (a producer-side
+    typo or shape drift, e.g. #93) and must raise, not be silently
+    swallowed. Raising here only surfaces at *some* call sites: two of the
+    five event types are emitted from inside their own
+    `try/except Exception: pass` (`token_progress` from `model.py`'s
+    streaming loop's `on_token_progress` callback, `keepalive` from the
+    keepalive thread's own guard, which downgrades a failure to an
+    `LLM_KEEPALIVE_FAILED` warning instead), so a malformed payload there
+    costs the events rather than failing the run. Only
+    `mass_total`/`chunk_start`/`chunk_end` propagate to the caller. Tests
+    must therefore assert on emitted events, never rely on a green run to
+    prove a payload validated.
+    """
+    validated_event = validate_progress_event(payload)
+    try:
+        message = serialize_progress_event(validated_event)
+        if progress_callback:
+            try:
+                progress_callback(validated_event)
+            except Exception:
+                pass
+        # Print with encoding error handling to prevent thread crashes
+        try:
+            print(message, flush=True)
+        except UnicodeEncodeError:
+            print(message.encode('ascii', errors='replace').decode('ascii'), flush=True)
+    except Exception:
+        pass
+
+
 class IntelligentRedactionPipeline:
     """Main pipeline for intelligent entity extraction and validation."""
 
@@ -1191,65 +1242,8 @@ class IntelligentRedactionPipeline:
         self.doc_context.analyze_document(text)
         prompt_context = build_prompt_context(self.doc_context)
 
-        def emit_mass_event(payload, progress=None, status_message=None):
-            # Validate before the best-effort guard below, and before
-            # anything is serialized -- a malformed payload is a
-            # programming error (a producer-side typo or shape drift, e.g.
-            # #93) and must raise here, not be silently swallowed by the
-            # bare `except Exception: pass` that guards the rest of this
-            # function. This path fires many times per document, so
-            # `validate_mass_event` stays cheap (a single TypeAdapter call,
-            # no per-call model construction beyond validation itself).
-            #
-            # Raising here only surfaces at *some* call sites. Two of the
-            # five swallow or downgrade it upstream, so a malformed payload
-            # there costs the events rather than failing the run:
-            #   - `token_progress`: emitted from the on_token_progress
-            #     callback, which model.py's streaming loop invokes inside
-            #     `try: ... except Exception: pass`, so the event is dropped
-            #     with no trace (this is precisely how an over-strict
-            #     `eval_count: int` destroyed intra-chunk progress unnoticed
-            #     -- see test_token_progress_validation_failure_is_swallowed
-            #     _by_stream_callback in tests/test_model_enhanced.py).
-            #   - `keepalive`: emitted from the keepalive thread, whose
-            #     `except Exception` downgrades it to an
-            #     LLM_KEEPALIVE_FAILED warning.
-            # Only `mass_total`/`chunk_start`/`chunk_end` propagate to the
-            # caller. Tests must therefore assert on emitted events, never
-            # rely on a green run to prove a payload validated.
-            validated_event = validate_mass_event(payload)
-            try:
-                # Serialize the validated model, not the input `payload`
-                # dict, so a value pydantic coerced on the way in crosses
-                # the bridge in its coerced form (#95) -- see
-                # serialize_mass_event's docstring.
-                message = serialize_mass_event(validated_event)
-                display = status_message or message
-                # Tracker dispatch is best-effort and guarded on its own --
-                # ProgressUpdate is a pydantic dataclass (bridge schema
-                # migration step 4a) and can raise ValidationError, which
-                # must not swallow the stdout mass-event print below (the
-                # Swift bridge's progress channel).
-                if tracker:
-                    try:
-                        tracker.update_phase(ProcessingPhase.LLM_EXTRACTION, progress or 0.0, display)
-                    except Exception:
-                        pass
-                elif progress_callback:
-                    try:
-                        progress_callback(0, 0, display)
-                    except TypeError:
-                        try:
-                            progress_callback(0, 0)
-                        except TypeError:
-                            pass
-                # Print with encoding error handling to prevent thread crashes
-                try:
-                    print(message, flush=True)
-                except UnicodeEncodeError:
-                    print(message.encode('ascii', errors='replace').decode('ascii'), flush=True)
-            except Exception:
-                pass
+        def emit_mass_event(payload):
+            _emit_progress_event(progress_callback, payload)
 
         all_entities = []
         # One entry per chunk whose LLM extraction never succeeded after
@@ -1258,30 +1252,24 @@ class IntelligentRedactionPipeline:
         # instead of silently completing with unanalyzed text ranges.
         chunk_failures: List[Dict[str, Any]] = []
 
-        tracker = None
-        accepts_progress_update = False
         total_chunks = len(chunks)
-        if progress_callback:
-            try:
-                sig = inspect.signature(progress_callback)
-                params = [
-                    p for p in sig.parameters.values()
-                    if p.kind in (p.POSITIONAL_ONLY, p.POSITIONAL_OR_KEYWORD)
-                ]
-                accepts_progress_update = (
-                    len(params) == 1 and params[0].kind in (params[0].POSITIONAL_ONLY, params[0].POSITIONAL_OR_KEYWORD)
-                )
-            except (TypeError, ValueError):
-                accepts_progress_update = False
 
-            if accepts_progress_update:
-                from .progress import ProgressTracker, ProcessingPhase
-                word_count = len(text.split())
-                tracker = ProgressTracker(progress_callback, text, word_count)
-                tracker.update_phase(ProcessingPhase.LLM_EXTRACTION, 0.0, "Starting AI extraction")
-
+        # The rich per-phase `ProgressUpdate` stream (start/complete of the
+        # whole LLM_EXTRACTION phase) is owned exclusively by the caller
+        # (`pipeline._collect_enhanced_spans`'s own `ProgressTracker`), not
+        # rebuilt here. A second, per-mass-event tracker used to be built
+        # inside this function whenever `progress_callback`'s signature
+        # happened to be introspectable via `inspect.signature` -- the CLI's
+        # callback qualified, the PythonKit bridge's `PyCFunction`-backed
+        # callback never did -- which silently diverged what the CLI and the
+        # packaged app each received for the same logical mass event and
+        # doubled the phase-update traffic across the PythonKit bridge for
+        # every chunk/keepalive/token-progress tick. Removed as part of
+        # issue #96's one-channel consolidation: `emit_mass_event` now
+        # dispatches every event through the single `_emit_progress_event`
+        # call shape below, with no callback-arity detection.
         total_mass = sum(len(c.get("text", "")) for c in chunks)
-        emit_mass_event({"type": "mass_total", "value": total_mass}, 0.0)
+        emit_mass_event({"type": "mass_total", "value": total_mass})
 
         # Buffer for batch validation
         to_validate_buffer = []
@@ -1374,13 +1362,10 @@ class IntelligentRedactionPipeline:
             keepalive_warning_emitted = False
             def send_keepalive():
                 nonlocal keepalive_warning_emitted
-                start_time = None
                 while not stop_progress.is_set():
                     with chunk_lock:
                         chunk_index = current_chunk
                         chunk_total = total_chunks
-                        if chunk_index > 0 and start_time is None:
-                            start_time = time.time()
                     try:
                         payload = {
                             "type": "keepalive",
@@ -1389,17 +1374,7 @@ class IntelligentRedactionPipeline:
                         if chunk_total:
                             payload["chunk"] = chunk_index
                             payload["total"] = chunk_total
-
-                        elapsed_overall = time.time() - tracker.start_time if tracker else None
-                        elapsed = time.time() - start_time if start_time else None
-
-                        if elapsed_overall is not None and chunk_total:
-                            status = f"Processing chunk {chunk_index}/{chunk_total} (still running, {elapsed_overall:.0f}s elapsed)"
-                        elif elapsed is not None:
-                            status = f"Processing AI extraction (still running, {elapsed:.0f}s elapsed)"
-                        else:
-                            status = "Processing AI extraction (still running)..."
-                        emit_mass_event(payload, status_message=status)
+                        emit_mass_event(payload)
                     except Exception as e:
                         if not keepalive_warning_emitted:
                             with result_lock:
@@ -1442,22 +1417,12 @@ class IntelligentRedactionPipeline:
                     return
                 last_token_emit_time = now
                 last_token_emit_chars = chars_so_far
-                with chunk_lock:
-                    completed = current_chunk
-                chunk_progress = (completed / total_chunks) if total_chunks else 0.0
-                emit_mass_event(
-                    {
-                        "type": "token_progress",
-                        "chunk_index": chunk_idx,
-                        "chars": chars_so_far,
-                        "eval_count": eval_count_so_far,
-                    },
-                    chunk_progress,
-                    status_message=(
-                        f"Streaming chunk {chunk_idx + 1}/{total_chunks} "
-                        f"({chars_so_far} chars generated)"
-                    ),
-                )
+                emit_mass_event({
+                    "type": "token_progress",
+                    "chunk_index": chunk_idx,
+                    "chars": chars_so_far,
+                    "eval_count": eval_count_so_far,
+                })
 
             # 1. Extraction (per chunk) with retry
             simple_spans = []
@@ -1497,10 +1462,6 @@ class IntelligentRedactionPipeline:
                 with chunk_lock:
                     current_chunk += 1
 
-                chunk_progress = (current_chunk / total_chunks) if total_chunks else 0.0
-                if tracker:
-                    tracker.update_phase(ProcessingPhase.LLM_EXTRACTION, chunk_progress, f"Processed chunk {current_chunk}/{total_chunks}")
-
                 if extract_error is not None:
                     chunk_end = chunk.get("end", chunk_start + len(chunk_text))
                     warnings.append({
@@ -1523,7 +1484,7 @@ class IntelligentRedactionPipeline:
                     emit_mass_event({
                         "type": "chunk_end",
                         "size": len(chunk_text)
-                    }, chunk_progress)
+                    })
                     return
 
                 # Convert to Entities
@@ -1588,7 +1549,7 @@ class IntelligentRedactionPipeline:
                 emit_mass_event({
                     "type": "chunk_end",
                     "size": len(chunk_text)
-                }, chunk_progress)
+                })
 
         try:
             for chunk_idx, chunk in enumerate(chunks):
@@ -1598,7 +1559,7 @@ class IntelligentRedactionPipeline:
                     "type": "chunk_start",
                     "size": len(chunk.get("text", "")),
                     "estimated_time": 30.0
-                }, (chunk_idx / total_chunks) if total_chunks else 0.0)
+                })
 
                 futures.append(executor.submit(process_single_chunk, chunk_idx, chunk))
 
@@ -1642,9 +1603,6 @@ class IntelligentRedactionPipeline:
                 stop_progress.set()
             if progress_thread:
                 progress_thread.join(timeout=1.0)
-
-        if tracker:
-            tracker.update_phase(ProcessingPhase.LLM_EXTRACTION, 1.0, "AI extraction complete")
 
         # Privacy-first fail-closed default: if the LLM extractor never
         # produced a successful result for one or more chunks (after
@@ -1953,14 +1911,32 @@ class LlamaCppRedactionPipeline:
         # IntelligentRedactionPipeline.process_document's Ollama-path handling.
         chunk_failures: List[Dict[str, Any]] = []
 
-        # Extract entities from each chunk
+        # Extract entities from each chunk. Progress here is a
+        # chunk_start/chunk_end pair through the same unified
+        # `ProgressEvent` schema the Ollama path uses (bridge schema
+        # migration follow-up, issue #96) -- previously this loop bypassed
+        # validation and the schema entirely, calling `progress_callback`
+        # with a raw, unvalidated `(chunk, total, message)` 3-tuple that no
+        # other producer in the codebase used. Deliberately sparser than the
+        # Ollama path: no `mass_total`, `keepalive`, or `token_progress`
+        # events, matching this backend's existing (non-streaming,
+        # non-concurrent) behavior -- this is a transport fix, not new
+        # progress granularity. `chunk_index`/`total_chunks` ARE populated
+        # here (issue #96 round-2 fix): this backend has no keepalive thread,
+        # so these two fields are its only heartbeat signal -- see
+        # `ChunkStartEvent`'s docstring in progress.py.
         for i, chunk in enumerate(chunks):
-            if progress_callback:
-                progress_callback(i + 1, total_chunks, f"Processing chunk {i + 1}/{total_chunks}")
-
             chunk_text = chunk["text"]
             chunk_start = chunk["start"]
             chunk_end = chunk.get("end", chunk_start + len(chunk_text))
+
+            _emit_progress_event(progress_callback, {
+                "type": "chunk_start",
+                "size": len(chunk_text),
+                "estimated_time": 30.0,
+                "chunk_index": i,
+                "total_chunks": total_chunks,
+            })
 
             # Extract entities from this chunk, with the same retry cadence
             # as the Ollama path (immediate retry, then one more after a 2s
@@ -1996,6 +1972,12 @@ class LlamaCppRedactionPipeline:
                     "end": chunk_end,
                     "error": str(extract_error),
                 })
+                _emit_progress_event(progress_callback, {
+                    "type": "chunk_end",
+                    "size": len(chunk_text),
+                    "chunk_index": i,
+                    "total_chunks": total_chunks,
+                })
                 continue
 
             # Adjust entity positions to document coordinates
@@ -2006,6 +1988,12 @@ class LlamaCppRedactionPipeline:
                 entity.text = text[entity.start:entity.end]
 
             all_entities.extend(entities)
+            _emit_progress_event(progress_callback, {
+                "type": "chunk_end",
+                "size": len(chunk_text),
+                "chunk_index": i,
+                "total_chunks": total_chunks,
+            })
 
         # Privacy-first fail-closed default: see LLMChunkExtractionFailed and
         # IntelligentRedactionPipeline.process_document for the Ollama-path

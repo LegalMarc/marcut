@@ -506,20 +506,22 @@ final class DocumentItem: Identifiable, ObservableObject {
             // Option B). Deliberately a recognized, documented no-op here
             // rather than an accidental fall-through to `default` (issue
             // #93): the progress bar and heartbeat are already driven by
-            // chunk_start/chunk_end and keepalive above. On the PythonKit
-            // path (`ProgressMonitor.applyPythonKitProgress`)
-            // this JSON never actually reaches here -- `emit_mass_event`
-            // gives token_progress an explicit `status_message`, so the
-            // rich `ProgressUpdate.message` carries a human-readable
-            // "Streaming chunk N/M (...)" string, not this payload, and
-            // that guard at the top of this function rejects anything not
-            // starting with "{". It does reach here on the CLI-fallback
-            // path, which parses raw stdout lines directly, but both
-            // CLI-fallback call sites (PythonBridge.swift) discard this
-            // function's `Bool` return value and log nothing either way;
-            // returning `true` here is for consistency with the other
-            // recognized types, not to suppress any observed logging --
-            // it still does not affect progress state.
+            // chunk_start/chunk_end and keepalive above. This JSON now
+            // reaches this exact case on both delivery paths: on the
+            // PythonKit path, `PythonKitBridge.swift`'s
+            // `massEventJSONString` reconstructs the real `token_progress`
+            // payload straight off the live `PythonObject` and sends it as
+            // `PythonRunnerProgressUpdate.message`; on the subprocess/stdout
+            // path, it arrives as a raw stdout line parsed directly.
+            // `_emit_progress_event` (model_enhanced.py) no longer attaches
+            // any `status_message` for token_progress, so neither path
+            // substitutes a human-readable string in its place. Both
+            // PythonBridge.swift's CLI-fallback call sites and this
+            // function's callers discard the `Bool` this returns and log
+            // nothing either way; returning `true` here is for consistency
+            // with the other recognized types, not to suppress any observed
+            // logging -- it remains a deliberate no-op on both paths and
+            // does not affect progress state.
             return true
         default:
             return false

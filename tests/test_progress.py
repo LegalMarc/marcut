@@ -15,8 +15,8 @@ from marcut.progress import (
     ProcessingPhase, PHASE_INFO,
     TimeEstimator, ProgressUpdate, ProgressTracker,
     create_progress_callback,
-    MassEvent, SWIFT_HANDLED_MASS_EVENT_TYPES, validate_mass_event,
-    serialize_mass_event,
+    MassEvent, ProgressEvent, SWIFT_HANDLED_MASS_EVENT_TYPES,
+    validate_progress_event, serialize_progress_event,
 )
 
 REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
@@ -181,8 +181,24 @@ class TestTimeEstimator:
 
 
 class TestProgressUpdate:
-    """Test ProgressUpdate dataclass."""
-    
+    """Test the ProgressUpdate model -- the rich phase_update member of the
+    unified `ProgressEvent` union (issue #96)."""
+
+    def test_type_discriminator_defaults_to_phase_update(self):
+        """`type` is the discriminator every `ProgressEvent` member carries
+        (issue #96's one-channel consolidation); ProgressUpdate defaults it
+        so existing call sites that never pass `type=` explicitly still
+        produce a correctly-discriminated instance."""
+        update = ProgressUpdate(
+            phase=ProcessingPhase.PREFLIGHT,
+            phase_progress=0.5,
+            overall_progress=0.1,
+            phase_name="Loading Document",
+            estimated_remaining=30.0,
+            elapsed_time=5.0,
+        )
+        assert update.type == "phase_update"
+
     def test_create_update(self):
         """Test creating a progress update."""
         update = ProgressUpdate(
@@ -214,10 +230,11 @@ class TestProgressUpdate:
         assert update.message is None
 
     def test_wrong_typed_field_raises(self):
-        """ProgressUpdate is a pydantic dataclass (bridge schema migration
-        step 4a, #92): a field that cannot be coerced to its declared type
-        must raise on construction instead of silently crossing the Swift
-        bridge as wrong data."""
+        """ProgressUpdate is a pydantic model (a dataclass as of #92,
+        promoted to a `BaseModel` in #96 so it can join the discriminated
+        `ProgressEvent` union): a field that cannot be coerced to its
+        declared type must raise on construction instead of silently
+        crossing the Swift bridge as wrong data."""
         with pytest.raises(pydantic.ValidationError):
             ProgressUpdate(
                 phase=ProcessingPhase.PREFLIGHT,
@@ -242,6 +259,21 @@ class TestProgressUpdate:
 
         assert update.phase is ProcessingPhase.VALIDATION
         assert isinstance(update.phase, ProcessingPhase)
+
+    def test_unexpected_extra_field_rejected(self):
+        """`extra="forbid"` matches the mass-event models it now shares a
+        union with -- a stray/renamed field is producer-side drift, not
+        data to silently drop."""
+        with pytest.raises(pydantic.ValidationError):
+            ProgressUpdate(
+                phase=ProcessingPhase.PREFLIGHT,
+                phase_progress=0.1,
+                overall_progress=0.1,
+                phase_name="Loading Document",
+                estimated_remaining=30.0,
+                elapsed_time=5.0,
+                unexpected=True,
+            )
 
 
 class TestProgressTracker:
@@ -418,47 +450,77 @@ class TestCreateProgressCallback:
 
 
 class TestMassEventModels:
-    """Tests for the closed set of `emit_mass_event` payload models
-    (bridge schema migration step 4b, issue #93). One malformed-payload
-    case per event type, plus the Swift-parity pin."""
+    """Tests for the closed set of `emit_mass_event` payload models -- the
+    five non-`phase_update` members of the unified `ProgressEvent` union
+    (bridge schema migration step 4b, issue #93; folded into the one
+    `ProgressEvent` channel in issue #96). One malformed-payload case per
+    event type, plus the Swift-parity pin."""
 
     def test_mass_total_valid(self):
-        validate_mass_event({"type": "mass_total", "value": 4200})
+        validate_progress_event({"type": "mass_total", "value": 4200})
 
     def test_mass_total_rejects_non_numeric_value(self):
         with pytest.raises(pydantic.ValidationError):
-            validate_mass_event({"type": "mass_total", "value": "a lot"})
+            validate_progress_event({"type": "mass_total", "value": "a lot"})
 
     def test_chunk_start_valid(self):
-        validate_mass_event({
+        validate_progress_event({
             "type": "chunk_start", "size": 150, "estimated_time": 30.0,
         })
 
     def test_chunk_start_rejects_missing_estimated_time(self):
         with pytest.raises(pydantic.ValidationError):
-            validate_mass_event({"type": "chunk_start", "size": 150})
+            validate_progress_event({"type": "chunk_start", "size": 150})
+
+    def test_chunk_start_valid_with_chunk_index_and_total_chunks(self):
+        """Populated by `LlamaCppRedactionPipeline.process_document` only
+        (issue #96 round-2 fix) -- see `ChunkStartEvent`'s docstring in
+        progress.py for why that backend, and only that backend, needs
+        these two fields to keep its heartbeat alive."""
+        event = validate_progress_event({
+            "type": "chunk_start", "size": 150, "estimated_time": 30.0,
+            "chunk_index": 2, "total_chunks": 5,
+        })
+        assert event.chunk_index == 2
+        assert event.total_chunks == 5
+
+    def test_chunk_start_valid_without_chunk_index_and_total_chunks(self):
+        """The Ollama path never sets these -- both must default to `None`,
+        not be required."""
+        event = validate_progress_event({
+            "type": "chunk_start", "size": 150, "estimated_time": 30.0,
+        })
+        assert event.chunk_index is None
+        assert event.total_chunks is None
 
     def test_chunk_end_valid(self):
-        validate_mass_event({"type": "chunk_end", "size": 150})
+        validate_progress_event({"type": "chunk_end", "size": 150})
 
     def test_chunk_end_rejects_missing_size(self):
         with pytest.raises(pydantic.ValidationError):
-            validate_mass_event({"type": "chunk_end"})
+            validate_progress_event({"type": "chunk_end"})
+
+    def test_chunk_end_valid_with_chunk_index_and_total_chunks(self):
+        event = validate_progress_event({
+            "type": "chunk_end", "size": 150, "chunk_index": 4, "total_chunks": 5,
+        })
+        assert event.chunk_index == 4
+        assert event.total_chunks == 5
 
     def test_keepalive_valid_without_chunk_info(self):
-        validate_mass_event({"type": "keepalive", "message": "AI processing..."})
+        validate_progress_event({"type": "keepalive", "message": "AI processing..."})
 
     def test_keepalive_valid_with_chunk_info(self):
-        validate_mass_event({
+        validate_progress_event({
             "type": "keepalive", "message": "still running", "chunk": 2, "total": 5,
         })
 
     def test_keepalive_rejects_missing_message(self):
         with pytest.raises(pydantic.ValidationError):
-            validate_mass_event({"type": "keepalive", "chunk": 2, "total": 5})
+            validate_progress_event({"type": "keepalive", "chunk": 2, "total": 5})
 
     def test_token_progress_valid(self):
-        validate_mass_event({
+        validate_progress_event({
             "type": "token_progress", "chunk_index": 0, "chars": 120, "eval_count": 30,
         })
 
@@ -466,7 +528,7 @@ class TestMassEventModels:
         """Ollama reports `eval_count` only on the stream's final
         `done: true` line, so every intermediate emission carries
         `eval_count: None` -- the common case, which must validate."""
-        event = validate_mass_event({
+        event = validate_progress_event({
             "type": "token_progress", "chunk_index": 0, "chars": 120, "eval_count": None,
         })
         assert event.eval_count is None
@@ -477,11 +539,11 @@ class TestMassEventModels:
         unlike a missing/None `eval_count`, which is the normal shape of an
         intermediate streaming event."""
         with pytest.raises(pydantic.ValidationError):
-            validate_mass_event({"type": "token_progress", "chars": 120, "eval_count": 30})
+            validate_progress_event({"type": "token_progress", "chars": 120, "eval_count": 30})
 
     def test_token_progress_rejects_non_numeric_eval_count(self):
         with pytest.raises(pydantic.ValidationError):
-            validate_mass_event({
+            validate_progress_event({
                 "type": "token_progress", "chunk_index": 0, "chars": 120,
                 "eval_count": "seven",
             })
@@ -490,14 +552,31 @@ class TestMassEventModels:
         """No sixth event type exists -- an unrecognized `type` value must
         raise, not silently pass through as some best-effort shape."""
         with pytest.raises(pydantic.ValidationError):
-            validate_mass_event({"type": "not_a_real_event"})
+            validate_progress_event({"type": "not_a_real_event"})
 
     def test_unexpected_extra_field_rejected(self):
         """Every model is `extra="forbid"` -- a stray/renamed field is
         exactly the kind of producer-side drift this validation exists to
         catch, so it must raise rather than be dropped or ignored."""
         with pytest.raises(pydantic.ValidationError):
-            validate_mass_event({"type": "chunk_end", "size": 150, "unexpected": True})
+            validate_progress_event({"type": "chunk_end", "size": 150, "unexpected": True})
+
+    def test_phase_update_shaped_payload_also_validates(self):
+        """`validate_progress_event` validates against the full six-member
+        `ProgressEvent` union, not just the five mass-event shapes (issue
+        #96) -- a `phase_update`-discriminated dict routes to `ProgressUpdate`
+        the same way a raw dict would for any other member."""
+        event = validate_progress_event({
+            "type": "phase_update",
+            "phase": "preflight",
+            "phase_progress": 0.5,
+            "overall_progress": 0.1,
+            "phase_name": "Loading Document",
+            "estimated_remaining": 30.0,
+            "elapsed_time": 5.0,
+        })
+        assert isinstance(event, ProgressUpdate)
+        assert event.phase == ProcessingPhase.PREFLIGHT
 
     def test_emitted_type_strings_match_swift_handled_set(self):
         """Pin the producer's closed set of `type` discriminator values
@@ -508,10 +587,13 @@ class TestMassEventModels:
         drift the two sides apart again (issue #93).
 
         `SWIFT_HANDLED_MASS_EVENT_TYPES` is asserted here too, as a third
-        term rather than as a substitute for the parse: the Swift source
-        stays the authority on what Swift accepts, and the constant -- which
-        has no runtime consumer and would otherwise go stale unnoticed --
-        is held to it."""
+        term rather than as a substitute for the parse: it is itself
+        derived from `MassEvent` in `progress.py` (issue #96's Notes:
+        "whatever replaces `SWIFT_HANDLED_MASS_EVENT_TYPES`, derive both
+        sides") the same way `model_types` below is, so this assertion is
+        really "two independent derivations of the same production
+        constant agree" -- both are held to the Swift source, which stays
+        the sole authority on what Swift accepts."""
         # Derived from the union itself, never restated. A hand-written set
         # here would make the pin one-directional: it would still catch a
         # `case` dropped from the Swift switch, but a sixth member added to
@@ -527,9 +609,22 @@ class TestMassEventModels:
         assert model_types == swift_types
         assert SWIFT_HANDLED_MASS_EVENT_TYPES == swift_types
 
+    def test_swift_handled_types_excludes_phase_update(self):
+        """`phase_update` is a `ProgressEvent` member but never crosses the
+        JSON mass-event channel `ingestProgressPayload` parses -- it
+        crosses the PythonKit bridge as a live attribute read instead
+        (issue #96). `SWIFT_HANDLED_MASS_EVENT_TYPES` must stay scoped to
+        the five mass-event shapes, not the full six-member union."""
+        assert "phase_update" not in SWIFT_HANDLED_MASS_EVENT_TYPES
+        all_progress_event_types = {
+            member.model_fields["type"].default
+            for member in typing.get_args(typing.get_args(ProgressEvent)[0])
+        }
+        assert all_progress_event_types - SWIFT_HANDLED_MASS_EVENT_TYPES == {"phase_update"}
+
 
 class TestSerializeMassEvent:
-    """`serialize_mass_event` serializes the *validated* model, not the
+    """`serialize_progress_event` serializes the *validated* model, not the
     raw input dict `emit_mass_event` was handed (issue #95). Pydantic's
     coercion is lax, so a payload like `{"value": "4200"}` validates but,
     serialized as the original dict, would carry the string across the
@@ -542,15 +637,30 @@ class TestSerializeMassEvent:
 
     def test_mass_total_byte_identical(self):
         payload = {"type": "mass_total", "value": 4200}
-        assert serialize_mass_event(validate_mass_event(payload)) == json.dumps(payload)
+        assert serialize_progress_event(validate_progress_event(payload)) == json.dumps(payload)
 
     def test_chunk_start_byte_identical(self):
         payload = {"type": "chunk_start", "size": 500, "estimated_time": 30.0}
-        assert serialize_mass_event(validate_mass_event(payload)) == json.dumps(payload)
+        assert serialize_progress_event(validate_progress_event(payload)) == json.dumps(payload)
+
+    def test_chunk_start_with_chunk_index_byte_identical(self):
+        """The llama.cpp emit site (issue #96 round-2 fix) always includes
+        both fields together -- confirm that shape round-trips too."""
+        payload = {
+            "type": "chunk_start", "size": 500, "estimated_time": 30.0,
+            "chunk_index": 2, "total_chunks": 5,
+        }
+        assert serialize_progress_event(validate_progress_event(payload)) == json.dumps(payload)
 
     def test_chunk_end_byte_identical(self):
         payload = {"type": "chunk_end", "size": 500}
-        assert serialize_mass_event(validate_mass_event(payload)) == json.dumps(payload)
+        assert serialize_progress_event(validate_progress_event(payload)) == json.dumps(payload)
+
+    def test_chunk_end_with_chunk_index_byte_identical(self):
+        payload = {
+            "type": "chunk_end", "size": 500, "chunk_index": 4, "total_chunks": 5,
+        }
+        assert serialize_progress_event(validate_progress_event(payload)) == json.dumps(payload)
 
     def test_keepalive_without_chunk_info_byte_identical(self):
         """The keepalive emit site only adds `chunk`/`total` keys once a
@@ -558,19 +668,19 @@ class TestSerializeMassEvent:
         without picking up explicit `null`s from the optional fields'
         defaults."""
         payload = {"type": "keepalive", "message": "AI processing..."}
-        assert serialize_mass_event(validate_mass_event(payload)) == json.dumps(payload)
+        assert serialize_progress_event(validate_progress_event(payload)) == json.dumps(payload)
 
     def test_keepalive_with_chunk_info_byte_identical(self):
         payload = {
             "type": "keepalive", "message": "still running", "chunk": 2, "total": 5,
         }
-        assert serialize_mass_event(validate_mass_event(payload)) == json.dumps(payload)
+        assert serialize_progress_event(validate_progress_event(payload)) == json.dumps(payload)
 
     def test_token_progress_with_eval_count_byte_identical(self):
         payload = {
             "type": "token_progress", "chunk_index": 0, "chars": 120, "eval_count": 30,
         }
-        assert serialize_mass_event(validate_mass_event(payload)) == json.dumps(payload)
+        assert serialize_progress_event(validate_progress_event(payload)) == json.dumps(payload)
 
     def test_token_progress_without_eval_count_byte_identical(self):
         """The emit site always passes `eval_count` explicitly (`None` on
@@ -580,7 +690,7 @@ class TestSerializeMassEvent:
         payload = {
             "type": "token_progress", "chunk_index": 0, "chars": 120, "eval_count": None,
         }
-        assert serialize_mass_event(validate_mass_event(payload)) == json.dumps(payload)
+        assert serialize_progress_event(validate_progress_event(payload)) == json.dumps(payload)
 
     def test_coercible_wrong_typed_value_emits_coerced_value(self):
         """The bug this ticket closes: a numeric string in a field pydantic
@@ -589,7 +699,7 @@ class TestSerializeMassEvent:
         validated model must emit the coerced int instead."""
         payload = {"type": "mass_total", "value": "4200"}
         raw = json.dumps(payload)
-        coerced = serialize_mass_event(validate_mass_event(payload))
+        coerced = serialize_progress_event(validate_progress_event(payload))
         assert coerced != raw
         assert json.loads(coerced)["value"] == 4200
         assert isinstance(json.loads(coerced)["value"], int)

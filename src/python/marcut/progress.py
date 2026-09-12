@@ -4,11 +4,10 @@ Progress tracking and time estimation for Marcut redaction pipeline.
 
 import json
 import time
-from typing import Annotated, Any, Callable, Dict, Literal, Optional, Union
+from typing import Annotated, Any, Callable, Dict, Literal, Optional, Union, get_args
 from dataclasses import dataclass
 from enum import Enum
 
-import pydantic.dataclasses
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter
 
 
@@ -114,17 +113,33 @@ class TimeEstimator:
         return total
 
 
-@pydantic.dataclasses.dataclass
-class ProgressUpdate:
-    """Progress update information.
+class ProgressUpdate(BaseModel):
+    """Rich phase-level progress update.
 
-    A ``pydantic`` dataclass rather than a plain one (bridge schema
-    migration step 4a, docs/design/bridge_schema_migration.md, #92) so a
+    One member of the closed, discriminated `ProgressEvent` union below
+    (bridge schema migration step 4, issue #96 -- the one-channel
+    consolidation of what used to be three overlapping mechanisms: this
+    rich phase-level shape, the mass-event shapes just below, and a raw
+    `print()` of the same JSON). `type` is the discriminator every
+    `ProgressEvent` member carries; this is the only member emitted
+    directly by `ProgressTracker.update_phase()` rather than built from a
+    raw dict via `validate_progress_event()`.
+
+    A ``pydantic`` model (formalized as a dataclass in bridge schema
+    migration step 4a, #92; promoted to a `BaseModel` here so it can join
+    the same discriminated union as the mass-event models and share
+    `serialize_progress_event()`/`validate_progress_event()`) so a
     malformed update (e.g. a non-numeric progress value) raises immediately
     on construction instead of crossing the Swift bridge as silently wrong
     data. ``phase`` stays a ``ProcessingPhase`` enum member, not a string --
     pydantic validates and coerces into the enum without widening it.
+    `extra="forbid"` matches the mass-event models: an unexpected field is a
+    producer-side bug, not silently-dropped data.
     """
+
+    model_config = ConfigDict(extra="forbid")
+
+    type: Literal["phase_update"] = "phase_update"
     phase: ProcessingPhase
     phase_progress: float  # 0.0 to 1.0
     overall_progress: float  # 0.0 to 1.0
@@ -134,7 +149,7 @@ class ProgressUpdate:
     message: Optional[str] = None
 
 
-# --- Mass-event models (bridge schema migration step 4b, issue #93) -------
+# --- Mass-event models (bridge schema migration step 4, issues #93/#96) ---
 #
 # `IntelligentRedactionPipeline.process_document`'s `emit_mass_event()`
 # (model_enhanced.py) prints one JSON object per line on stdout -- the
@@ -164,22 +179,47 @@ class MassTotalEvent(BaseModel):
 
 
 class ChunkStartEvent(BaseModel):
-    """Emitted immediately before a chunk is dispatched to the extractor."""
+    """Emitted immediately before a chunk is dispatched to the extractor.
+
+    `chunk_index`/`total_chunks` are optional and, as of issue #96's round-2
+    fix, populated only by `LlamaCppRedactionPipeline.process_document`. That
+    backend has no keepalive thread (`send_keepalive` is Ollama-only,
+    model_enhanced.py) and emits no `mass_total`, so a chunk boundary is its
+    *only* heartbeat signal during LLM_EXTRACTION; the Swift bridge's
+    `extractChunkInfo` needs an actual chunk/total pair to refresh
+    `DocumentItem.lastHeartbeat` (see `PythonKitBridge.swift`,
+    `ProgressMonitor.swift`). The round-1 unification of this event lost
+    that signal (these fields didn't exist yet), which a reviewer caught as
+    a live regression: a llama.cpp run whose aggregate per-chunk time
+    exceeded the 120s heartbeat-watchdog timeout, even with no single chunk
+    that slow, was wrongly marked "processing stalled". The Ollama path
+    leaves both fields unset -- its own keepalive thread already carries
+    chunk/total once a chunk is in flight (`KeepaliveEvent` below), so this
+    would be a redundant heartbeat signal there, not a missing one.
+    """
 
     model_config = ConfigDict(extra="forbid")
 
     type: Literal["chunk_start"] = "chunk_start"
     size: int
     estimated_time: float
+    chunk_index: Optional[int] = None
+    total_chunks: Optional[int] = None
 
 
 class ChunkEndEvent(BaseModel):
-    """Emitted when a chunk's extraction finishes, successfully or not."""
+    """Emitted when a chunk's extraction finishes, successfully or not.
+
+    `chunk_index`/`total_chunks`: see `ChunkStartEvent`'s docstring -- same
+    llama.cpp-only heartbeat rationale, same fields.
+    """
 
     model_config = ConfigDict(extra="forbid")
 
     type: Literal["chunk_end"] = "chunk_end"
     size: int
+    chunk_index: Optional[int] = None
+    total_chunks: Optional[int] = None
 
 
 class KeepaliveEvent(BaseModel):
@@ -231,25 +271,60 @@ MassEvent = Annotated[
     Field(discriminator="type"),
 ]
 
-_MASS_EVENT_ADAPTER: TypeAdapter = TypeAdapter(MassEvent)
+# The one channel (issue #96): every progress-event producer in the
+# codebase now dispatches through `progress_callback` with exactly one
+# positional argument, an already-validated instance of this union --
+# either the rich phase-level `ProgressUpdate` or one of the five
+# mass-event shapes above. There is no second, wrapped representation and
+# no callback-arity detection (`ProgressTracker.__init__` used to branch on
+# `inspect.signature(progress_callback)` to decide whether a second, inner
+# tracker should re-wrap every mass event as a `ProgressUpdate` -- see the
+# design comment on issue #96 for the full trace of why that was a bug, not
+# a feature: it silently diverged what the CLI and the packaged app each
+# received for the same logical event).
+ProgressEvent = Annotated[
+    Union[
+        ProgressUpdate,
+        MassTotalEvent,
+        ChunkStartEvent,
+        ChunkEndEvent,
+        KeepaliveEvent,
+        TokenProgressEvent,
+    ],
+    Field(discriminator="type"),
+]
+
+_PROGRESS_EVENT_ADAPTER: TypeAdapter = TypeAdapter(ProgressEvent)
 
 # The exact `type` strings `DocumentModels.swift`'s `ingestProgressPayload`
 # switch recognizes, readable from Python without opening the Swift source.
-# This is a mirror, so it is never the authority: the parity test
-# (`test_emitted_type_strings_match_swift_handled_set`) parses the switch out
-# of DocumentModels.swift and asserts models == this constant == the parsed
-# Swift set, so drift on any of the three sides fails the suite (issue #93).
+# Derived from `MassEvent` (never hand-typed -- issue #96's Notes: "whatever
+# replaces `SWIFT_HANDLED_MASS_EVENT_TYPES`, derive both sides") rather than
+# restated as a separately-maintained literal, so this constant can never
+# itself drift from the models it describes. `phase_update` is deliberately
+# excluded: `ingestProgressPayload` only ever sees the five mass-event
+# shapes -- the rich phase-level update is never JSON-serialized onto that
+# channel (it crosses the PythonKit bridge as a live attribute read
+# instead, `PythonKitBridge.swift`'s progress callback closure), so it was
+# never part of the closed set that switch accepts. The parity test
+# (`test_emitted_type_strings_match_swift_handled_set`) parses the switch
+# out of DocumentModels.swift and asserts this derived set == the parsed
+# Swift set, so drift on either side fails the suite (issue #93).
 # `token_progress` is handled there via an explicit no-op case (deliberately
-# ignored, not decoded into the progress bar) rather than driving progress --
-# see the switch's own comment.
+# ignored, not decoded into the progress bar) rather than driving progress
+# -- see the switch's own comment.
 SWIFT_HANDLED_MASS_EVENT_TYPES = frozenset(
-    {"mass_total", "chunk_start", "chunk_end", "keepalive", "token_progress"}
+    member.model_fields["type"].default
+    for member in get_args(get_args(MassEvent)[0])
 )
 
 
-def validate_mass_event(payload: Dict[str, Any]) -> MassEvent:
-    """Validate one `emit_mass_event` payload dict against the closed set
-    of mass-event models above.
+def validate_progress_event(payload: Dict[str, Any]) -> ProgressEvent:
+    """Validate one progress-event payload dict against the closed,
+    discriminated `ProgressEvent` union above (the mass-event shapes; the
+    rich `ProgressUpdate` member is constructed directly by
+    `ProgressTracker.update_phase()`, never from a raw dict, but shares
+    this same union and adapter).
 
     Raises `pydantic.ValidationError` on an unknown `type`, a missing or
     mistyped field, or an unexpected extra field. Deliberately not caught
@@ -259,16 +334,16 @@ def validate_mass_event(payload: Dict[str, Any]) -> MassEvent:
     a plain function around a cached `TypeAdapter` rather than doing any
     per-call model construction beyond what validation itself requires.
     """
-    return _MASS_EVENT_ADAPTER.validate_python(payload)
+    return _PROGRESS_EVENT_ADAPTER.validate_python(payload)
 
 
-def serialize_mass_event(event: MassEvent) -> str:
-    """Serialize an already-validated `MassEvent` for the stdout mass-event
-    channel the Swift bridge reads.
+def serialize_progress_event(event: ProgressEvent) -> str:
+    """Serialize an already-validated `ProgressEvent` for the stdout
+    mass-event channel the Swift bridge reads.
 
     Callers used to serialize the raw input dict they handed to
-    `validate_mass_event` instead of the validated model it returned (#95).
-    Pydantic's default coercion is lax -- a payload like
+    `validate_progress_event` instead of the validated model it returned
+    (#95). Pydantic's default coercion is lax -- a payload like
     `{"type": "mass_total", "value": "4200"}` validates cleanly (the string
     coerces to an int) -- so serializing the original dict let an
     uncoerced value cross the bridge even though validation "passed".
@@ -371,9 +446,18 @@ class ProgressTracker:
 
 
 # Convenience function for creating progress callbacks
-def create_progress_callback(gui_update_func: Callable[[ProgressUpdate], None]) -> Callable[[ProgressUpdate], None]:
-    """Create a progress callback that safely updates the GUI."""
-    def callback(update: ProgressUpdate):
+def create_progress_callback(gui_update_func: Callable[[ProgressEvent], None]) -> Callable[[ProgressEvent], None]:
+    """Create a progress callback that safely updates the GUI.
+
+    The returned callback is registered as the run's single
+    `progress_callback` (issue #96), so `gui_update_func` receives every
+    `ProgressEvent` member -- the rich `ProgressUpdate` as well as the
+    mass-event types emitted during LLM extraction -- not only
+    `ProgressUpdate`. Callers must check `.type` before touching
+    phase-only fields; see `cli.py`'s `cli_progress_callback` for the
+    pattern.
+    """
+    def callback(update: ProgressEvent):
         try:
             gui_update_func(update)
         except Exception as e:

@@ -5,7 +5,7 @@ import os
 import shlex
 from .unified_redactor import run_unified_redaction
 from .preflight import ensure_ollama_ready
-from .progress import create_progress_callback, ProgressUpdate
+from .progress import create_progress_callback, ProgressEvent
 from .docx_pkg.settings import CLI_ARG_PAIRS
 from .model_config import default_model_id, default_temperature, default_skip_confidence
 
@@ -146,9 +146,21 @@ def main():
     else:
         os.environ.pop("MARCUT_METADATA_SETTINGS_JSON", None)
 
-    # Create CLI progress callback that outputs messages for SwiftUI parsing
-    def cli_progress_callback(update: ProgressUpdate):
+    # Create CLI progress callback that outputs messages for SwiftUI parsing.
+    # The single progress_callback registered for a run (bridge schema
+    # migration follow-up, issue #96) now receives every `ProgressEvent`
+    # variant -- the rich phase_update as well as the mass-event types
+    # emitted during LLM extraction -- so this must check `.type` before
+    # touching phase-only fields like `phase_name`/`overall_progress`,
+    # which only exist on the phase_update variant. Mass events are not
+    # printed again here: the unified emission helper already put their raw
+    # JSON on stdout unconditionally (the channel `ingestProgressPayload`
+    # on the Swift side parses), so re-printing them as MARCUT_STATUS would
+    # just duplicate that line.
+    def cli_progress_callback(update: ProgressEvent):
         try:
+            if update.type != "phase_update":
+                return
             # Output structured progress messages that SwiftUI can parse
             print(f"MARCUT_PROGRESS: {update.phase_name} | Stage: {update.phase_progress:.1%} | Overall: {update.overall_progress:.1%} | Remaining: {update.estimated_remaining:.0f}s")
             if update.message:
