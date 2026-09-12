@@ -196,13 +196,22 @@ DocumentRedactionViewModel (stays, ~400–500 lines)
   is the piece most entangled with `Task` cancellation and the pending-job
   persistence path, so it is also the highest-risk piece — see §4.
 
-- **`ProcessRunner`** — owns `processDocument`, `processDocumentWithPythonKit`,
+- **`ProcessRunner`** — **done (#110)**, see §4 item 8 for the as-shipped
+  shape. Owns `processDocument`, `processDocumentWithPythonKit`,
   `applyAdvancedSettingsEnvironment`, `applyMetadataSettingsEnvironment`,
-  `logAdvancedSettingsSnapshot`, `awaitPythonOutcome`. Boundary: takes a
-  `DocumentItem`, a destination `URL`, `RedactionSettings`, and the
-  `PythonKitRunner`; returns a result type (success/failure + output paths)
-  instead of mutating `item.status` inline, so behavior is testable without
-  a live PythonKit runner (inject a protocol-typed runner).
+  `logAdvancedSettingsSnapshot`, `awaitPythonOutcome`,
+  `generateMetadataReport`, `scrubDocumentMetadataOnly`. Takes a
+  `DocumentItem`, a destination `URL`, a settings provider, and an
+  injected protocol-typed runner (`RedactionRunning`), so it's testable
+  without a live `PythonKitRunner`. The "returns a result type instead of
+  mutating `item.status` inline" shape originally sketched here was not
+  what shipped: extraction-rule §3.3 requires *move code only, zero golden
+  diffs*, and the moved code already mutates `item.status`/other
+  `DocumentItem` fields directly (the same pattern `OutputArtifactManager`
+  and `DocumentShareService` already established) rather than returning a
+  result the view model applies — redesigning the call boundary to return
+  a value would have been a behavior change, not a move, and risked the
+  exact golden-diff regression §3.3 exists to catch.
 
 - **`ProgressMonitor`** (heartbeat + ETA, currently two loosely related
   concerns under one `// MARK:` each) — owns `ensureHeartbeatMonitorRunning`,
@@ -542,8 +551,9 @@ depend on the characterization tests from §3.2 landing first.
    and the `sharePresenter` seam (#98) moved into a `DocumentShareService`
    collaborator that takes the runner provider and
    `applyMetadataSettingsEnvironment` as constructor closures (the latter
-   stays owned by the view model until #110's `ProcessRunner` extraction,
-   since other call sites besides this flow use it too).
+   moved into `ProcessRunner` at #110; the view model keeps a thin
+   forwarding method under the same name since `DocumentShareService`'s
+   closure here and `generateMetadataReportsInPlace` both still call it).
    `confirmAndShareReviewCopy`/`presentSharePicker` stay private to the
    collaborator; the view model keeps thin forwarding methods for
    `openRedactedDocument`/`shareDocument`/`shareFinalRedactedCopy` so
@@ -585,24 +595,51 @@ depend on the characterization tests from §3.2 landing first.
    in. The view model keeps thin forwarding methods for every call site --
    both `ContentView.swift`'s direct calls and its own remaining
    `processAllDocuments`/`scrubMetadataOnly`/`retryDocument`/
-   `generateMetadataReportsInPlace`/`generateMetadataReport`/
-   `scrubDocumentMetadataOnly` (staying on the view model until #110's
-   `ProcessRunner` extraction and #111's `BatchCoordinator` extraction) --
-   so none of those call sites changed;
+   `generateMetadataReportsInPlace` (staying on the view model until #111's
+   `BatchCoordinator` extraction) -- so none of those call sites changed;
+   `generateMetadataReport`/`scrubDocumentMetadataOnly` themselves moved
+   into `ProcessRunner` at #110, with the view model keeping thin
+   forwarders under the same private names since `generateMetadataReportsInPlace`/
+   `retryDocument` still call them;
    #101's `applyOutputArtifacts` filesystem characterization tests
    (§3.2 item 4) pass unmodified, construction-only unchanged.
    Verification per §3.3: `swift build` + `swift test` green, SwiftFormat
    lint clean, zero golden diffs.
 
-8. **`ProcessRunner` extraction** — depends on slice 7 (uses
-   `applyOutputArtifacts`) and slice 5 (uses `applyAdvancedSettingsEnvironment`
-   /`applyMetadataSettingsEnvironment`, which should already be flowing
-   through the unified migrator's settings resolution by this point).
-   Requires the manual end-to-end smoke run (§3.3 item 5) since this is the
-   direct PythonKit call boundary — the single highest-consequence piece
-   in either file, since a regression here changes what actually gets
-   redacted. Land last among the "service" extractions, with its own
-   dedicated review pass.
+8. **`ProcessRunner` extraction** — **done (#110)**: `processDocument`,
+   `processDocumentWithPythonKit`, `applyAdvancedSettingsEnvironment`,
+   `applyMetadataSettingsEnvironment`, `logAdvancedSettingsSnapshot`,
+   `awaitPythonOutcome`, `generateMetadataReport`, and
+   `scrubDocumentMetadataOnly` moved into a `ProcessRunner` collaborator
+   that holds `outputArtifactManager`/`progressMonitor`/`pythonBridge`
+   directly (the first two are themselves already-extracted collaborators
+   with no reach back into this one) and takes `defaults`, the runner
+   provider, a settings provider, an items-snapshot closure, the
+   `llmPreflightCheck`/`modelReadinessCheck` probes, and closures back into
+   the view model for everything this slice's scope note keeps off the new
+   type: `updateState`, `validateDocxStructure`, `finalizeProcessing`,
+   `assignFailureMessageIfNeeded`, `loadFailureReport`, and
+   `markMetadataScrubUsed` (all four of the latter group either stay
+   directly test-addressed by name via `@testable import MarcutApp` or are
+   in this design doc's own §2.1 "stays on the view model directly" list).
+   `processingTasks`/`activeAttemptTokens` also stay owned by the view
+   model per this issue's own out-of-scope note (deferred to #111); the new
+   `mintAttemptToken`/`isAttemptCurrent`/`registerProcessingTask`/
+   `isProcessingCancelled` view-model methods are the mechanical seam that
+   lets `ProcessRunner` read and write them without holding them itself.
+   The view model keeps thin forwarding methods for `processDocument`,
+   `applyMetadataSettingsEnvironment`, and the private
+   `scrubDocumentMetadataOnly`/`generateMetadataReport` names, since
+   `retryDocument`, `generateMetadataReportsInPlace`, `DocumentShareService`,
+   and the golden/characterization tests all still call them by those
+   names. The design doc's originally anticipated "manual end-to-end smoke
+   run" (§3.3 item 5) was superseded by the #100 golden harness before this
+   slice landed: the `marcut` CLI never went through the view model, so a
+   CLI smoke run would have proven nothing about this boundary, while
+   `RedactionCharacterizationTests` pins every argument and `MARCUT_*`
+   environment variable the view model hands to Python, byte for byte.
+   Verification per §3.3: `swift build` + `swift test` green, SwiftFormat
+   lint clean, zero golden diffs before and after.
 
 9. **`BatchCoordinator` extraction** — depends on `ProcessRunner` (slice 8)
    and the `updateState()` characterization test (§3.2 item 1). Also the

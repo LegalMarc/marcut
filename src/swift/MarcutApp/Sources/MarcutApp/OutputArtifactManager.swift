@@ -13,9 +13,10 @@ import UniformTypeIdentifiers
 /// itself an `ObservableObject` reference passed in, the same way `DocumentShareService` sets
 /// `item.errorMessage` directly. The view model keeps thin forwarding methods for every call site
 /// -- both its own remaining `processAllDocuments`/`scrubMetadataOnly`/`retryDocument`/
-/// `generateMetadataReportsInPlace`/`generateMetadataReport`/`scrubDocumentMetadataOnly` (which
-/// stay on the view model until #110/#111) and `ContentView.swift`'s direct calls -- so none
-/// of those call sites changed.
+/// `generateMetadataReportsInPlace` (which stays on the view model until #111) and
+/// `ContentView.swift`'s direct calls -- so none of those call sites changed.
+/// `generateMetadataReport`/`scrubDocumentMetadataOnly` themselves moved into `ProcessRunner` at
+/// #110, which reaches this type's methods directly rather than through the view model.
 @MainActor
 final class OutputArtifactManager {
     /// Injected `UserDefaults` suite, mirroring `DocumentRedactionViewModel.defaults`.

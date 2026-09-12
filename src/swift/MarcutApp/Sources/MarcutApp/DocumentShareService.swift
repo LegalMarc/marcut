@@ -4,9 +4,10 @@ import Foundation
 /// Share/export flow collaborator, extracted from `DocumentRedactionViewModel`
 /// (`docs/design/view_controller_decomposition.md` §2.1, slice 6). Small and self-contained --
 /// it already reads like a service, constructing its own `NSAlert`s. Takes the runner provider
-/// and `applyMetadataSettingsEnvironment` as constructor closures (the latter stays owned by the
-/// view model/`ProcessRunner` until #110, since other call sites besides this flow use it too)
-/// rather than reaching back into the view model directly. `shareFinalRedactedCopy` reports its
+/// and `applyMetadataSettingsEnvironment` as constructor closures (the latter now lives on
+/// `ProcessRunner`, #110; the view model keeps a thin forwarder under the same name since other
+/// call sites besides this flow use it too) rather than reaching back into the view model
+/// directly. `shareFinalRedactedCopy` reports its
 /// error back by returning it instead of mutating `DocumentItem.errorMessage` itself; callers
 /// (the view model's forwarding method, and this service's own `shareDocument`) apply it.
 @MainActor
