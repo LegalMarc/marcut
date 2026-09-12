@@ -1,0 +1,107 @@
+{
+  "envAfter" : {
+    "MARCUT_ADVANCED_AI_MODE" : "rules_override",
+    "MARCUT_ADVANCED_CONFIDENCE" : "99",
+    "MARCUT_ADVANCED_MODE_ENABLED" : "1",
+    "MARCUT_METADATA_ARGS" : "--no-clean-statistics --no-clean-created-date --no-clean-modified-date --no-clean-language --no-clean-review-comments-visible --no-clean-track-changes --no-clean-mail-merge --no-clean-ink-annotations --no-clean-headers-footers --no-clean-watermarks --no-clean-hyperlinks --no-clean-fonts --no-clean-glossary --no-clean-style-names --no-clean-chart-labels --no-clean-form-defaults --no-clean-language-settings --no-clean-custom-xml-parts --no-clean-nonstandard-xml --no-clean-microsoft-extensions --no-clean-unknown-rels --no-clean-orphaned-parts --no-clean-alternate-content --no-clean-scale-crop --no-clean-hyperlinks-changed --no-clean-spell-grammar --no-clean-doc-vars",
+    "MARCUT_METADATA_PRESET" : "balanced",
+    "MARCUT_METADATA_SETTINGS_JSON" : "{\"cleanActiveX\":true,\"cleanAltText\":true,\"cleanAlternateContent\":false,\"cleanAppVersion\":true,\"cleanApplication\":true,\"cleanAuthor\":true,\"cleanCategory\":true,\"cleanChartLabels\":false,\"cleanComments\":true,\"cleanCompany\":true,\"cleanContentStatus\":true,\"cleanCreatedDate\":false,\"cleanCustomProperties\":true,\"cleanCustomXMLParts\":false,\"cleanDataBindings\":true,\"cleanDigitalSignatures\":true,\"cleanDocSecurity\":true,\"cleanDocumentGUID\":true,\"cleanDocumentVariables\":false,\"cleanDocumentVersions\":true,\"cleanEmbeddedFonts\":false,\"cleanExternalLinks\":true,\"cleanFastSaveData\":true,\"cleanFormDefaults\":false,\"cleanGlossary\":false,\"cleanHeadersFooters\":false,\"cleanHiddenText\":true,\"cleanHyperlinkBase\":true,\"cleanHyperlinkURLs\":false,\"cleanHyperlinksChanged\":false,\"cleanIdentifier\":true,\"cleanImageEXIF\":true,\"cleanInkAnnotations\":false,\"cleanInternalURLs\":true,\"cleanInvisibleObjects\":true,\"cleanKeywords\":true,\"cleanLanguage\":false,\"cleanLanguageSettings\":false,\"cleanLastModifiedBy\":true,\"cleanLastPrinted\":true,\"cleanLinksUpToDate\":true,\"cleanMailMerge\":false,\"cleanManager\":true,\"cleanMicrosoftExtensionXML\":false,\"cleanModifiedDate\":false,\"cleanNonstandardXML\":false,\"cleanOLEObjects\":true,\"cleanOLESources\":true,\"cleanOrphanedParts\":false,\"cleanPrinterSettings\":true,\"cleanRSIDs\":true,\"cleanReviewCommentsHidden\":true,\"cleanReviewCommentsVisible\":false,\"cleanRevisionNumber\":true,\"cleanScaleCrop\":false,\"cleanSharedDoc\":true,\"cleanSpellGrammarState\":false,\"cleanStatistics\":false,\"cleanStyleNames\":false,\"cleanSubject\":true,\"cleanTemplate\":true,\"cleanThumbnail\":true,\"cleanTitle\":true,\"cleanTotalEditingTime\":true,\"cleanTrackChanges\":false,\"cleanUNCPaths\":true,\"cleanUnknownRelationships\":false,\"cleanUserPaths\":true,\"cleanVBAMacros\":true,\"cleanVersion\":true,\"cleanWatermarks\":false}"
+  },
+  "envBefore" : {
+
+  },
+  "events" : [
+    {
+      "args" : [
+
+      ],
+      "envAtCall" : {
+
+      },
+      "method" : "clearCancellationRequest"
+    },
+    {
+      "args" : [
+
+      ],
+      "envAtCall" : {
+
+      },
+      "method" : "clearCancellationRequest"
+    },
+    {
+      "args" : [
+
+      ],
+      "envAtCall" : {
+
+      },
+      "method" : "clearCancellationRequest"
+    },
+    {
+      "args" : [
+        "<REPO>/sample-files/Consent.docx",
+        "<TMP>/Consent (redacted <TS>).docx",
+        "<TMP>/Consent (redacted <TS>)_report.json",
+        "qwen2.5:14b",
+        "false",
+        "rules",
+        "0.99",
+        "2",
+        "1400",
+        "200",
+        "0.0",
+        "42",
+        "nil",
+        "<cancellationChecker>"
+      ],
+      "envAtCall" : {
+        "MARCUT_ADVANCED_AI_MODE" : "rules_override",
+        "MARCUT_ADVANCED_CONFIDENCE" : "99",
+        "MARCUT_ADVANCED_MODE_ENABLED" : "1",
+        "MARCUT_METADATA_ARGS" : "--no-clean-statistics --no-clean-created-date --no-clean-modified-date --no-clean-language --no-clean-review-comments-visible --no-clean-track-changes --no-clean-mail-merge --no-clean-ink-annotations --no-clean-headers-footers --no-clean-watermarks --no-clean-hyperlinks --no-clean-fonts --no-clean-glossary --no-clean-style-names --no-clean-chart-labels --no-clean-form-defaults --no-clean-language-settings --no-clean-custom-xml-parts --no-clean-nonstandard-xml --no-clean-microsoft-extensions --no-clean-unknown-rels --no-clean-orphaned-parts --no-clean-alternate-content --no-clean-scale-crop --no-clean-hyperlinks-changed --no-clean-spell-grammar --no-clean-doc-vars",
+        "MARCUT_METADATA_PRESET" : "balanced",
+        "MARCUT_METADATA_SETTINGS_JSON" : "{\"cleanActiveX\":true,\"cleanAltText\":true,\"cleanAlternateContent\":false,\"cleanAppVersion\":true,\"cleanApplication\":true,\"cleanAuthor\":true,\"cleanCategory\":true,\"cleanChartLabels\":false,\"cleanComments\":true,\"cleanCompany\":true,\"cleanContentStatus\":true,\"cleanCreatedDate\":false,\"cleanCustomProperties\":true,\"cleanCustomXMLParts\":false,\"cleanDataBindings\":true,\"cleanDigitalSignatures\":true,\"cleanDocSecurity\":true,\"cleanDocumentGUID\":true,\"cleanDocumentVariables\":false,\"cleanDocumentVersions\":true,\"cleanEmbeddedFonts\":false,\"cleanExternalLinks\":true,\"cleanFastSaveData\":true,\"cleanFormDefaults\":false,\"cleanGlossary\":false,\"cleanHeadersFooters\":false,\"cleanHiddenText\":true,\"cleanHyperlinkBase\":true,\"cleanHyperlinkURLs\":false,\"cleanHyperlinksChanged\":false,\"cleanIdentifier\":true,\"cleanImageEXIF\":true,\"cleanInkAnnotations\":false,\"cleanInternalURLs\":true,\"cleanInvisibleObjects\":true,\"cleanKeywords\":true,\"cleanLanguage\":false,\"cleanLanguageSettings\":false,\"cleanLastModifiedBy\":true,\"cleanLastPrinted\":true,\"cleanLinksUpToDate\":true,\"cleanMailMerge\":false,\"cleanManager\":true,\"cleanMicrosoftExtensionXML\":false,\"cleanModifiedDate\":false,\"cleanNonstandardXML\":false,\"cleanOLEObjects\":true,\"cleanOLESources\":true,\"cleanOrphanedParts\":false,\"cleanPrinterSettings\":true,\"cleanRSIDs\":true,\"cleanReviewCommentsHidden\":true,\"cleanReviewCommentsVisible\":false,\"cleanRevisionNumber\":true,\"cleanScaleCrop\":false,\"cleanSharedDoc\":true,\"cleanSpellGrammarState\":false,\"cleanStatistics\":false,\"cleanStyleNames\":false,\"cleanSubject\":true,\"cleanTemplate\":true,\"cleanThumbnail\":true,\"cleanTitle\":true,\"cleanTotalEditingTime\":true,\"cleanTrackChanges\":false,\"cleanUNCPaths\":true,\"cleanUnknownRelationships\":false,\"cleanUserPaths\":true,\"cleanVBAMacros\":true,\"cleanVersion\":true,\"cleanWatermarks\":false}",
+        "MARCUT_SCRUB_REPORT_PATH" : "<TMP>/Consent (redacted <TS>)_scrub_report.json"
+      },
+      "method" : "runEnhancedOllamaWithProgress"
+    },
+    {
+      "args" : [
+
+      ],
+      "envAtCall" : {
+        "MARCUT_ADVANCED_AI_MODE" : "rules_override",
+        "MARCUT_ADVANCED_CONFIDENCE" : "99",
+        "MARCUT_ADVANCED_MODE_ENABLED" : "1",
+        "MARCUT_METADATA_ARGS" : "--no-clean-statistics --no-clean-created-date --no-clean-modified-date --no-clean-language --no-clean-review-comments-visible --no-clean-track-changes --no-clean-mail-merge --no-clean-ink-annotations --no-clean-headers-footers --no-clean-watermarks --no-clean-hyperlinks --no-clean-fonts --no-clean-glossary --no-clean-style-names --no-clean-chart-labels --no-clean-form-defaults --no-clean-language-settings --no-clean-custom-xml-parts --no-clean-nonstandard-xml --no-clean-microsoft-extensions --no-clean-unknown-rels --no-clean-orphaned-parts --no-clean-alternate-content --no-clean-scale-crop --no-clean-hyperlinks-changed --no-clean-spell-grammar --no-clean-doc-vars",
+        "MARCUT_METADATA_PRESET" : "balanced",
+        "MARCUT_METADATA_SETTINGS_JSON" : "{\"cleanActiveX\":true,\"cleanAltText\":true,\"cleanAlternateContent\":false,\"cleanAppVersion\":true,\"cleanApplication\":true,\"cleanAuthor\":true,\"cleanCategory\":true,\"cleanChartLabels\":false,\"cleanComments\":true,\"cleanCompany\":true,\"cleanContentStatus\":true,\"cleanCreatedDate\":false,\"cleanCustomProperties\":true,\"cleanCustomXMLParts\":false,\"cleanDataBindings\":true,\"cleanDigitalSignatures\":true,\"cleanDocSecurity\":true,\"cleanDocumentGUID\":true,\"cleanDocumentVariables\":false,\"cleanDocumentVersions\":true,\"cleanEmbeddedFonts\":false,\"cleanExternalLinks\":true,\"cleanFastSaveData\":true,\"cleanFormDefaults\":false,\"cleanGlossary\":false,\"cleanHeadersFooters\":false,\"cleanHiddenText\":true,\"cleanHyperlinkBase\":true,\"cleanHyperlinkURLs\":false,\"cleanHyperlinksChanged\":false,\"cleanIdentifier\":true,\"cleanImageEXIF\":true,\"cleanInkAnnotations\":false,\"cleanInternalURLs\":true,\"cleanInvisibleObjects\":true,\"cleanKeywords\":true,\"cleanLanguage\":false,\"cleanLanguageSettings\":false,\"cleanLastModifiedBy\":true,\"cleanLastPrinted\":true,\"cleanLinksUpToDate\":true,\"cleanMailMerge\":false,\"cleanManager\":true,\"cleanMicrosoftExtensionXML\":false,\"cleanModifiedDate\":false,\"cleanNonstandardXML\":false,\"cleanOLEObjects\":true,\"cleanOLESources\":true,\"cleanOrphanedParts\":false,\"cleanPrinterSettings\":true,\"cleanRSIDs\":true,\"cleanReviewCommentsHidden\":true,\"cleanReviewCommentsVisible\":false,\"cleanRevisionNumber\":true,\"cleanScaleCrop\":false,\"cleanSharedDoc\":true,\"cleanSpellGrammarState\":false,\"cleanStatistics\":false,\"cleanStyleNames\":false,\"cleanSubject\":true,\"cleanTemplate\":true,\"cleanThumbnail\":true,\"cleanTitle\":true,\"cleanTotalEditingTime\":true,\"cleanTrackChanges\":false,\"cleanUNCPaths\":true,\"cleanUnknownRelationships\":false,\"cleanUserPaths\":true,\"cleanVBAMacros\":true,\"cleanVersion\":true,\"cleanWatermarks\":false}"
+      },
+      "method" : "clearCancellationRequest"
+    }
+  ],
+  "flagsAfter" : {
+    "batchETAIsNil" : true,
+    "hasCompletedDocuments" : true,
+    "hasDocuments" : true,
+    "hasFailedDocuments" : false,
+    "hasFinishedProcessing" : true,
+    "hasProcessingDocuments" : false,
+    "hasValidDocuments" : false,
+    "metadataReportNeedsPermissionRetry" : false
+  },
+  "itemsAfter" : [
+    {
+      "lastDestinationURL" : "<TMP>",
+      "lastOperation" : "redaction",
+      "metadataReportOutputURL" : "/private<TMP>/Consent (scrub-report alt).json",
+      "name" : "Consent.docx",
+      "redactedOutputURL" : "<TMP>/Consent (redacted <TS>).docx",
+      "reportOutputURL" : "<TMP>/Consent (redacted <TS>)_report.json",
+      "scrubReportOutputURL" : "/private<TMP>/Consent (scrub-report alt).json",
+      "status" : "completed"
+    }
+  ],
+  "scenario" : "rules_only_success_no_scrub_report"
+}

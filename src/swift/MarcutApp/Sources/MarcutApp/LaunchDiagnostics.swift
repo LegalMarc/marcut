@@ -1,6 +1,6 @@
-import SwiftUI
 import AppKit
 import OSLog
+import SwiftUI
 
 enum LaunchStage: String {
     case delegateLaunched = "delegate_launched"
@@ -57,7 +57,7 @@ final class LaunchDiagnostics: ObservableObject {
         DispatchQueue.main.async {
             self.statusLines.append(message)
             LaunchDiagnosticsWindow.shared.update(statusLines: self.statusLines)
-            if self.forceDiagnosticWindow && self.guiModeEnabled {
+            if self.forceDiagnosticWindow, self.guiModeEnabled {
                 LaunchDiagnosticsWindow.shared.present(reason: "Force flag")
             }
         }
@@ -112,7 +112,7 @@ final class LaunchDiagnostics: ObservableObject {
     func activationDidChange(isActive: Bool) {
         guard diagnosticsEnabled else { return }
         mark(.activationStateChanged, extra: "active=\(isActive)")
-        if guiModeEnabled && isActive && !contentViewConfirmed {
+        if guiModeEnabled, isActive, !contentViewConfirmed {
             LaunchDiagnosticsWindow.shared.present(reason: "Activation changed")
         }
     }
@@ -159,7 +159,7 @@ final class LaunchDiagnosticsWindow {
         }
     }
 
-    func update(statusLines: [String]) {
+    func update(statusLines _: [String]) {
         DispatchQueue.main.async {
             if let hosting = self.window?.contentView as? NSHostingView<LaunchDiagnosticsPanel> {
                 hosting.rootView = LaunchDiagnosticsPanel(statusProvider: LaunchDiagnostics.shared)

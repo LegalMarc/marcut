@@ -12,9 +12,9 @@ import os
 import stat
 import tempfile
 import unittest
+import warnings
 import zipfile
 from dataclasses import fields
-from pathlib import Path
 from xml.etree import ElementTree as ET
 
 try:
@@ -172,6 +172,126 @@ class TestMetadataCleaningSettings(unittest.TestCase):
             self.assertTrue(getattr(settings, f.name), msg=f"expected cleaned field to be enabled: {f.name}")
 
 
+class TestMetadataSettingsJsonValidation(unittest.TestCase):
+    """Issue #94: MARCUT_METADATA_SETTINGS_JSON is validated against a
+    pydantic model instead of being silently dropped on a bad payload.
+    Warn-and-default was chosen over raising -- see the issue for the
+    reasoning -- so every case here asserts the settings object still
+    comes back usable (with defaults) rather than an exception."""
+
+    def setUp(self):
+        self._prev_preset = os.environ.get("MARCUT_METADATA_PRESET")
+        self._prev_json = os.environ.get("MARCUT_METADATA_SETTINGS_JSON")
+        self._prev_args = os.environ.get("MARCUT_METADATA_ARGS")
+        os.environ.pop("MARCUT_METADATA_PRESET", None)
+        os.environ.pop("MARCUT_METADATA_SETTINGS_JSON", None)
+        os.environ.pop("MARCUT_METADATA_ARGS", None)
+
+    def tearDown(self):
+        for name, prev in (
+            ("MARCUT_METADATA_PRESET", self._prev_preset),
+            ("MARCUT_METADATA_SETTINGS_JSON", self._prev_json),
+            ("MARCUT_METADATA_ARGS", self._prev_args),
+        ):
+            if prev is None:
+                os.environ.pop(name, None)
+            else:
+                os.environ[name] = prev
+
+    @unittest.skipUnless(IMPORTS_SUCCESS, "marcut.docx_io not available")
+    def test_valid_payload_applies_exactly_as_before(self):
+        os.environ["MARCUT_METADATA_SETTINGS_JSON"] = json.dumps({
+            "clean_author": False,
+            "clean_company": False,
+        })
+        with _no_warnings(self):
+            settings = MetadataCleaningSettings.from_environment([])
+        self.assertFalse(settings.clean_author)
+        self.assertFalse(settings.clean_company)
+        # Untouched fields keep their defaults.
+        self.assertTrue(settings.clean_thumbnail)
+
+    @unittest.skipUnless(IMPORTS_SUCCESS, "marcut.docx_io not available")
+    def test_malformed_json_produces_diagnostic_and_defaults(self):
+        os.environ["MARCUT_METADATA_SETTINGS_JSON"] = "{not valid json"
+        with self.assertWarns(RuntimeWarning) as caught:
+            settings = MetadataCleaningSettings.from_environment([])
+        self.assertIn("MARCUT_METADATA_SETTINGS_JSON", str(caught.warning))
+        # Falls back to defaults rather than raising or half-applying.
+        default = MetadataCleaningSettings()
+        for f in fields(settings):
+            self.assertEqual(getattr(settings, f.name), getattr(default, f.name), msg=f.name)
+
+    @unittest.skipUnless(IMPORTS_SUCCESS, "marcut.docx_io not available")
+    def test_wellformed_wrong_shape_produces_same_diagnostic(self):
+        # Valid JSON, but a top-level array rather than an object.
+        os.environ["MARCUT_METADATA_SETTINGS_JSON"] = json.dumps(["clean_author", False])
+        with self.assertWarns(RuntimeWarning) as caught:
+            settings = MetadataCleaningSettings.from_environment([])
+        self.assertIn("MARCUT_METADATA_SETTINGS_JSON", str(caught.warning))
+        default = MetadataCleaningSettings()
+        for f in fields(settings):
+            self.assertEqual(getattr(settings, f.name), getattr(default, f.name), msg=f.name)
+
+    @unittest.skipUnless(IMPORTS_SUCCESS, "marcut.docx_io not available")
+    def test_settings_key_present_but_wrong_type_is_also_flagged(self):
+        # A "settings" key that isn't itself an object is a shape error too,
+        # not a silent fall-through to the flat top-level keys.
+        os.environ["MARCUT_METADATA_SETTINGS_JSON"] = json.dumps({
+            "settings": "not-an-object",
+            "clean_author": False,
+        })
+        with self.assertWarns(RuntimeWarning):
+            settings = MetadataCleaningSettings.from_environment([])
+        self.assertTrue(settings.clean_author)  # default, not applied
+
+    @unittest.skipUnless(IMPORTS_SUCCESS, "marcut.docx_io not available")
+    def test_absent_variable_yields_defaults_with_no_diagnostic(self):
+        with _no_warnings(self):
+            settings = MetadataCleaningSettings.from_environment([])
+        default = MetadataCleaningSettings()
+        for f in fields(settings):
+            self.assertEqual(getattr(settings, f.name), getattr(default, f.name), msg=f.name)
+
+    @unittest.skipUnless(IMPORTS_SUCCESS, "marcut.docx_io not available")
+    def test_unrecognised_cli_arg_warns_but_does_not_raise(self):
+        with self.assertWarns(RuntimeWarning) as caught:
+            settings = MetadataCleaningSettings.from_cli_args([
+                "--no-clean-company",
+                "--totally-bogus-flag",
+            ])
+        self.assertIn("bogus-flag", str(caught.warning))
+        self.assertFalse(settings.clean_company)
+
+    @unittest.skipUnless(IMPORTS_SUCCESS, "marcut.docx_io not available")
+    def test_preset_none_sentinel_does_not_warn(self):
+        with _no_warnings(self):
+            settings = MetadataCleaningSettings.from_cli_args(["--preset-none"])
+        self.assertIsInstance(settings, MetadataCleaningSettings)
+
+
+class _no_warnings:
+    """Context manager asserting no warnings were emitted in its block."""
+
+    def __init__(self, test_case):
+        self._test_case = test_case
+
+    def __enter__(self):
+        self._cm = warnings.catch_warnings(record=True)
+        self._records = self._cm.__enter__()
+        warnings.simplefilter("always")
+        return self._records
+
+    def __exit__(self, exc_type, exc, tb):
+        self._cm.__exit__(exc_type, exc, tb)
+        if exc_type is None:
+            self._test_case.assertEqual(
+                [str(r.message) for r in self._records], [],
+                "expected no warnings to be emitted",
+            )
+        return False
+
+
 class TestScrubReportPrePostValues(unittest.TestCase):
     @unittest.skipUnless(IMPORTS_SUCCESS, "marcut.pipeline not available")
     def test_preserved_field_uses_true_post_value(self):
@@ -246,6 +366,74 @@ class TestScrubReportPrePostValues(unittest.TestCase):
             self.assertIn("DEEP_EXPLORER_DISABLED", warning_codes)
             self.assertFalse(os.path.exists(os.path.join(tmpdir, "binaries")))
             self.assertFalse(os.path.exists(os.path.join(tmpdir, "forensic_explorer")))
+
+    @unittest.skipUnless(IMPORTS_SUCCESS, "marcut.pipeline not available")
+    def test_report_values_are_bounded_with_warnings(self):
+        settings = MetadataCleaningSettings.from_preset("none")
+        previous = {
+            "MARCUT_METADATA_REPORT_MAX_STRING_CHARS": os.environ.get("MARCUT_METADATA_REPORT_MAX_STRING_CHARS"),
+            "MARCUT_METADATA_REPORT_MAX_LIST_ITEMS": os.environ.get("MARCUT_METADATA_REPORT_MAX_LIST_ITEMS"),
+        }
+        os.environ["MARCUT_METADATA_REPORT_MAX_STRING_CHARS"] = "16"
+        os.environ["MARCUT_METADATA_REPORT_MAX_LIST_ITEMS"] = "1"
+        try:
+            report = pipeline._build_scrub_report(  # pylint: disable=protected-access
+                {
+                    "hidden_text": ["x" * 40, "second item"],
+                    "custom_xml_parts": [{"part": "/customXml/item1.xml", "xml": "y" * 40}],
+                },
+                {},
+                settings,
+                file_path=None,
+                input_path=None,
+                report_dir=None,
+            )
+        finally:
+            for key, value in previous.items():
+                if value is None:
+                    os.environ.pop(key, None)
+                else:
+                    os.environ[key] = value
+
+        structure_group = report["groups"]["Document Structure"]
+        hidden_text_row = next(row for row in structure_group if row["field"] == "Hidden Text")
+        self.assertTrue(hidden_text_row["before"]["truncated"])
+        self.assertEqual(hidden_text_row["before"]["limit_count"], 1)
+        self.assertTrue(hidden_text_row["before"]["items"][0]["truncated"])
+        warning_codes = {warning["code"] for warning in report.get("warnings", [])}
+        self.assertIn("METADATA_REPORT_LIST_TRUNCATED", warning_codes)
+        self.assertIn("METADATA_REPORT_VALUE_TRUNCATED", warning_codes)
+
+    @unittest.skipUnless(IMPORTS_SUCCESS, "marcut.pipeline not available")
+    def test_metadata_reader_summarizes_binary_payloads_by_default(self):
+        class DummyPart:
+            partname = "/word/media/image1.bin"
+            blob = b"x" * 128
+            content_type = "application/octet-stream"
+
+        class DummyPackage:
+            parts = [DummyPart()]
+            rels = {}
+
+        class DummyDocumentPart:
+            package = DummyPackage()
+            rels = {}
+
+        class DummyDoc:
+            core_properties = object()
+            element = None
+            settings = None
+            part = DummyDocumentPart()
+
+        class DummyManager:
+            doc = DummyDoc()
+
+        values = pipeline._read_metadata_values(DummyManager())  # pylint: disable=protected-access
+
+        binary_parts = values.get("_binary_parts") or []
+        self.assertEqual(len(binary_parts), 1)
+        self.assertNotIn("data", binary_parts[0])
+        self.assertEqual(binary_parts[0]["size"], 128)
 
     @unittest.skipUnless(IMPORTS_SUCCESS, "marcut.pipeline not available")
     def test_forensic_exports_are_bounded_and_private_when_enabled(self):
@@ -662,6 +850,29 @@ class TestMetadataScrubReport(unittest.TestCase):
             self.assertIn(name, doc_fields)
 
     @unittest.skipUnless(DOCX_AVAILABLE and IMPORTS_SUCCESS, "python-docx or marcut not available")
+    def test_scrub_accepts_track_changes_for_final_copy(self):
+        input_docx = self._copy_docx(self.input_docx, "track_changes_input.docx")
+        document_xml = self._read_zip_entry(input_docx, "word/document.xml")
+        original_text = b"<w:t>Metadata scrub test document.</w:t>"
+        revised_text = (
+            b"<w:del w:id=\"1\"><w:r><w:delText>Client Secret</w:delText></w:r></w:del>"
+            b"<w:ins w:id=\"2\"><w:r><w:t>PERSON_1</w:t></w:r></w:ins>"
+        )
+        self.assertIn(original_text, document_xml)
+        self._patch_zip(input_docx, {
+            "word/document.xml": document_xml.replace(original_text, revised_text, 1)
+        })
+
+        output_docx, _report = self._run_scrub(input_docx, "track_changes_final.docx")
+
+        final_xml = self._read_zip_entry(output_docx, "word/document.xml")
+        final_text = self._extract_text(final_xml)
+        self.assertIn("PERSON_1", final_text)
+        self.assertNotIn("Client Secret", final_text)
+        self.assertNotIn(b"delText", final_xml)
+        self.assertNotIn(b"<w:del", final_xml)
+
+    @unittest.skipUnless(DOCX_AVAILABLE and IMPORTS_SUCCESS, "python-docx or marcut not available")
     def test_mail_merge_cleanup(self):
         input_docx = self._copy_docx(self.input_docx, "mail_merge_input.docx")
         self._inject_mail_merge(input_docx)
@@ -851,11 +1062,189 @@ class TestMetadataScrubReport(unittest.TestCase):
         self.assertTrue(os.path.exists(output_docx))
         self.assertTrue(os.path.exists(audit_report))
         self.assertTrue(os.path.exists(scrub_report))
+        scrub_html = os.path.splitext(scrub_report)[0] + ".html"
+        self.assertTrue(os.path.exists(scrub_html))
+        self.assertEqual(stat.S_IMODE(os.stat(scrub_report).st_mode), 0o600)
+        self.assertEqual(stat.S_IMODE(os.stat(scrub_html).st_mode), 0o600)
         with open(scrub_report, "r", encoding="utf-8") as fh:
             report = json.load(fh)
         self.assertIn("groups", report)
         self.assertIn("summary", report)
 
+    @unittest.skipUnless(DOCX_AVAILABLE and IMPORTS_SUCCESS, "python-docx or marcut not available")
+    def test_scrub_report_validation_failure_finalizes_as_artifact_finalize_failed(self):
+        """Issue #67: a schema-invalid scrub report (report_schema.ScrubReport)
+        must be caught before the T7 temp write, cleaning up every staged
+        temp artifact and leaving no partial file at any final path -- the
+        same ARTIFACT_FINALIZE_FAILED code the transactional-write path
+        already uses for any other finalize-time failure."""
+        from unittest import mock
+
+        output_docx = os.path.join(self.temp_dir, "scrub_invalid_output.docx")
+        audit_report = os.path.join(self.temp_dir, "scrub_invalid_audit_report.json")
+        scrub_report = os.path.join(self.temp_dir, "scrub_invalid_scrub_report.json")
+        prev_args = os.environ.get("MARCUT_METADATA_ARGS")
+        prev_scrub = os.environ.get("MARCUT_SCRUB_REPORT_PATH")
+        os.environ["MARCUT_METADATA_ARGS"] = ""
+        os.environ["MARCUT_SCRUB_REPORT_PATH"] = scrub_report
+
+        try:
+            captured_error = None
+            try:
+                pipeline.ScrubReport.model_validate({})
+            except Exception as real_validation_error:  # genuine pydantic.ValidationError
+                captured_error = real_validation_error
+            self.assertIsNotNone(captured_error, "expected ScrubReport.model_validate({}) to raise")
+
+            with mock.patch.object(
+                pipeline.ScrubReport, "model_validate", side_effect=captured_error
+            ):
+                code, _timings = pipeline.run_redaction(
+                    input_path=self.input_docx,
+                    output_path=output_docx,
+                    report_path=audit_report,
+                    mode="rules",
+                    model_id="mock",
+                    chunk_tokens=200,
+                    overlap=20,
+                    temperature=0.1,
+                    seed=123,
+                    debug=False,
+                    backend="mock",
+                )
+        finally:
+            if prev_args is None:
+                os.environ.pop("MARCUT_METADATA_ARGS", None)
+            else:
+                os.environ["MARCUT_METADATA_ARGS"] = prev_args
+            if prev_scrub is None:
+                os.environ.pop("MARCUT_SCRUB_REPORT_PATH", None)
+            else:
+                os.environ["MARCUT_SCRUB_REPORT_PATH"] = prev_scrub
+
+        self.assertEqual(code, 2)
+        self.assertFalse(os.path.exists(output_docx))
+        self.assertFalse(os.path.exists(scrub_report))
+        # The failure-report writer targets the original report_path.
+        self.assertTrue(os.path.exists(audit_report))
+        payload = json.loads(open(audit_report, encoding="utf-8").read())
+        self.assertEqual(payload["error_code"], "ARTIFACT_FINALIZE_FAILED")
+        leftover_temps = [
+            name for name in os.listdir(self.temp_dir)
+            if name.startswith(".") and "scrub_invalid" in name
+        ]
+        self.assertEqual(leftover_temps, [])
+
+    @unittest.skipUnless(DOCX_AVAILABLE and IMPORTS_SUCCESS, "python-docx or marcut not available")
+    def test_metadata_report_only_validation_failure_writes_no_file(self):
+        """Issues #67/#91: metadata_report_only() must validate its report
+        payload (report_schema.MetadataReportPayload) immediately before its
+        write *and* before it crosses the PythonKit bridge as the function's
+        tuple element 2, and must leave no file at report_path if that
+        validation fails."""
+        from unittest import mock
+
+        report_path = os.path.join(self.temp_dir, "report_only_invalid.json")
+        self.assertFalse(os.path.exists(report_path))
+
+        captured_error = None
+        try:
+            pipeline.MetadataReportPayload.model_validate({})
+        except Exception as real_validation_error:  # genuine pydantic.ValidationError
+            captured_error = real_validation_error
+        self.assertIsNotNone(captured_error, "expected MetadataReportPayload.model_validate({}) to raise")
+
+        with mock.patch.object(
+            pipeline.MetadataReportPayload, "model_validate", side_effect=captured_error
+        ) as mock_validate:
+            success, error, report, json_path, html_path = pipeline.metadata_report_only(
+                self.input_docx, report_path,
+            )
+
+        self.assertEqual(mock_validate.call_count, 1)
+        self.assertFalse(success)
+        self.assertTrue(error)
+        self.assertEqual(report, {})
+        self.assertEqual(json_path, "")
+        self.assertEqual(html_path, "")
+        self.assertFalse(os.path.exists(report_path))
+
+    @unittest.skipUnless(DOCX_AVAILABLE and IMPORTS_SUCCESS, "python-docx or marcut not available")
+    def test_scrub_metadata_only_validation_failure_does_not_return_report(self):
+        """Issue #91: scrub_metadata_only() must validate its report payload
+        (report_schema.MetadataScrubPayload) immediately before returning it
+        as the function's tuple element 2 -- a schema-invalid report must
+        never cross the PythonKit bridge. Prior to this ticket,
+        scrub_metadata_only() performed no such validation at all, so this
+        mock only has something to intercept once the call exists."""
+        from unittest import mock
+
+        output_docx = os.path.join(self.temp_dir, "scrub_payload_invalid_output.docx")
+        prev_args = os.environ.get("MARCUT_METADATA_ARGS")
+        os.environ["MARCUT_METADATA_ARGS"] = ""
+
+        captured_error = None
+        try:
+            pipeline.MetadataScrubPayload.model_validate({})
+        except Exception as real_validation_error:  # genuine pydantic.ValidationError
+            captured_error = real_validation_error
+        self.assertIsNotNone(captured_error, "expected MetadataScrubPayload.model_validate({}) to raise")
+
+        try:
+            with mock.patch.object(
+                pipeline.MetadataScrubPayload, "model_validate", side_effect=captured_error
+            ) as mock_validate:
+                success, error, report = pipeline.scrub_metadata_only(
+                    input_path=self.input_docx,
+                    output_path=output_docx,
+                    debug=False,
+                )
+        finally:
+            if prev_args is None:
+                os.environ.pop("MARCUT_METADATA_ARGS", None)
+            else:
+                os.environ["MARCUT_METADATA_ARGS"] = prev_args
+
+        self.assertEqual(mock_validate.call_count, 1)
+        self.assertFalse(success)
+        self.assertTrue(error)
+        self.assertEqual(report, {})
+
+    @unittest.skipUnless(DOCX_AVAILABLE and IMPORTS_SUCCESS, "python-docx or marcut not available")
+    def test_rewrite_docx_zip_cleans_both_lang_and_form_defaults(self):
+        """Verify clean_language_settings does not short-circuit downstream cleaners like clean_form_defaults."""
+        settings = MetadataCleaningSettings.from_preset("none")
+        settings.clean_language_settings = True
+        settings.clean_form_defaults = True
+        test_docx = os.path.join(self.temp_dir, "test_dual_clean.docx")
+        doc_xml = (
+            b'<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n'
+            b'<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">\n'
+            b'  <w:body>\n'
+            b'    <w:p>\n'
+            b'      <w:r>\n'
+            b'        <w:rPr><w:lang w:val="en-US"/></w:rPr>\n'
+            b'        <w:fldSimple><w:ffData><w:default w:val="secret_default"/></w:ffData></w:fldSimple>\n'
+            b'        <w:t>Hello</w:t>\n'
+            b'      </w:r>\n'
+            b'    </w:p>\n'
+            b'  </w:body>\n'
+            b'</w:document>'
+        )
+        with zipfile.ZipFile(test_docx, "w") as zf:
+            zf.writestr("[Content_Types].xml", '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"/>')
+            zf.writestr("word/document.xml", doc_xml)
+
+        from marcut.docx_io import DocxMap
+        DocxMap._rewrite_docx_zip(None, test_docx, settings)
+
+        with zipfile.ZipFile(test_docx, "r") as zf:
+            cleaned_xml = zf.read("word/document.xml")
+
+        self.assertNotIn(b"w:lang", cleaned_xml)
+        self.assertNotIn(b"secret_default", cleaned_xml)
+
 
 if __name__ == "__main__":
     unittest.main()
+

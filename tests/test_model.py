@@ -6,14 +6,35 @@ These tests focus on pure functions that don't require an actual LLM.
 
 import pytest
 import json
+import threading
+import time
 import marcut.llm_timing as llm_timing_module
 import marcut.model as model_module
+from marcut.cancellation import ProcessingDeadlineExceeded
 from marcut.model import (
     parse_llm_response, _map_label, _valid_candidate, _find_entity_spans,
     get_ollama_base_url, _is_generic_term, get_exclusion_patterns,
     get_system_prompt, DEFAULT_EXTRACT_SYSTEM, _normalize_for_exclusion,
-    _matches_exclusion_literal, ollama_extract
+    _matches_exclusion_literal, ollama_extract, OllamaStreamIncompleteError
 )
+
+
+class _FakeStreamResponse:
+    """Minimal stand-in for `requests.Response` when `stream=True`."""
+
+    def __init__(self, lines):
+        self._lines = lines
+        self.status_code = 200
+
+    def raise_for_status(self):
+        return None
+
+    def iter_lines(self, decode_unicode=True):
+        for line in self._lines:
+            yield line
+
+    def close(self):
+        pass
 
 
 class TestParseLLMResponse:
@@ -63,9 +84,38 @@ These are all the entities."""
             {"text": "John", "type": "NAME"} // This is a name
         ]}'''
         result = parse_llm_response(response)
-        
+
         assert 'entities' in result
-    
+
+    def test_parse_json_with_url_entity_containing_double_slash(self):
+        """A `//`-containing string value (e.g. a URL entity) must survive
+        comment-stripping intact -- a naive `//.*$` regex would truncate the
+        string mid-value and corrupt the JSON (root cause of the nightly E2E
+        failure streak: the LLM extracting "https://legal.example" as an
+        entity)."""
+        response = json.dumps({
+            "entities": [
+                {"text": "alice@example.com", "type": "NAME"},
+                {"text": "https://legal.example", "type": "ORG"},
+            ]
+        })
+        result = parse_llm_response(response)
+
+        assert len(result['entities']) == 2
+        assert result['entities'][1]['text'] == 'https://legal.example'
+
+    def test_parse_json_with_comment_after_url_entity(self):
+        """A genuine trailing `//` comment after a URL-containing entity line
+        must still be stripped, without corrupting the URL itself."""
+        response = '''{"entities": [
+            {"text": "https://legal.example", "type": "ORG"}, // a URL
+            {"text": "Jane Doe", "type": "NAME"}
+        ]}'''
+        result = parse_llm_response(response)
+
+        assert result['entities'][0]['text'] == 'https://legal.example'
+        assert result['entities'][1]['text'] == 'Jane Doe'
+
     def test_parse_empty_entities(self):
         """Test parsing response with no entities."""
         response = '{"entities": []}'
@@ -76,9 +126,95 @@ These are all the entities."""
     def test_parse_invalid_json_raises(self):
         """Test that invalid JSON raises JSONDecodeError."""
         response = "This is not JSON at all"
-        
+
         with pytest.raises(json.JSONDecodeError):
             parse_llm_response(response)
+
+    def test_parse_nested_json(self):
+        """Test parsing entities with nested object/array structure (Issue #42)."""
+        response = json.dumps({
+            "entities": [
+                {
+                    "text": "Sample 123 Holdings, Inc.",
+                    "type": "ORG",
+                    "metadata": {"aliases": ["Sample 123"], "confidence": {"score": 0.9}},
+                },
+                {"text": "Jane Doe", "type": "NAME"},
+            ]
+        })
+        result = parse_llm_response(response)
+
+        assert len(result['entities']) == 2
+        assert result['entities'][0]['metadata']['confidence']['score'] == 0.9
+
+    def test_parse_truncated_json_missing_closing_brackets(self):
+        """Test tolerant repair of JSON cut off after a complete entity object
+        (Issue #42: truncated LLM output, e.g. hit a token limit)."""
+        response = '{"entities": [{"text": "John Smith", "type": "NAME"}'
+        result = parse_llm_response(response)
+
+        assert result['entities'][0]['text'] == 'John Smith'
+
+    def test_parse_truncated_json_mid_string_value(self):
+        """Test tolerant repair when generation is cut off mid-string."""
+        response = '{"entities": [{"text": "John Smith", "type": "NAM'
+        result = parse_llm_response(response)
+
+        assert result['entities'][0]['text'] == 'John Smith'
+
+    def test_parse_truncated_json_trailing_comma_before_cutoff(self):
+        """Test tolerant repair when truncated right after a dangling comma
+        between array elements."""
+        response = '{"entities": [{"text": "John Smith", "type": "NAME"},'
+        result = parse_llm_response(response)
+
+        assert result['entities'][0]['text'] == 'John Smith'
+
+    def test_parse_unrepairable_json_still_raises(self):
+        """Test that a closer with nothing open (not a truncation) still
+        raises JSONDecodeError rather than being silently guessed at."""
+        response = '{"entities": []}}'
+
+        with pytest.raises(json.JSONDecodeError):
+            parse_llm_response(response)
+
+    def test_parse_code_fence_with_truncated_content(self):
+        """Test tolerant repair still applies inside a fenced code block."""
+        response = '```json\n{"entities": [{"text": "Test Corp", "type": "ORG"}\n```'
+        result = parse_llm_response(response)
+
+        assert result['entities'][0]['text'] == 'Test Corp'
+
+    def test_parse_json_array_top_level(self):
+        """Test that a raw top-level JSON array is normalized to a dict with 'entities'."""
+        response = '[{"text": "John Doe", "type": "NAME"}]'
+        result = parse_llm_response(response)
+        assert isinstance(result, dict)
+        assert "entities" in result
+        assert len(result["entities"]) == 1
+        assert result["entities"][0]["text"] == "John Doe"
+
+    def test_parse_json_array_in_code_fence(self):
+        """Test that a top-level JSON array inside a markdown code fence is normalized."""
+        response = '```json\n[{"text": "Acme Inc.", "type": "ORG"}]\n```'
+        result = parse_llm_response(response)
+        assert isinstance(result, dict)
+        assert "entities" in result
+        assert result["entities"][0]["text"] == "Acme Inc."
+
+    def test_parse_json_array_truncated_with_repair(self):
+        """Test tolerant repair for truncated top-level JSON array."""
+        response = '[{"text": "Jane Doe", "type": "NAME"}'
+        result = parse_llm_response(response)
+        assert isinstance(result, dict)
+        assert result["entities"][0]["text"] == "Jane Doe"
+
+    def test_parse_json_primitive_raises(self):
+        """Test that a raw JSON primitive (e.g., number or boolean) raises JSONDecodeError."""
+        response = '```json\n42\n```'
+        with pytest.raises(json.JSONDecodeError):
+            parse_llm_response(response)
+
 
 
 class TestMapLabel:
@@ -128,29 +264,29 @@ class TestValidCandidate:
     
     def test_valid_name(self):
         """Test valid person name."""
-        assert _valid_candidate("John Smith", "NAME") == True
-        assert _valid_candidate("Mary Jane Watson", "NAME") == True
+        assert _valid_candidate("John Smith", "NAME")
+        assert _valid_candidate("Mary Jane Watson", "NAME")
     
     def test_single_word_name_rejected(self):
         """Test that single-word names are rejected."""
-        assert _valid_candidate("John", "NAME") == False
-        assert _valid_candidate("Smith", "NAME") == False
+        assert not _valid_candidate("John", "NAME")
+        assert not _valid_candidate("Smith", "NAME")
     
     def test_valid_org(self):
         """Test valid organization names."""
-        assert _valid_candidate("Sample 123 Corporation Inc.", "ORG") == True
-        assert _valid_candidate("Sample 123 & Associates LLC", "ORG") == True
+        assert _valid_candidate("Sample 123 Corporation Inc.", "ORG")
+        assert _valid_candidate("Sample 123 & Associates LLC", "ORG")
     
     def test_boilerplate_rejected(self):
         """Test that boilerplate terms are rejected."""
-        assert _valid_candidate("the Agreement", "ORG") == False
-        assert _valid_candidate("Section 1", "NAME") == False
-        assert _valid_candidate("Board of Directors", "ORG") == False
+        assert not _valid_candidate("the Agreement", "ORG")
+        assert not _valid_candidate("Section 1", "NAME")
+        assert not _valid_candidate("Board of Directors", "ORG")
     
     def test_empty_string_rejected(self):
         """Test that empty strings are rejected."""
-        assert _valid_candidate("", "NAME") == False
-        assert _valid_candidate("   ", "ORG") == False
+        assert not _valid_candidate("", "NAME")
+        assert not _valid_candidate("   ", "ORG")
 
 
 class TestExclusionNormalization:
@@ -160,16 +296,24 @@ class TestExclusionNormalization:
         assert _normalize_for_exclusion("  The   Company  ") == "company"
         assert _normalize_for_exclusion("These   Delaware   Corporations") == "delaware corporations"
 
+    def test_normalize_strips_possessive(self):
+        """Issue #41: possessive suffix must be stripped so "Company's" normalizes to
+        the same key as "Company"."""
+        assert _normalize_for_exclusion("Company's") == "company"
+        assert _normalize_for_exclusion("Company’s") == "company"  # curly apostrophe
+        assert _normalize_for_exclusion("Companies'") == "companies"
+        assert _normalize_for_exclusion("the Company's") == "company"
+
     def test_matches_exclusion_literal_singularizes(self):
         literals = {"agreement", "company"}
-        assert _matches_exclusion_literal("agreements", literals) == True
-        assert _matches_exclusion_literal("company(s)", literals) == True
-        assert _matches_exclusion_literal("cats", literals) == False
-        assert _matches_exclusion_literal("parties", {"party"}) == True
+        assert _matches_exclusion_literal("agreements", literals)
+        assert _matches_exclusion_literal("company(s)", literals)
+        assert not _matches_exclusion_literal("cats", literals)
+        assert _matches_exclusion_literal("parties", {"party"})
 
     def test_generic_term_singularization(self):
-        assert _is_generic_term("The Agreements") == True
-        assert _is_generic_term("A Company(s)") == True
+        assert _is_generic_term("The Agreements")
+        assert _is_generic_term("A Company(s)")
 
 
 class TestFindEntitySpans:
@@ -246,17 +390,29 @@ class TestGetOllamaBaseUrl:
         finally:
             del os.environ['OLLAMA_HOST']
 
-    def test_remote_host_requires_explicit_override(self):
-        """Test remote Ollama hosts require an explicit unsafe opt-in."""
+    def test_legacy_remote_host_override_is_ignored(self):
+        """Test legacy remote Ollama override no longer disables loopback."""
         import os
         os.environ['OLLAMA_HOST'] = 'http://custom-host:8080'
         os.environ['MARCUT_ALLOW_REMOTE_OLLAMA'] = '1'
         try:
             url = get_ollama_base_url()
-            assert url == "http://custom-host:8080"
+            assert url == "http://127.0.0.1:8080"
         finally:
             del os.environ['OLLAMA_HOST']
             del os.environ['MARCUT_ALLOW_REMOTE_OLLAMA']
+
+    def test_remote_host_requires_developer_unsafe_override(self):
+        """Test remote Ollama hosts require an explicit developer-unsafe opt-in."""
+        import os
+        os.environ['OLLAMA_HOST'] = 'http://custom-host:8080'
+        os.environ['MARCUT_DEVELOPER_UNSAFE_ALLOW_REMOTE_OLLAMA'] = '1'
+        try:
+            url = get_ollama_base_url()
+            assert url == "http://custom-host:8080"
+        finally:
+            del os.environ['OLLAMA_HOST']
+            del os.environ['MARCUT_DEVELOPER_UNSAFE_ALLOW_REMOTE_OLLAMA']
 
 
 class TestOllamaDiagnostics:
@@ -279,6 +435,7 @@ class TestOllamaDiagnostics:
         monkeypatch.delenv("OLLAMA_HOST", raising=False)
         monkeypatch.delenv("MARCUT_OLLAMA_REQUEST_TIMEOUT", raising=False)
         monkeypatch.delenv("MARCUT_OLLAMA_NUM_PREDICT", raising=False)
+        monkeypatch.delenv("MARCUT_PROCESSING_DEADLINE_MONOTONIC", raising=False)
         monkeypatch.setattr(llm_timing_module.requests, "post", fake_post)
 
         spans, _timing = llm_timing_module.ollama_extract_with_timing("mock-model", "Document text")
@@ -304,11 +461,144 @@ class TestOllamaDiagnostics:
         monkeypatch.delenv("OLLAMA_HOST", raising=False)
         monkeypatch.delenv("MARCUT_OLLAMA_REQUEST_TIMEOUT", raising=False)
         monkeypatch.delenv("MARCUT_OLLAMA_NUM_PREDICT", raising=False)
+        monkeypatch.delenv("MARCUT_PROCESSING_DEADLINE_MONOTONIC", raising=False)
         monkeypatch.setattr(model_module.requests, "post", fake_post)
 
         assert ollama_extract("mock-model", "Document text", temperature=0.0) == []
         assert captured["timeout"] == 300.0
         assert captured["json"]["options"]["num_predict"] == 2048
+
+    def test_request_timeout_respects_processing_deadline(self, monkeypatch):
+        captured = {}
+
+        class MockResponse:
+            def raise_for_status(self):
+                return None
+
+            def json(self):
+                return {"response": '{"entities": []}'}
+
+        def fake_post(*args, **kwargs):
+            captured.update(kwargs)
+            return MockResponse()
+
+        monkeypatch.delenv("OLLAMA_HOST", raising=False)
+        monkeypatch.delenv("MARCUT_OLLAMA_REQUEST_TIMEOUT", raising=False)
+        monkeypatch.delenv("MARCUT_OLLAMA_NUM_PREDICT", raising=False)
+        monkeypatch.setenv("MARCUT_PROCESSING_DEADLINE_MONOTONIC", str(time.monotonic() + 1.5))
+        monkeypatch.setattr(model_module.requests, "post", fake_post)
+
+        assert ollama_extract("mock-model", "Document text", temperature=0.0) == []
+        assert 0.25 <= captured["timeout"] <= 1.5
+
+    # --- Streaming (docs/design/streaming_progress.md, Option B) --------
+
+    def test_stream_incomplete_error_is_a_json_decode_error(self):
+        """OllamaStreamIncompleteError must subclass json.JSONDecodeError so a
+        dropped stream flows through the *existing* malformed-JSON
+        self-correction retry rather than becoming a new failure path."""
+        err = OllamaStreamIncompleteError()
+        assert isinstance(err, json.JSONDecodeError)
+
+    def test_stream_deadline_checked_per_line_not_just_at_request_start(self, monkeypatch):
+        """A long generation that keeps emitting NDJSON lines well past the
+        deadline must be interrupted by the per-line check_processing_deadline()
+        inside the streaming loop -- not only once before the request opens,
+        and not left to run for however long `done: true` takes to arrive."""
+        lines_consumed = {"count": 0}
+
+        def fake_post(*args, stream=False, **kwargs):
+            assert stream is True
+
+            def lines():
+                # Many quick token deltas -- if nothing checks the deadline
+                # per-line, this would run for ~2s total before `done: true`.
+                for _ in range(200):
+                    lines_consumed["count"] += 1
+                    time.sleep(0.01)
+                    yield json.dumps({"response": "x", "done": False})
+                yield json.dumps({"response": "", "done": True, "eval_count": 200})
+
+            return _FakeStreamResponse(lines())
+
+        monkeypatch.delenv("MARCUT_OLLAMA_REQUEST_TIMEOUT", raising=False)
+        monkeypatch.setenv("MARCUT_PROCESSING_DEADLINE_MONOTONIC", str(time.monotonic() + 0.15))
+        monkeypatch.setattr(model_module.requests, "post", fake_post)
+
+        started = time.monotonic()
+        with pytest.raises(ProcessingDeadlineExceeded):
+            ollama_extract("mock-model", "Document text", temperature=0.0, stream=True)
+
+        # Interrupted well before all 200 lines (~2s) would have been consumed.
+        assert time.monotonic() - started < 1.0
+        assert lines_consumed["count"] < 200
+
+    def test_stream_cancel_event_stops_reading_without_further_progress(self, monkeypatch):
+        """T6 invariant: once cancel_event fires mid-stream, the loop must
+        stop reading immediately and must not call on_token_progress again."""
+        progress_calls = []
+
+        def fake_post(*args, **kwargs):
+            def lines():
+                yield json.dumps({"response": "first", "done": False})
+                yield json.dumps({"response": "second", "done": False})
+                yield json.dumps({"response": "third", "done": False})
+                yield json.dumps({"response": "", "done": True, "eval_count": 3})
+
+            return _FakeStreamResponse(lines())
+
+        monkeypatch.setattr(model_module.requests, "post", fake_post)
+
+        cancel_event = threading.Event()
+
+        def on_token_progress(chars_so_far, eval_count_so_far):
+            progress_calls.append(chars_so_far)
+            if chars_so_far >= len("first"):
+                cancel_event.set()
+
+        with pytest.raises(ProcessingDeadlineExceeded):
+            ollama_extract(
+                "mock-model",
+                "Document text",
+                stream=True,
+                cancel_event=cancel_event,
+                on_token_progress=on_token_progress,
+            )
+
+        assert progress_calls == [len("first")]
+
+    def test_stream_incomplete_falls_through_to_self_correction_retry(self, monkeypatch):
+        """A stream that ends without `done: true` (dropped/reset connection)
+        must discard the partial text and route through the *existing*
+        malformed-JSON self-correction retry rather than a new failure path,
+        rather than crashing or silently accepting a truncated answer."""
+        calls = {"count": 0}
+
+        def fake_post(*args, **kwargs):
+            calls["count"] += 1
+            if calls["count"] == 1:
+                def dropped_lines():
+                    yield json.dumps({"response": '{"entities": [', "done": False})
+                    # Connection drops here -- no `done: true` line ever arrives.
+
+                return _FakeStreamResponse(dropped_lines())
+
+            # Self-correction retry succeeds.
+            def corrected_lines():
+                yield json.dumps({
+                    "response": '{"entities": [{"text": "Jane Doe", "type": "NAME"}]}',
+                    "done": True,
+                    "eval_count": 10,
+                })
+
+            return _FakeStreamResponse(corrected_lines())
+
+        monkeypatch.setattr(model_module.requests, "post", fake_post)
+
+        spans = ollama_extract("mock-model", "Contact Jane Doe for details.", stream=True)
+
+        assert calls["count"] == 2
+        assert any(s["label"] == "NAME" for s in spans)
 
     def test_parse_failure_omits_raw_response_from_log_and_exception(self, tmp_path, monkeypatch):
         secret = "patient@example.com"
@@ -344,29 +634,158 @@ class TestOllamaDiagnostics:
         assert secret not in str(exc_info.value)
         assert "Raw response omitted" in log_text
 
+    def test_truncated_first_response_recovered_without_self_correction(self, monkeypatch):
+        """Issue #42: a truncated (but bracket-repairable) first response should
+        parse via the tolerant-repair fallback -- no self-correction round-trip,
+        and no RuntimeError."""
+
+        class MockResponse:
+            def __init__(self, response_text):
+                self.response_text = response_text
+
+            def raise_for_status(self):
+                return None
+
+            def json(self):
+                return {"response": self.response_text}
+
+        # Only one response queued: a second `.post` call (i.e. a
+        # self-correction retry) would raise StopIteration and fail the test.
+        responses = iter([
+            MockResponse('{"entities": [{"text": "Sample 123 Inc", "type": "ORG"}'),
+        ])
+
+        def fake_post(*args, **kwargs):
+            return next(responses)
+
+        monkeypatch.delenv("OLLAMA_HOST", raising=False)
+        monkeypatch.setattr(model_module.requests, "post", fake_post)
+
+        spans = ollama_extract("mock-model", "Contact Sample 123 Inc for details.", temperature=0.0)
+        assert any(s["label"] == "ORG" for s in spans)
+
+    def test_self_corrected_response_truncated_is_still_recovered(self, monkeypatch):
+        """Issue #42: if the first response is unparseable prose, the existing
+        self-correction round-trip fires; if *that* corrected response is itself
+        truncated, the tolerant-repair fallback must still recover it instead of
+        raising RuntimeError (previously the only outcome once self-correction
+        also failed to parse)."""
+
+        class MockResponse:
+            def __init__(self, response_text):
+                self.response_text = response_text
+
+            def raise_for_status(self):
+                return None
+
+            def json(self):
+                return {"response": self.response_text}
+
+        responses = iter([
+            MockResponse("Sorry, I cannot comply with that request."),
+            MockResponse('{"entities": [{"text": "Jane Doe", "type": "NAME"}'),
+        ])
+
+        def fake_post(*args, **kwargs):
+            return next(responses)
+
+        monkeypatch.delenv("OLLAMA_HOST", raising=False)
+        monkeypatch.setattr(model_module.requests, "post", fake_post)
+
+        spans = ollama_extract("mock-model", "Contact Jane Doe for details.", temperature=0.0)
+        assert any(s["label"] == "NAME" for s in spans)
+
+    def test_empty_response_retried_with_perturbed_seed_before_self_correction(self, monkeypatch):
+        """Regression for the E2E failure streak (2026-07-10 through 07-14):
+        an empty completion (not just malformed JSON) must be retried with a
+        DIFFERENT seed, not the self-correction prompt at the identical seed --
+        Ollama's sampling is otherwise deterministic for a fixed seed, so a
+        naive retry would just reproduce the same empty output forever. Only
+        two total requests should fire: the perturbed-seed retry succeeds
+        directly, so the self-correction path (a third request) must never
+        be reached."""
+
+        class MockResponse:
+            def __init__(self, response_text):
+                self.response_text = response_text
+
+            def raise_for_status(self):
+                return None
+
+            def json(self):
+                return {"response": self.response_text}
+
+        seeds_seen = []
+        responses = iter([
+            MockResponse(""),
+            MockResponse('{"entities": [{"text": "Jane Doe", "type": "NAME"}]}'),
+        ])
+
+        def fake_post(*args, **kwargs):
+            seeds_seen.append(kwargs["json"]["options"]["seed"])
+            return next(responses)
+
+        monkeypatch.delenv("OLLAMA_HOST", raising=False)
+        monkeypatch.setattr(model_module.requests, "post", fake_post)
+
+        spans = ollama_extract("mock-model", "Contact Jane Doe for details.", temperature=0.0, seed=42)
+        assert any(s["label"] == "NAME" for s in spans)
+        assert seeds_seen == [42, 43]
+
+    def test_empty_response_still_empty_after_retry_falls_through_to_self_correction(self, monkeypatch):
+        """If the perturbed-seed retry is ALSO empty, today's existing
+        self-correction/fail-closed behavior must still apply -- this fix
+        adds one extra chance to recover, it does not weaken the eventual
+        RuntimeError guarantee when the model genuinely cannot produce output."""
+
+        class MockResponse:
+            def __init__(self, response_text):
+                self.response_text = response_text
+
+            def raise_for_status(self):
+                return None
+
+            def json(self):
+                return {"response": self.response_text}
+
+        responses = iter([
+            MockResponse(""),
+            MockResponse(""),
+            MockResponse(""),
+        ])
+
+        def fake_post(*args, **kwargs):
+            return next(responses)
+
+        monkeypatch.delenv("OLLAMA_HOST", raising=False)
+        monkeypatch.setattr(model_module.requests, "post", fake_post)
+
+        with pytest.raises(RuntimeError, match="not valid JSON after self-correction"):
+            ollama_extract("mock-model", "Contact Jane Doe for details.", temperature=0.0, seed=42)
+
 
 class TestIsGenericTerm:
     """Test generic term detection."""
     
     def test_agreement_generic(self):
         """Test that 'agreement' is detected as generic."""
-        assert _is_generic_term("agreement") == True
-        assert _is_generic_term("Agreement") == True
+        assert _is_generic_term("agreement")
+        assert _is_generic_term("Agreement")
     
     def test_company_generic(self):
         """Test that 'company' is detected as generic."""
-        assert _is_generic_term("company") == True
+        assert _is_generic_term("company")
         # Note: "the Company" with article is handled differently by _valid_candidate
     
     def test_board_generic(self):
         """Test that 'board' terms are generic."""
-        assert _is_generic_term("board") == True
-        assert _is_generic_term("Board of Directors") == True
+        assert _is_generic_term("board")
+        assert _is_generic_term("Board of Directors")
     
     def test_real_name_not_generic(self):
         """Test that real names are not generic."""
-        assert _is_generic_term("John Smith") == False
-        assert _is_generic_term("Sample 123 Inc.") == False
+        assert not _is_generic_term("John Smith")
+        assert not _is_generic_term("Sample 123 Inc.")
 
 
 class TestGetExclusionPatterns:
@@ -386,7 +805,7 @@ class TestGetExclusionPatterns:
         
         # Test that 'agreement' matches at least one pattern
         matched = any(p.match("agreement") for p in patterns)
-        assert matched == True
+        assert matched
 
 
 class TestGetSystemPrompt:

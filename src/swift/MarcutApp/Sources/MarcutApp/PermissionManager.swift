@@ -5,30 +5,54 @@ import UserNotifications
 @MainActor class PermissionManager: NSObject, ObservableObject {
     static let shared = PermissionManager()
 
+    /// `UNUserNotificationCenter.current()`, but only when this process is actually running
+    /// inside a real `.app` bundle. Under the `swift test` CLI runner there is no host app
+    /// bundle, and `UNUserNotificationCenter.current()` raises an uncaught
+    /// `NSInternalInconsistencyException` ("bundleProxyForCurrentProcess is nil") that aborts
+    /// the whole test process. Every call site routes through this instead of calling
+    /// `.current()` directly so the class -- and anything that transitively constructs it, like
+    /// `SettingsView` -- stays safe to construct under `swift test`.
+    ///
+    /// Guarding on `Bundle.main.bundleURL.pathExtension` rather than `Bundle.main.bundleIdentifier`
+    /// is deliberate: under `swift test`, `bundleIdentifier` is non-nil
+    /// (`com.apple.dt.xctest.tool`), so that check would not distinguish the two environments.
+    /// The shipped app always has a `.app` bundle URL (`scripts/sh/build_swift_only.sh` writes
+    /// `CFBundleIdentifier` into a real `.app`).
+    private static let notificationCenter: UNUserNotificationCenter? = {
+        guard Bundle.main.bundleURL.pathExtension == "app" else { return nil }
+        return .current()
+    }()
+
     @Published var notificationStatus: UNAuthorizationStatus = .notDetermined
-    
-    // Local preference: Should we send notifications?
-    // This allows the user to "Disable" them in-app without revoking OS permission.
+
+    /// Local preference: Should we send notifications?
+    /// This allows the user to "Disable" them in-app without revoking OS permission.
     @Published var userEnabledNotifications: Bool {
         didSet {
-            UserDefaults.standard.set(userEnabledNotifications, forKey: "MarcutApp_UserEnabledNotifications")
+            UserDefaults.standard.set(userEnabledNotifications, forKey: DefaultsKey.userEnabledNotifications.key)
         }
     }
 
-    private override init() {
+    override private init() {
         // Init local preference (Default to TRUE if not set)
-        let savedPref = UserDefaults.standard.object(forKey: "MarcutApp_UserEnabledNotifications") as? Bool
+        let savedPref = UserDefaults.standard.object(forKey: DefaultsKey.userEnabledNotifications.key) as? Bool
         self.userEnabledNotifications = savedPref ?? true
-        
+
         super.init()
-        
+
         // CRITICAL FIX: Ensure notification delegate is set immediately.
         // This allows banners to appear even if the app is in the foreground.
-        UNUserNotificationCenter.current().delegate = self
+        if let center = Self.notificationCenter {
+            center.delegate = self
+        } else {
+            DebugLogger.shared.log(
+                "🔕 No host app bundle (swift test runner) -- skipping notification delegate wiring",
+                component: "PermissionManager"
+            )
+        }
 
         // DEFERRED: We no longer check automatically on init to avoid startup prompts.
     }
-
 }
 
 enum PermissionError: LocalizedError {
@@ -37,23 +61,26 @@ enum PermissionError: LocalizedError {
     var errorDescription: String? {
         switch self {
         case .notificationPermissionDenied:
-             return "Notification permission was denied"
+            "Notification permission was denied"
         }
     }
 }
 
-
-
 extension PermissionManager: UNUserNotificationCenterDelegate {
-    
-    // Step 1.5: Request Notification Permissions
+    /// Step 1.5: Request Notification Permissions
     func requestNotificationPermission() async throws {
-        let center = UNUserNotificationCenter.current()
+        guard let center = Self.notificationCenter else {
+            DebugLogger.shared.log(
+                "🔕 No host app bundle (swift test runner) -- cannot request notification permission",
+                component: "PermissionManager"
+            )
+            throw PermissionError.notificationPermissionDenied
+        }
         // Delegate needed to show notifications while app is in foreground
         center.delegate = self
-        
+
         let settings = await center.notificationSettings()
-        
+
         // If already authorized, just return success (no nag)
         // Also update the published status
         await MainActor.run { self.notificationStatus = settings.authorizationStatus }
@@ -62,16 +89,16 @@ extension PermissionManager: UNUserNotificationCenterDelegate {
             DebugLogger.shared.log("✅ Notifications already authorized", component: "PermissionManager")
             return
         }
-        
+
         // If explicitly denied, do not pester the user
         if settings.authorizationStatus == .denied {
             DebugLogger.shared.log("⚠️ Notification permission was previously denied", component: "PermissionManager")
             throw PermissionError.notificationPermissionDenied
         }
-        
+
         // Only request if status is .notDetermined
         let granted = try await center.requestAuthorization(options: [.alert, .sound, .badge])
-        
+
         // Update status again after request
         let newSettings = await center.notificationSettings()
         await MainActor.run { self.notificationStatus = newSettings.authorizationStatus }
@@ -83,9 +110,9 @@ extension PermissionManager: UNUserNotificationCenterDelegate {
             throw PermissionError.notificationPermissionDenied
         }
     }
-    
-    // Helper to send notifications
-    // Helper to send notifications
+
+    /// Helper to send notifications
+    /// Helper to send notifications
     func sendSystemNotification(title: String, body: String, force: Bool = false) {
         // 1. Check Local Preference first (unless forced)
         guard userEnabledNotifications || force else {
@@ -97,29 +124,49 @@ extension PermissionManager: UNUserNotificationCenterDelegate {
         content.title = title
         content.body = body
         content.sound = UNNotificationSound.default
-        
+
         // Create a unique ID or reuse? Unique for history.
         let request = UNNotificationRequest(identifier: UUID().uuidString, content: content, trigger: nil)
-        
-        UNUserNotificationCenter.current().add(request) { error in
-            if let error = error {
-                DebugLogger.shared.log("❌ Failed to schedule notification: \(error.localizedDescription)", component: "PermissionManager")
+
+        guard let center = Self.notificationCenter else {
+            DebugLogger.shared.log(
+                "🔕 No host app bundle (swift test runner) -- skipping notification send",
+                component: "PermissionManager"
+            )
+            return
+        }
+
+        center.add(request) { error in
+            if let error {
+                DebugLogger.shared.log(
+                    "❌ Failed to schedule notification: \(error.localizedDescription)",
+                    component: "PermissionManager"
+                )
             } else {
-                 DebugLogger.shared.log("✅ Notification successfully scheduled into UNUserNotificationCenter", component: "PermissionManager")
+                DebugLogger.shared.log(
+                    "✅ Notification successfully scheduled into UNUserNotificationCenter",
+                    component: "PermissionManager"
+                )
             }
         }
     }
-    
-    // Force request without checks (User triggered)
+
+    /// Force request without checks (User triggered)
     func forceRequestNotificationPermission() async throws {
-        let center = UNUserNotificationCenter.current()
+        guard let center = Self.notificationCenter else {
+            DebugLogger.shared.log(
+                "🔕 No host app bundle (swift test runner) -- cannot force-request notification permission",
+                component: "PermissionManager"
+            )
+            throw PermissionError.notificationPermissionDenied
+        }
         center.delegate = self
-        
+
         DebugLogger.shared.log("🚨 Force-requesting notification permission...", component: "PermissionManager")
-        
+
         // Always request, ignoring previous status
         let granted = try await center.requestAuthorization(options: [.alert, .sound, .badge])
-        
+
         // Update status immediately
         let newSettings = await center.notificationSettings()
         await MainActor.run { self.notificationStatus = newSettings.authorizationStatus }
@@ -132,17 +179,31 @@ extension PermissionManager: UNUserNotificationCenterDelegate {
             throw PermissionError.notificationPermissionDenied
         }
     }
-    
-    // Explicit refresh of status (called on view appear)
+
+    /// Explicit refresh of status (called on view appear)
     func refreshNotificationStatus() async {
-        let settings = await UNUserNotificationCenter.current().notificationSettings()
+        guard let center = Self.notificationCenter else {
+            DebugLogger.shared.log(
+                "🔕 No host app bundle (swift test runner) -- reporting notification status as not determined",
+                component: "PermissionManager"
+            )
+            await MainActor.run {
+                self.notificationStatus = .notDetermined
+            }
+            return
+        }
+        let settings = await center.notificationSettings()
         await MainActor.run {
-             self.notificationStatus = settings.authorizationStatus
+            self.notificationStatus = settings.authorizationStatus
         }
     }
-    
-    // Delegate method: Present notification even if app is in foreground
-    nonisolated func userNotificationCenter(_ center: UNUserNotificationCenter, willPresent notification: UNNotification, withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void) {
+
+    /// Delegate method: Present notification even if app is in foreground
+    nonisolated func userNotificationCenter(
+        _: UNUserNotificationCenter,
+        willPresent _: UNNotification,
+        withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void
+    ) {
         completionHandler([.banner, .sound, .list])
     }
 }

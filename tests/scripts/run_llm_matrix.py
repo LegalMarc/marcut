@@ -19,7 +19,7 @@ import time
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, Iterable, List, Optional, Set, Tuple
+from typing import Dict, Iterable, List, Set, Tuple
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -30,7 +30,7 @@ DEFAULT_DOCS = [
     REPO_ROOT / ".marcut_artifacts/ignored-resources" / "sample-files" / "Sample 123 Preservation Letter track changes.docx",
 ]
 
-MODEL_NAME = "llama3.1:8b"
+MODEL_NAME = "qwen2.5:14b"
 MODE = "constrained_overrides"
 BACKEND = "ollama"
 SEED = 42

@@ -1,8 +1,45 @@
 import sys
 import io
 import datetime
-from dataclasses import fields
+import hashlib
+import traceback
+import warnings
+import time
+import os
+import tempfile
 import logging
+from dataclasses import fields
+from typing import List, Dict, Any, Tuple, Optional, Callable, TypedDict, Set
+from .docx_pkg.document import DocxMap
+from .docx_pkg.settings import MetadataCleaningSettings
+from .docx_revisions import accept_revisions_in_docx_bytes
+from .chunker import make_chunks
+from .model_config import is_gguf_model_path, uses_llama_cpp_backend
+from .rules import run_rules, _is_excluded_combo, _is_excluded, _is_specific_org_span, ADDRESS
+from .model_enhanced import (
+    LlamaCppRedactionPipeline,
+    run_enhanced_model,
+    apply_llm_overrides_to_rule_spans,
+    LLMChunkExtractionFailed,
+)
+from .cluster import ClusterTable
+from .confidence import combine, low_conf
+from .report import write_report, write_json_file, make_private_file
+from .report_schema import (
+    ScrubReport,
+    FailureReport,
+    MetadataScrubPayload,
+    MetadataReportPayload,
+)
+from .rationale import (
+    RationaleOrigin,
+    compile_leak_scanner,
+    is_rule_like_source,
+    rule_deterministic_rationale_text,
+    scan_leaked_texts,
+)
+from pydantic import ValidationError
+import regex as re  # For consistency pass boundaries
 
 # Unicode to ASCII mapping for common document characters
 # These are frequently found in Word documents and cause encoding issues
@@ -77,30 +114,16 @@ try:
 except Exception:
     pass
 
-import json
-import hashlib
-import traceback
-import warnings
-import time
-import os
-from typing import List, Dict, Any, Tuple, Optional, Callable, TypedDict
-from .docx_io import DocxMap, MetadataCleaningSettings
-from .docx_revisions import accept_revisions_in_docx_bytes
-from .chunker import make_chunks
-from .rules import run_rules, _is_excluded_combo, _is_excluded, _is_specific_org_span, ADDRESS
-from .model_enhanced import (
-    LlamaCppRedactionPipeline,
-    run_enhanced_model,
-    apply_llm_overrides_to_rule_spans,
-    DocumentContext,
-    build_prompt_context,
-)
-from .cluster import ClusterTable
-from .confidence import combine, low_conf
-from .report import write_report, write_json_file, make_private_file
-import regex as re  # For consistency pass boundaries
-
 logger = logging.getLogger(__name__)
+
+def _metadata_env_enabled(name: str) -> bool:
+    return os.environ.get(name, "").strip().lower() in {"1", "true", "yes", "on"}
+
+def _metadata_env_int(name: str, default: int) -> int:
+    try:
+        return max(0, int(os.environ.get(name, str(default))))
+    except (TypeError, ValueError):
+        return default
 
 class Span(TypedDict, total=False):
     start: int
@@ -130,7 +153,7 @@ def _merge_overlaps(spans: List[Dict[str,Any]], text: str) -> List[Dict[str,Any]
 
     # Validate span data structures
     valid_spans = []
-    for i, span in enumerate(spans):
+    for span in spans:
         if not isinstance(span, dict):
             continue
         if not all(key in span for key in ["start", "end", "label"]):
@@ -197,6 +220,17 @@ def _merge_overlaps(spans: List[Dict[str,Any]], text: str) -> List[Dict[str,Any]
                 # Also adopt its source if present?
                 if "source" in sp:
                     last["source"] = sp["source"]
+                # `rationale` describes the mechanism named by `source` (see
+                # `_annotate_missing_rationale`), so it must move with it --
+                # otherwise a surviving span can end up with e.g.
+                # source="rule" but an adopted llm_validation rationale dict
+                # (or vice versa) attributing the redaction to the wrong
+                # mechanism. Carry it if the winning span has one, else drop
+                # any stale rationale so it gets re-annotated from scratch.
+                if "rationale" in sp:
+                    last["rationale"] = sp["rationale"]
+                else:
+                    last.pop("rationale", None)
 
             # Update text to cover thefull merged range
             if text:
@@ -563,8 +597,16 @@ def _apply_consistency_pass(
     # Also keep full candidate objects for strict checks or fuzzy scan
     all_candidates: List[Dict[str, Any]] = []
     seen_candidate_keys = set()
+    max_candidates = _metadata_env_int("MARCUT_CONSISTENCY_MAX_CANDIDATES", 1500)
+    max_fuzzy_org_candidates = _metadata_env_int("MARCUT_CONSISTENCY_MAX_FUZZY_ORG_CANDIDATES", 250)
+    max_pattern_chars = _metadata_env_int("MARCUT_CONSISTENCY_MAX_PATTERN_CHARS", 120_000)
 
     for sp in spans:
+        if max_candidates and len(all_candidates) >= max_candidates:
+            if debug:
+                print(f"Consistency Pass: Candidate limit reached ({max_candidates}); skipping remaining candidates.")
+            break
+
         lbl = sp["label"]
         txt = sp["text"].strip()
 
@@ -640,62 +682,92 @@ def _apply_consistency_pass(
 
     # 2. Batched Rescan (Exact Matches)
 
+    def _bounded_patterns(values) -> List[str]:
+        patterns = sorted(values, key=len, reverse=True)
+        if not max_pattern_chars:
+            return patterns
+        bounded: List[str] = []
+        total_chars = 0
+        for pattern in patterns:
+            escaped_len = len(re.escape(pattern))
+            if bounded and total_chars + escaped_len > max_pattern_chars:
+                if debug:
+                    print(f"Consistency Pass: Pattern budget reached ({max_pattern_chars} chars); skipping remaining exact candidates.")
+                break
+            bounded.append(pattern)
+            total_chars += escaped_len
+        return bounded
+
     # Build regex for case-sensitive
     if case_sensitive_map:
         # Sort by length descending to match longest first
-        patterns = sorted(case_sensitive_map.keys(), key=len, reverse=True)
+        patterns = _bounded_patterns(case_sensitive_map.keys())
         # Escape and join
-        pattern_str = r"\b(?:" + "|".join(re.escape(p) for p in patterns) + r")\b"
-        try:
-            for match in re.finditer(pattern_str, text):
-                matched_text = match.group(0)
-                label = case_sensitive_map.get(matched_text)
-                if not label: continue
+        if patterns:
+            pattern_str = r"\b(?:" + "|".join(re.escape(p) for p in patterns) + r")\b"
+            try:
+                for match in re.finditer(pattern_str, text):
+                    matched_text = match.group(0)
+                    label = case_sensitive_map.get(matched_text)
+                    if not label:
+                        continue
 
-                s, e = match.span()
-                if _overlaps_existing(s, e, label, matched_text):
-                    continue
-                key = (s, e, label)
-                if key in existing_keys or key in new_keys: continue
+                    s, e = match.span()
+                    if _overlaps_existing(s, e, label, matched_text):
+                        continue
+                    key = (s, e, label)
+                    if key in existing_keys or key in new_keys:
+                        continue
 
-                new_spans.append({
-                    "start": s, "end": e, "label": label, "text": matched_text,
-                    "confidence": 0.95, "source": "consistency_pass"
-                })
-                new_keys.add(key)
-        except Exception as e:
-            if debug: print(f"Consistency Pass Error (CS): {e}")
+                    new_spans.append({
+                        "start": s, "end": e, "label": label, "text": matched_text,
+                        "confidence": 0.95, "source": "consistency_pass"
+                    })
+                    new_keys.add(key)
+            except Exception as e:
+                if debug:
+                    print(f"Consistency Pass Error (CS): {e}")
 
     # Build regex for case-insensitive (ORGs)
     if case_insensitive_map:
-        patterns = sorted(case_insensitive_map.keys(), key=len, reverse=True)
-        pattern_str = r"\b(?:" + "|".join(re.escape(p) for p in patterns) + r")\b"
-        try:
-            for match in re.finditer(pattern_str, text, flags=re.IGNORECASE):
-                matched_text = match.group(0)
-                # Lookup by lowercase
-                label = case_insensitive_map.get(matched_text.lower())
-                if not label: continue
+        patterns = _bounded_patterns(case_insensitive_map.keys())
+        if patterns:
+            pattern_str = r"\b(?:" + "|".join(re.escape(p) for p in patterns) + r")\b"
+            try:
+                for match in re.finditer(pattern_str, text, flags=re.IGNORECASE):
+                    matched_text = match.group(0)
+                    # Lookup by lowercase
+                    label = case_insensitive_map.get(matched_text.lower())
+                    if not label:
+                        continue
 
-                s, e = match.span()
-                if _overlaps_existing(s, e, label, matched_text):
-                    continue
-                key = (s, e, label)
-                if key in existing_keys or key in new_keys: continue
+                    s, e = match.span()
+                    if _overlaps_existing(s, e, label, matched_text):
+                        continue
+                    key = (s, e, label)
+                    if key in existing_keys or key in new_keys:
+                        continue
 
-                new_spans.append({
-                    "start": s, "end": e, "label": label, "text": matched_text,
-                    "confidence": 0.95, "source": "consistency_pass_ci"
-                })
-                new_keys.add(key)
-        except Exception as e:
-             if debug: print(f"Consistency Pass Error (CI): {e}")
+                    new_spans.append({
+                        "start": s, "end": e, "label": label, "text": matched_text,
+                        "confidence": 0.95, "source": "consistency_pass_ci"
+                    })
+                    new_keys.add(key)
+            except Exception as e:
+                if debug:
+                    print(f"Consistency Pass Error (CI): {e}")
 
     # 3. Fuzzy Scan for ORGs (Per-candidate, expensive but necessary for complex forms)
     # Only iterate ORG candidates
+    fuzzy_org_count = 0
     for cand in all_candidates:
         if cand["label"] != "ORG":
             continue
+        if max_fuzzy_org_candidates and fuzzy_org_count >= max_fuzzy_org_candidates:
+            if debug:
+                print(f"Consistency Pass: Fuzzy ORG candidate limit reached ({max_fuzzy_org_candidates}).")
+            break
+        fuzzy_org_count += 1
 
         norm_tokens = cand.get("tokens") or []
         if len(norm_tokens) < 2:
@@ -710,16 +782,22 @@ def _apply_consistency_pass(
         try:
             for match in re.finditer(fuzzy_pattern, text, flags=re.IGNORECASE):
                 s, e = match.span()
-                if exclude_if and exclude_if(cand_text, label): continue
-                if s > 0 and text[s - 1].isalnum(): continue
-                if e < len(text) and text[e:e+1].isalnum(): continue
-                if _overlaps_existing(s, e, label, text[s:e]): continue
+                if exclude_if and exclude_if(cand_text, label):
+                    continue
+                if s > 0 and text[s - 1].isalnum():
+                    continue
+                if e < len(text) and text[e:e+1].isalnum():
+                    continue
+                if _overlaps_existing(s, e, label, text[s:e]):
+                    continue
 
                 key = (s, e, label)
-                if key in existing_keys or key in new_keys: continue
+                if key in existing_keys or key in new_keys:
+                    continue
 
                 # Length check
-                if (e - s) < max(4, len("".join(norm_tokens)) - 1): continue
+                if (e - s) < max(4, len("".join(norm_tokens)) - 1):
+                    continue
 
                 new_spans.append({
                     "start": s, "end": e, "label": label, "text": text[s:e],
@@ -1155,19 +1233,65 @@ def _build_report_settings(
     temperature: float,
     seed: int,
     llm_skip_confidence: float,
+    llama_gguf: str = "",
+    generate_rationale: bool = False,
 ) -> Dict[str, Any]:
+    # `_collect_enhanced_spans` dispatches on `llama_gguf or model_id` (the
+    # full, un-sanitised path). Decide `llama_cpp_dispatch` from that exact
+    # value BEFORE either input gets basenamed below for the report, and
+    # record it unconditionally -- not only when `--llama-gguf` is set.
+    # `model_id` alone can be an absolute/path-like string (plain
+    # `--model /Users/alice/models/x`, no `--llama-gguf`), and basenaming it
+    # for privacy (#85) strips both the leading "/" and, when there's no
+    # ".gguf" suffix, the only other thing `_uses_llama_cpp_backend` keys
+    # on -- exactly the trap #68 round-8 already hit once for the
+    # `--llama-gguf` case. Recording the decision itself here, from the
+    # full path, is what keeps `_finalize_and_write`'s rationale-mode
+    # fallback (`llama_gguf or model`) honest without ever having to
+    # re-derive dispatch from a sanitised string.
+    llama_cpp_dispatch = _uses_llama_cpp_backend(backend, llama_gguf or model_id)
+
     settings = {
         "mode": mode,
         "mode_requested": mode_requested,
         "backend": backend,
-        "model": model_id,
+        # Basename only when the id names a file on disk: a plain
+        # `--model /Users/alice/models/x` -- or a relative
+        # `--model models/alice-private/x.gguf` -- would otherwise put the
+        # operator's home directory and username into an artifact that
+        # travels with the document (#85). `_sanitize_model_for_report`
+        # classifies "is a path" with the same two path arms dispatch uses,
+        # so a namespaced id like "hf.co/bartowski/Qwen2.5-14B-GGUF:Q4_K_M"
+        # is still recorded verbatim. `llama_cpp_dispatch` above is already
+        # captured from the full, un-sanitised value, so this can never
+        # affect dispatch.
+        "model": _sanitize_model_for_report(model_id),
         "chunk_tokens": chunk_tokens,
         "overlap": overlap,
         "temperature": temperature,
         "seed": seed,
         "llm_skip_confidence": llm_skip_confidence,
         "llm_skip_confidence_percent": int(round(llm_skip_confidence * 100)),
+        "llama_cpp_dispatch": llama_cpp_dispatch,
+        # Resolved once, at the `run_redaction` entry point, from the
+        # `generate_rationale` parameter (falling back to the
+        # MARCUT_GENERATE_RATIONALE env var only when the caller leaves it
+        # unset) -- recorded here so `_finalize_and_write` can read the same
+        # decision `_collect_enhanced_spans` already used, instead of both
+        # re-reading the environment independently at different points in
+        # the run (#88).
+        "generate_rationale": bool(generate_rationale),
     }
+    if llama_gguf:
+        # `--llama-gguf` overrides `model_id` for dispatch (see
+        # `_collect_enhanced_spans`: `model_path = llama_gguf or model_id`)
+        # even when `--backend` is left at its "ollama" default. Record it so
+        # `_finalize_and_write`'s rationale-mode decision sees the same
+        # effective model the run actually used (#68 round-3 finding 2).
+        # Basename only: an absolute GGUF path would put the operator's
+        # home directory and username into an artifact that travels with
+        # the document (#68 round-7 finding).
+        settings["llama_gguf"] = os.path.basename(llama_gguf)
 
     advanced_enabled = os.environ.get("MARCUT_ADVANCED_MODE_ENABLED")
     if advanced_enabled is not None:
@@ -1206,6 +1330,339 @@ def _build_report_settings(
     return settings
 
 
+def _sibling_temp_path(final_path: str) -> str:
+    directory = os.path.dirname(final_path) or "."
+    basename = os.path.basename(final_path)
+    stem, ext = os.path.splitext(basename)
+    fd, temp_path = tempfile.mkstemp(prefix=f".{stem}.", suffix=f".tmp{ext}", dir=directory)
+    os.close(fd)
+    try:
+        os.unlink(temp_path)
+    except FileNotFoundError:
+        pass
+    return temp_path
+
+
+def _replace_existing_temp(temp_path: Optional[str], final_path: Optional[str]) -> None:
+    if temp_path and final_path and os.path.exists(temp_path):
+        os.replace(temp_path, final_path)
+
+
+def _cleanup_temp_artifacts(paths: List[Optional[str]]) -> None:
+    for path in paths:
+        if not path:
+            continue
+        try:
+            if os.path.exists(path):
+                os.remove(path)
+        except OSError:
+            pass
+
+
+def _fold_curly_quotes(value: str) -> str:
+    """Fold curly single quotes to straight quotes.
+
+    Mirrors the exact normalization _attach_defined_term_aliases already
+    applies before storing a defined-term alias's "text" field (the alias's
+    start/end still point at the untouched document text, which may retain
+    the original curly apostrophe). Without this fold, a legitimate alias
+    spanning a curly apostrophe would look like a text-mismatch to
+    _drop_invalid_spans below and be dropped as if it were corrupted.
+    """
+    return value.replace("’", "'").replace("‘", "'")
+
+
+def _drop_invalid_spans(
+    text: str,
+    spans: List[Dict[str, Any]],
+    warnings: List[Dict[str, Any]],
+    suppressed: List[Dict[str, Any]],
+    debug: bool = False,
+) -> List[Dict[str, Any]]:
+    """Drop any span whose offsets are out of bounds or whose recorded text
+    does not match the document at those offsets.
+
+    This is the last checkpoint before _finalize_and_write uses `spans` to
+    build the audit report and the dm.apply_replacements() call that
+    actually splices text into the document. It covers every span that
+    reaches this point regardless of origin -- rule-based, LLM-derived, or
+    reshaped by any of the intermediate snap/merge/consistency passes.
+    LLM output in particular is not trustworthy: a drifted, inverted, or
+    out-of-range span applied directly to the document could corrupt
+    output or silently redact the wrong text.
+
+    This is defense in depth alongside
+    model_enhanced._drop_invalid_entity_offsets, which enforces the same
+    invariant earlier, immediately after LLM extraction (A3). A bug
+    anywhere in the merge/post-processing chain between there and here --
+    or a rule-based span that never passed through that earlier check at
+    all -- could still produce a bad span, so every span is re-validated
+    here regardless of how it got here.
+
+    A span survives only if 0 <= start < end <= len(text) and
+    text[start:end] exactly matches the span's recorded "text" (tolerating
+    only the curly-quote fold _attach_defined_term_aliases already applies
+    when storing alias text -- see _fold_curly_quotes). Anything else is
+    dropped: logged to `warnings` and recorded in `suppressed` so the drop
+    -- and its count -- is visible in the audit report instead of silently
+    missing from the output.
+    """
+    valid: List[Dict[str, Any]] = []
+    doc_len = len(text)
+    for sp in spans:
+        if not isinstance(sp, dict):
+            warnings.append({
+                "code": "INVALID_SPAN_DROPPED",
+                "message": "Dropped a detected span with invalid offsets or mismatched text before applying redactions.",
+                "details": f"reason=not_a_dict value={sp!r}",
+            })
+            suppressed.append({
+                "reason": "invalid_span_not_a_dict",
+                "label": "UNKNOWN",
+                "text": "",
+                "start": None,
+                "end": None,
+                "confidence": None,
+                "source": "unknown",
+            })
+            continue
+
+        start = sp.get("start")
+        end = sp.get("end")
+        expected_text = sp.get("text")
+
+        reason: Optional[str] = None
+        if not isinstance(start, int) or not isinstance(end, int):
+            reason = "non_integer_offsets"
+        elif not (0 <= start < end <= doc_len):
+            reason = "bounds_out_of_range"
+        elif not isinstance(expected_text, str):
+            reason = "missing_text"
+        elif _fold_curly_quotes(text[start:end]) != _fold_curly_quotes(expected_text):
+            reason = "text_mismatch"
+
+        if reason is None:
+            valid.append(sp)
+            continue
+
+        label = sp.get("label", "UNKNOWN")
+        preview = expected_text[:120] if isinstance(expected_text, str) else repr(expected_text)[:120]
+
+        if debug:
+            print(
+                f"DEBUG: Dropping invalid span ({reason}): label={label} "
+                f"start={start!r} end={end!r} text={preview!r}"
+            )
+
+        warnings.append({
+            "code": "INVALID_SPAN_DROPPED",
+            "message": "Dropped a detected span with invalid offsets or mismatched text before applying redactions.",
+            "details": f"label={label} start={start!r} end={end!r} reason={reason} text={preview!r}",
+        })
+        suppressed.append({
+            "reason": f"invalid_span_{reason}",
+            "label": label,
+            "text": preview,
+            "start": start if isinstance(start, int) else None,
+            "end": end if isinstance(end, int) else None,
+            "confidence": sp.get("confidence"),
+            "source": sp.get("source", "unknown"),
+        })
+
+    return valid
+
+
+# --- Redaction-rationale reporting (issue #68) ------------------------------
+#
+# The three functions below run only when MARCUT_GENERATE_RATIONALE is
+# enabled (see _finalize_and_write), after every span has its final
+# entity_id assigned. Order matters: annotate first (so every span has
+# *some* rationale object to work with), then canonicalize per cluster
+# (mitigation #2), then sanitize the now-canonical text for cross-entity
+# leaks (mitigation #3) so a leak is only ever checked/fixed once per
+# cluster rather than once per raw mention.
+
+def _annotate_missing_rationale(spans: List[Dict[str, Any]]) -> None:
+    """Ensure every span carries a proper ``{text, origin}`` rationale object.
+
+    `model_enhanced.py`'s Ollama batch-validation path already attaches a
+    real ``llm_validation``/``unavailable`` rationale to the spans it
+    produces when this feature is enabled. This fills in everything else:
+    rule-matched spans (mitigation #1 -- template text only, never routed
+    through an LLM) and any other span the LLM path never annotated at all
+    (e.g. it was never sent to validation, or came from the llama.cpp
+    backend, which this issue does not extend). A non-dict ``rationale``
+    value (the llama.cpp path's plain extraction-time string) is treated as
+    absent and replaced, since it is not a real rationale record.
+
+    ``is_rule_like_source`` is authoritative here: a rule-like span always
+    gets the ``rule_deterministic`` template, even if it already carries a
+    dict rationale (e.g. a stray ``llm_validation`` dict that survived
+    ``_merge_overlaps`` picking a rule span's identity over an LLM span's, or
+    any other future path that could attach a mismatched rationale before
+    this pass runs). Mitigation #1 is about ``source``, not about whether a
+    rationale happens to be present yet.
+    """
+    for sp in spans:
+        source = sp.get("source", "")
+        label = sp.get("label", "")
+        if is_rule_like_source(source):
+            sp["rationale"] = {
+                "text": rule_deterministic_rationale_text(label, source),
+                "origin": RationaleOrigin.RULE_DETERMINISTIC.value,
+            }
+            continue
+        if isinstance(sp.get("rationale"), dict):
+            continue
+        sp["rationale"] = {
+            "text": "No rationale was generated for this entity.",
+            "origin": RationaleOrigin.UNAVAILABLE.value,
+        }
+
+
+_RATIONALE_ORIGIN_RANK = {
+    RationaleOrigin.LLM_VALIDATION.value: 0,
+    RationaleOrigin.RULE_DETERMINISTIC.value: 1,
+    RationaleOrigin.UNAVAILABLE.value: 2,
+}
+
+
+def _canonicalize_cluster_rationale(spans: List[Dict[str, Any]]) -> None:
+    """One rationale per stable ``entity_id``, not per raw span mention.
+
+    Mitigation #2: different mentions of the same clustered entity
+    (`ClusterTable`) can be validated independently and receive different,
+    possibly contradictory rationale text. Pick a single canonical
+    rationale per entity_id -- preferring a genuine llm_validation
+    explanation (highest confidence first), then a rule_deterministic
+    template, then unavailable -- and apply it to every span sharing that
+    entity_id so a reviewer never sees two different explanations for
+    "the same" redacted entity.
+
+    Mixed clusters resolve #1 over #2. A cluster routinely mixes LLM-path
+    mentions with rule-like ones (`consistency_pass*`/`defined_term`
+    re-matches of an LLM-found NAME/ORG share its entity_id). Those
+    rule-like spans are excluded from canonicalization entirely: they keep
+    the ``rule_deterministic`` template `_annotate_missing_rationale` gave
+    them, because copying the LLM's rationale onto a span the LLM never
+    saw is exactly the wrong-mechanism attribution mitigation #1 forbids.
+    Canonicalization therefore runs only among the remaining (LLM-path)
+    spans of each entity_id.
+
+    Note what this deliberately does NOT promise: within those LLM-path
+    spans, a mention that `needs_validation()` skipped still receives the
+    cluster's canonical rationale (and its `model` attribution). That is
+    the design doc's explicit instruction -- "one rationale per stable
+    entity ID, from its first/highest-confidence validated mention" (MVP
+    item 3, closing failure mode 3) -- because per-span rationale is what
+    produces contradictory text across mentions of one entity. The origin
+    describes where the rationale TEXT came from (a real validation call
+    about this entity), not a claim that every mention was independently
+    validated.
+    """
+    groups: Dict[str, List[Dict[str, Any]]] = {}
+    for sp in spans:
+        eid = sp.get("entity_id")
+        if not eid or not isinstance(sp.get("rationale"), dict):
+            continue
+        if is_rule_like_source(sp.get("source")):
+            continue
+        groups.setdefault(eid, []).append(sp)
+
+    for group in groups.values():
+        if len(group) <= 1:
+            continue
+
+        def _rank(sp: Dict[str, Any]) -> Tuple[int, float]:
+            origin = sp["rationale"].get("origin")
+            return (_RATIONALE_ORIGIN_RANK.get(origin, 3), -float(sp.get("confidence") or 0.0))
+
+        canonical = min(group, key=_rank)["rationale"]
+        for sp in group:
+            sp["rationale"] = canonical
+
+
+def _sanitize_cross_referenced_rationale(spans: List[Dict[str, Any]]) -> None:
+    """Discard any llm_validation rationale that restates another entity's
+    literal text (mitigation #5 in the design doc's numbering; #3 in the
+    ticket's -- "placeholder-only cross-referencing"). This is the
+    full-document backstop: `model_enhanced.ollama_validate_batch` already
+    checks this within a single validation batch, but different mentions
+    can be validated in different batches, so the check is repeated here
+    once per canonical (post-clustering) rationale, against every other
+    entity_id's known literal text in the whole document.
+    """
+    texts_by_entity: Dict[str, Set[str]] = {}
+    for sp in spans:
+        eid = sp.get("entity_id")
+        text_value = (sp.get("text") or "").strip()
+        if eid and text_value:
+            texts_by_entity.setdefault(eid, set()).add(text_value)
+
+    # One compile for the whole document, plus a reverse index from matched
+    # text to the entity_ids that own it, so each rationale is scanned once
+    # instead of re-compiling an alternation per rationale.
+    # Nothing to sanitize unless at least one model-authored rationale
+    # exists; a rules-only run with the flag on would otherwise pay to
+    # compile a scanner it can never use (#68 round-6 finding).
+    if not any(
+        isinstance(sp.get("rationale"), dict)
+        and sp["rationale"].get("origin") == RationaleOrigin.LLM_VALIDATION.value
+        for sp in spans
+    ):
+        return
+
+    entity_ids_by_text: Dict[str, Set[str]] = {}
+    for eid, entity_texts in texts_by_entity.items():
+        for text_value in entity_texts:
+            entity_ids_by_text.setdefault(text_value.lower(), set()).add(eid)
+    scanner = compile_leak_scanner(entity_ids_by_text.keys())
+
+    checked_rationale_ids: Set[int] = set()
+    for sp in spans:
+        rationale = sp.get("rationale")
+        if not isinstance(rationale, dict):
+            continue
+        if rationale.get("origin") != RationaleOrigin.LLM_VALIDATION.value:
+            continue
+        if id(rationale) in checked_rationale_ids:
+            continue
+        checked_rationale_ids.add(id(rationale))
+
+        own_eid = sp.get("entity_id")
+        own_text_forms = {t.lower() for t in texts_by_entity.get(own_eid or "", set())}
+
+        # Ownership alone decides this. The scanner prefers the LONGEST
+        # candidate at any position, so an entity naming its own full text
+        # ("Acme Corp Ltd") matches its own entry rather than a shorter
+        # cluster-mate's, and `eid != own_eid` is then False. An earlier
+        # "is it a substring of my own text" shortcut was both redundant
+        # with this and actively harmful: it let ORG "Smith Holdings LLC"
+        # keep a rationale naming the distinct person NAME "Smith"
+        # (#68 round-6 finding).
+        leaked = False
+        for matched in scan_leaked_texts(scanner, rationale.get("text") or ""):
+            # Naming one of THIS entity's own literal forms is explicitly
+            # allowed, even when a different entity_id happens to share the
+            # same literal ("Springfield" as both a NAME and a LOC): the
+            # entity is naming itself, which the prompt permits. This is
+            # exact-form ownership, not the substring shortcut that opened
+            # the round-6 hole (#68 round-7 finding).
+            if matched in own_text_forms:
+                continue
+            if any(eid != own_eid for eid in entity_ids_by_text.get(matched, ())):
+                leaked = True
+                break
+
+        if leaked:
+            rationale["text"] = (
+                "Rationale withheld: the model's explanation referenced "
+                "another entity's literal text."
+            )
+            rationale["origin"] = RationaleOrigin.UNAVAILABLE.value
+            rationale.pop("model", None)
+
+
 def _finalize_and_write(
     dm: DocxMap,
     text: str,
@@ -1224,8 +1681,31 @@ def _finalize_and_write(
         warnings = []
     if suppressed is None:
         suppressed = []
+
+    # Redaction-rationale reporting (issue #68), opt-in and off by default.
+    # Disabling this must leave spans/decisions byte-identical to today's
+    # output (mitigation #5) -- every rationale-related line below is
+    # gated on this single flag for exactly that reason.
+    #
+    # `run_redaction` resolves MARCUT_GENERATE_RATIONALE exactly once and
+    # records the decision in `report_settings["generate_rationale"]` (see
+    # `_build_report_settings`); read it from there so this function and
+    # `_collect_enhanced_spans` can never observe two different values for
+    # one run (#88). A caller that invokes this function directly without a
+    # `report_settings` carrying that key (unit tests, older callers) falls
+    # back to reading the environment itself, same as before #88.
+    if report_settings is not None and "generate_rationale" in report_settings:
+        generate_rationale = bool(report_settings["generate_rationale"])
+    else:
+        generate_rationale = _metadata_env_enabled("MARCUT_GENERATE_RATIONALE")
+
+    # Defense-in-depth guard (A5): never let a span with corrupted offsets
+    # or drifted text reach dm.apply_replacements() below. See
+    # _drop_invalid_spans for the bounds/text-match invariant this enforces
+    # and why it re-checks every span here regardless of origin.
+    spans = _drop_invalid_spans(text, spans, warnings, suppressed, debug=debug)
+
     ct = ClusterTable()
-    url_counter = {}
 
     # Assign entity IDs for clustering and consistent numbering
     # Use generic counters for exact-match types
@@ -1233,10 +1713,10 @@ def _finalize_and_write(
 
     for sp in spans:
         label = sp["label"]
-        text = sp["text"].strip() # Normalize text for matching
+        entity_text = sp["text"].strip() # Normalize text for matching
 
         if label in ("NAME", "ORG", "BRAND"):
-            eid, score, is_new = ct.link(label, text)
+            eid, score, is_new = ct.link(label, entity_text)
             sp["entity_id"] = eid
             sp["confidence"] = combine(sp.get("confidence", 0.7), agreements=0 if is_new else 1)
         else:
@@ -1244,11 +1724,16 @@ def _finalize_and_write(
             if label not in entity_counters:
                 entity_counters[label] = {}
 
-            if text not in entity_counters[label]:
-                entity_counters[label][text] = len(entity_counters[label]) + 1
+            if entity_text not in entity_counters[label]:
+                entity_counters[label][entity_text] = len(entity_counters[label]) + 1
 
-            seq_id = entity_counters[label][text]
+            seq_id = entity_counters[label][entity_text]
             sp["entity_id"] = f"{label}_{seq_id}"
+
+    if generate_rationale:
+        _annotate_missing_rationale(spans)
+        _canonicalize_cluster_rationale(spans)
+        _sanitize_cross_referenced_rationale(spans)
 
     # Create replacements
     replacements = []
@@ -1290,12 +1775,24 @@ def _finalize_and_write(
 
     # Apply track changes and save
     dm.apply_replacements(replacements, track_changes=True)
-    warnings.extend(getattr(dm, "warnings", []) or [])
+
+    _dm_warnings_synced = 0
+
+    def _sync_dm_warnings() -> None:
+        # dm.warnings keeps growing across apply_replacements/harden_document/
+        # scrub_metadata/save; re-sync after each call site so anything
+        # appended later (e.g. a metadata-scrub warning) isn't silently
+        # dropped from the audit report by a one-time snapshot.
+        nonlocal _dm_warnings_synced
+        current = getattr(dm, "warnings", []) or []
+        if len(current) > _dm_warnings_synced:
+            warnings.extend(current[_dm_warnings_synced:])
+            _dm_warnings_synced = len(current)
+
+    _sync_dm_warnings()
 
     # Parse metadata cleaning settings from environment (set by Swift UI)
-    metadata_args_str = os.environ.get("MARCUT_METADATA_ARGS", "")
-    metadata_args = metadata_args_str.split() if metadata_args_str else []
-    metadata_settings = MetadataCleaningSettings.from_environment(metadata_args)
+    metadata_settings, metadata_args, metadata_args_str = _metadata_settings_from_env()
     scrub_report_path = os.environ.get("MARCUT_SCRUB_REPORT_PATH", "").strip() or None
     is_none_preset = "--preset-none" in metadata_args or "--preset-none" in metadata_args_str
     if is_none_preset:
@@ -1329,33 +1826,52 @@ def _finalize_and_write(
         except ImportError:
             scrub_images = False
         dm.harden_document(scrub_all_images=scrub_images, settings=metadata_settings)
+        _sync_dm_warnings()
 
     # Scrub metadata using user-configured settings
     dm.scrub_metadata(metadata_settings)
+    _sync_dm_warnings()
 
-    dm.save(output_path)
+    output_temp_path = _sibling_temp_path(output_path)
+    report_temp_path = _sibling_temp_path(report_path)
+    report_html_temp_path = os.path.splitext(report_temp_path)[0] + ".html"
+    scrub_report_temp_path: Optional[str] = None
+    scrub_html_temp_path: Optional[str] = None
+    scrub_html_final_path: Optional[str] = None
+    temp_paths: List[Optional[str]] = [output_temp_path, report_temp_path, report_html_temp_path]
 
-    redaction_changes_created = bool(replacements)
-    if metadata_settings.clean_track_changes and not redaction_changes_created:
-        try:
-            cleaned_bytes, changed = accept_revisions_in_docx_bytes(output_path, debug=debug)
-            if changed and cleaned_bytes:
-                with open(output_path, "wb") as fh:
-                    fh.write(cleaned_bytes)
-                warnings.append({
-                    "code": "TRACK_CHANGES_REMOVED",
-                    "message": "Track changes were accepted and removed per settings."
-                })
-        except Exception as e:
-            warnings.append({
-                "code": "TRACK_CHANGES_REMOVE_FAILED",
-                "message": "Unable to remove track changes after redaction.",
-                "details": str(e)
-            })
-    if scrub_report_path and scrub_before_values is not None:
-        try:
+    try:
+        dm.save(output_temp_path)
+        _sync_dm_warnings()
+
+        redaction_changes_created = bool(replacements)
+        if metadata_settings.clean_track_changes and not redaction_changes_created:
             try:
-                dm_after = DocxMap.load(output_path)
+                cleaned_bytes, changed = accept_revisions_in_docx_bytes(output_temp_path, debug=debug)
+                if changed and cleaned_bytes:
+                    with open(output_temp_path, "wb") as fh:
+                        fh.write(cleaned_bytes)
+                    warnings.append({
+                        "code": "TRACK_CHANGES_REMOVED",
+                        "message": "Track changes were accepted and removed per settings."
+                    })
+            except Exception as e:
+                warnings.append({
+                    "code": "TRACK_CHANGES_REMOVE_FAILED",
+                    "message": "Unable to remove track changes after redaction.",
+                    "details": str(e)
+                })
+
+        if scrub_report_path and scrub_before_values is not None:
+            scrub_report_temp_path = _sibling_temp_path(scrub_report_path)
+            scrub_html_temp_path = os.path.splitext(scrub_report_temp_path)[0] + ".html"
+            scrub_html_final_path = os.path.splitext(scrub_report_path)[0] + ".html"
+            temp_paths.extend([scrub_report_temp_path, scrub_html_temp_path])
+            report_dir = os.path.dirname(scrub_report_path)
+            if report_dir:
+                os.makedirs(report_dir, exist_ok=True)
+            try:
+                dm_after = DocxMap.load(output_temp_path)
                 scrub_after_values = _read_metadata_values(dm_after)
             except Exception:
                 scrub_after_values = _read_metadata_values(dm)
@@ -1367,18 +1883,26 @@ def _finalize_and_write(
                 file_path=output_path,
                 input_path=input_path,
                 input_file_info=scrub_input_file_info,
+                output_file_info=_final_output_file_info(
+                    output_temp_path, output_path
+                ),
                 report_dir=os.path.dirname(scrub_report_path),
                 warnings=warnings,
+                content_path=output_temp_path,
             )
-            report_dir = os.path.dirname(scrub_report_path)
-            if report_dir:
-                os.makedirs(report_dir, exist_ok=True)
-            write_json_file(scrub_report_path, report)
+            # Validate the in-memory shape before it ever reaches the T7
+            # temp write -- a schema-invalid report must never be staged
+            # for atomic promotion. See report_schema.ScrubReport.
+            ScrubReport.model_validate(report)
+            write_json_file(scrub_report_temp_path, report)
 
             # Generate HTML report alongside JSON
             try:
                 from .report_html import generate_report_from_json_file
-                html_report_path = generate_report_from_json_file(scrub_report_path)
+                html_report_path = generate_report_from_json_file(
+                    scrub_report_temp_path,
+                    json_link_path=scrub_report_path,
+                )
                 if not html_report_path or not os.path.exists(html_report_path):
                     raise RuntimeError("HTML report generation did not produce a file")
                 make_private_file(html_report_path)
@@ -1393,49 +1917,125 @@ def _finalize_and_write(
                     "message": "Scrub report HTML generation failed.",
                     "details": str(html_err)
                 })
-                try:
-                    write_json_file(scrub_report_path, report)
-                except Exception:
-                    pass
+                ScrubReport.model_validate(report)
+                write_json_file(scrub_report_temp_path, report)
+
+        # Generate audit report
+        audit = []
+        for sp in spans:
+            entry = {
+                "start": sp["start"],
+                "end": sp["end"],
+                "label": sp["label"],
+                "entity_id": sp.get("entity_id"),
+                "confidence": sp.get("confidence", 0.0),
+                "source": sp.get("source", ""),
+                "text": sp.get("text", "")[:120],
+                "validated": sp.get("validated"),
+                "validation_result": sp.get("validation_result"),
+            }
+            # Only ever set when MARCUT_GENERATE_RATIONALE is enabled (see
+            # the annotate/canonicalize/sanitize calls above) -- disabled
+            # runs must never add this key (mitigation #5, byte-identical
+            # spans when off).
+            if isinstance(sp.get("rationale"), dict):
+                entry["rationale"] = sp["rationale"]
+            audit.append(entry)
+
+        # Sanitise the model identifier where it enters the report (#85):
+        # a path-like `model_info` (plain `--model /Users/alice/models/x`,
+        # or relative `--model models/alice-private/x.gguf`) would otherwise
+        # put the operator's home directory and username into an artifact
+        # that travels with the document -- both in the top-level `model`
+        # field written below and in `rationale_generation["model"]`. This
+        # is the same helper, and therefore the same "is a path" test, that
+        # `_build_report_settings` applies to `settings["model"]`: the two
+        # are independent routes into the report and must not diverge.
+        # `model_info` itself is left untouched for every other use above.
+        sanitized_model_info = _sanitize_model_for_report(model_info)
+
+        # Report-level disclosure of whether/how rationale was generated for
+        # this run (issue #68 mitigation #7) -- always present, even
+        # disabled, so a report unambiguously distinguishes "not requested"
+        # from "requested and failed for every span".
+        if generate_rationale:
+            run_settings = report_settings or {}
+            run_mode = run_settings.get("mode")
+            if run_mode not in {"rules_override", "constrained_overrides", "llm_overrides"}:
+                # No LLM ran at all: only rule templates were ever possible.
+                rationale_mode = "rule_deterministic_only"
+            elif run_settings.get("llama_cpp_dispatch") or _uses_llama_cpp_backend(
+                run_settings.get("backend") or "",
+                # Fallback for settings dicts built without the explicit
+                # flag above (older callers/tests). Same precedence as
+                # `_collect_enhanced_spans`' dispatch.
+                run_settings.get("llama_gguf") or run_settings.get("model") or "",
+            ):
+                # An LLM ran, but only the Ollama validation path was
+                # extended for rationale (`LlamaCppRedactionPipeline` was
+                # not), so every LLM span is `unavailable` by construction.
+                # Say so, rather than claim "validation_extended" and leave
+                # the report reading as "requested and silently failed".
+                rationale_mode = "unsupported_backend"
+            else:
+                rationale_mode = "validation_extended"
+            rationale_generation = {
+                "enabled": True,
+                # Only name a model when one actually authored rationale.
+                # A rules-only run still carries a model_id ("qwen2.5:14b"
+                # by default), and reporting it here would attribute
+                # template strings to a model that never executed
+                # (#68 round-4 finding).
+                "model": sanitized_model_info if rationale_mode == "validation_extended" else None,
+                "mode": rationale_mode,
+            }
+        else:
+            rationale_generation = {"enabled": False, "model": None, "mode": None}
+
+        try:
+            write_report(
+                report_temp_path,
+                input_path,
+                sanitized_model_info,
+                audit,
+                settings=report_settings,
+                warnings=warnings,
+                suppressed=suppressed,
+                json_link_path=report_path,
+                rationale_generation=rationale_generation,
+            )
+        except ValidationError:
+            # A schema-invalid audit report must not be reclassified as a
+            # generic "report save" error -- let it fall through to this
+            # function's outer handler below, which cleans up temp
+            # artifacts and raises the existing ARTIFACT_FINALIZE_FAILED
+            # code, same as any other finalize-time failure.
+            raise
         except Exception as e:
-            warnings.append({
-                "code": "SCRUB_REPORT_WRITE_FAILED",
-                "message": "Scrub report could not be written.",
-                "details": str(e)
-            })
-            if debug:
-                print(f"[MARCUT_PIPELINE] Failed to write scrub report: {e}")
+            raise RedactionError(
+                message="Failed to write audit report",
+                error_code="REPORT_SAVE_FAILED",
+                technical_details=f"Report path: {report_path}, Error: {str(e)}",
+                original_error=e
+            ) from e
 
-    # Generate audit report
-    audit = [{
-        "start": sp["start"],
-        "end": sp["end"],
-        "label": sp["label"],
-        "entity_id": sp.get("entity_id"),
-        "confidence": sp.get("confidence", 0.0),
-        "source": sp.get("source", ""),
-        "text": sp.get("text", "")[:120],
-        "validated": sp.get("validated"),
-        "validation_result": sp.get("validation_result")
-    } for sp in spans]
-
-    try:
-        write_report(
-            report_path,
-            input_path,
-            model_info,
-            audit,
-            settings=report_settings,
-            warnings=warnings,
-            suppressed=suppressed,
-        )
+        _replace_existing_temp(report_temp_path, report_path)
+        _replace_existing_temp(report_html_temp_path, os.path.splitext(report_path)[0] + ".html")
+        _replace_existing_temp(scrub_report_temp_path, scrub_report_path)
+        _replace_existing_temp(scrub_html_temp_path, scrub_html_final_path)
+        _replace_existing_temp(output_temp_path, output_path)
+    except RedactionError:
+        _cleanup_temp_artifacts(temp_paths)
+        raise
     except Exception as e:
+        _cleanup_temp_artifacts(temp_paths)
         raise RedactionError(
-            message="Failed to write audit report",
-            error_code="REPORT_SAVE_FAILED",
-            technical_details=f"Report path: {report_path}, Error: {str(e)}",
-            original_error=e
-        )
+            message="Failed to finalize output artifacts",
+            error_code="ARTIFACT_FINALIZE_FAILED",
+            technical_details=str(e),
+            original_error=e,
+        ) from e
+    _cleanup_temp_artifacts(temp_paths)
     return 0
 
 def _collect_rule_spans(text: str, debug: bool) -> List[Dict[str, Any]]:
@@ -1451,6 +2051,40 @@ def _collect_rule_spans(text: str, debug: bool) -> List[Dict[str, Any]]:
     return rule_spans
 
 
+# Thin re-export (#87): the actual predicate now lives in `model_config.py`
+# -- a leaf module `model_enhanced.py` can also import without a cycle -- so
+# every module that needs "does this run dispatch to llama.cpp" answers it
+# the same way. Kept under this name since `_collect_enhanced_spans` and
+# `_finalize_and_write` (both in this module) call it as `_uses_llama_cpp_backend`.
+_uses_llama_cpp_backend = uses_llama_cpp_backend
+
+
+def _sanitize_model_for_report(model_value: str) -> str:
+    """Strip the directory component from a model identifier that names a
+    file on disk, so a report travelling with the document never carries the
+    operator's home directory or username (#85).
+
+    "Names a file on disk" is decided by calling the shared
+    `is_gguf_model_path()` rather than re-deriving it (#87), so this
+    display-side test cannot drift from the same two path arms
+    `uses_llama_cpp_backend` dispatches on: an absolute path or a ".gguf"
+    file. A *relative* GGUF path ("models/mine/qwen2.5-14b.gguf") is
+    sanitised exactly like an absolute one, while a namespaced registry id
+    ("hf.co/bartowski/Qwen2.5-14B-GGUF:Q4_K_M") keeps the namespace that
+    distinguishes it from another model. Using a narrower test than dispatch
+    is what let relative paths through in the first place.
+
+    Display only. #68 deliberately separated the DISPLAYED model value from
+    the DISPATCH decision (`settings["llama_cpp_dispatch"]` is recorded from
+    the full path up front), so this can never change which backend runs.
+    """
+    if not model_value:
+        return model_value
+    if is_gguf_model_path(model_value):
+        return os.path.basename(model_value)
+    return model_value
+
+
 def _collect_enhanced_spans(
     text: str,
     model_id: str,
@@ -1464,8 +2098,12 @@ def _collect_enhanced_spans(
     progress_callback=None,
     warnings: Optional[List[Dict[str, Any]]] = None,
     suppressed: Optional[List[Dict[str, Any]]] = None,
+    backend: str = "ollama",
+    llama_gguf: str = "",
+    threads: int = 4,
     think_mode: bool = False,
     format_schema: Optional[Dict] = None,
+    generate_rationale: bool = False,
 ) -> List[Dict[str, Any]]:
     """Run the enhanced extraction pipeline (Ollama or llama.cpp)."""
     from .progress import ProgressTracker, ProcessingPhase
@@ -1479,16 +2117,18 @@ def _collect_enhanced_spans(
 
     chunks = make_chunks(text, max_len=chunk_tokens * 4, overlap=overlap * 4)
 
-    if model_id.endswith(".gguf") or ("/" in model_id and model_id.startswith("/")):
+    model_path = llama_gguf or model_id
+    if _uses_llama_cpp_backend(backend, model_path):
         if debug:
-            print(f"Using LlamaCpp backend with model: {model_id}")
+            print(f"Using LlamaCpp backend with model: {model_path}")
         pipeline = LlamaCppRedactionPipeline(
-            model_path=model_id,
+            model_path=model_path,
             temperature=temperature,
             seed=seed,
+            threads=threads,
         )
         model_spans = pipeline.process_document(
-            text, chunks, progress_callback=progress_callback
+            text, chunks, progress_callback=progress_callback, warnings=warnings
         )
     else:
         if debug:
@@ -1507,6 +2147,14 @@ def _collect_enhanced_spans(
             suppressed=suppressed,
             think_mode=think_mode,
             format_schema=format_schema,
+            # Opt-in, off by default (issue #68). The value is resolved once
+            # by `run_redaction` and threaded through as a parameter (#88)
+            # rather than read from the environment here -- see
+            # `_finalize_and_write`'s matching use of the same resolved
+            # value, which annotates/canonicalizes rationale for every span
+            # (including rule-matched ones) once the LLM path has attached
+            # its own llm_validation rationale here.
+            generate_rationale=generate_rationale,
         )
 
     if debug:
@@ -1559,6 +2207,13 @@ def _write_failure_report(report_path: str, input_path: str, error: RedactionErr
         "technical_details": details,
     }
     try:
+        # Validate before the write boundary, same as the audit/scrub
+        # reports. message/technical_details stay free-form str on the
+        # model (see report_schema.FailureReport) so the AI_PROCESSING_TIMEOUT
+        # classifier's "timeout"/"deadline" substring match above keeps
+        # working -- this call must never reject a legitimate deadline
+        # message.
+        FailureReport.model_validate(payload)
         write_json_file(report_path, payload)
     except Exception as report_exc:
         print(f"[MARCUT_PIPELINE] Failed to write error report: {report_exc}")
@@ -1588,11 +2243,28 @@ def run_redaction(
     llm_concurrency: int = 2,
     think_mode: bool = False,
     format_schema: Optional[Dict] = None,
+    generate_rationale: Optional[bool] = None,
 ) -> Tuple[int, Dict[str, float]]:
     """
     Unified pipeline entry point. Dispatches between rule-only and Rules + AI
     modes based on the supplied mode value.
+
+    ``generate_rationale`` (issue #68/#88): when left at the default
+    ``None``, resolves the ``MARCUT_GENERATE_RATIONALE`` env var exactly
+    once, here, for this run. Pass an explicit ``True``/``False`` (the CLI's
+    ``--rationale`` flag and the ``unified_redactor`` passthrough do) to
+    override the environment entirely. The resolved value is recorded in
+    ``report_settings["generate_rationale"]`` and threaded to both
+    ``_collect_enhanced_spans`` and ``_finalize_and_write`` so a single run
+    can never observe two different values for this flag, even when the
+    interpreter is long-lived and reused across jobs (the PythonKit/batch
+    scenario this issue exists to close).
     """
+    resolved_generate_rationale = (
+        _metadata_env_enabled("MARCUT_GENERATE_RATIONALE")
+        if generate_rationale is None
+        else bool(generate_rationale)
+    )
     rules_only_modes = {"rules", "strict", "rules_only"}
     llm_modes = {"rules_override", "constrained_overrides", "llm_overrides"}
     try:
@@ -1656,6 +2328,8 @@ def run_redaction(
             temperature=temperature,
             seed=seed,
             llm_skip_confidence=llm_skip_confidence,
+            llama_gguf=llama_gguf,
+            generate_rationale=resolved_generate_rationale,
         )
 
         # Enhanced error handling for document loading
@@ -1672,7 +2346,7 @@ def run_redaction(
                 error_code="DOC_LOAD_FAILED",
                 technical_details=f"Input path: {input_path}, Error: {str(e)}",
                 original_error=e
-            )
+            ) from e
 
         # Enhanced error handling for rules processing
         try:
@@ -1686,7 +2360,7 @@ def run_redaction(
                 error_code="RULES_ENGINE_FAILED",
                 technical_details=f"Error in rules processing: {str(e)}",
                 original_error=e
-            )
+            ) from e
 
         if guardrailed_mode:
             rule_spans = _filter_excluded_combo_spans(text, rule_spans, suppressed)
@@ -1739,63 +2413,62 @@ def run_redaction(
                     error_code="OUTPUT_SAVE_FAILED",
                     technical_details=f"Output path: {output_path}, Error: {str(e)}",
                     original_error=e
-                )
+                ) from e
 
         if normalized_mode in llm_modes:
             # Enhanced error handling for AI processing
             try:
                 with timed("LLM"):
-                    if llm_detail and not (model_id.endswith(".gguf") or model_id.startswith("/")):
-                        # Use timing-instrumented extraction for detailed profiling
-                        from .llm_timing import ollama_extract_with_timing
-                        prompt_context = None
-                        try:
-                            doc_context = DocumentContext()
-                            doc_context.analyze_document(text)
-                            prompt_context = build_prompt_context(doc_context)
-                        except Exception:
-                            prompt_context = None
-                        model_spans = []
-                        llm_error = None
-                        for attempt_idx, wait_s in enumerate((0, 2), start=1):
-                            try:
-                                model_spans, llm_timing_detail = ollama_extract_with_timing(
-                                    model_id, text, temperature, seed, context=prompt_context,
-                                    think_mode=think_mode, format_schema=format_schema
-                                )
-                                llm_error = None
-                                # Store in phase_timings for return
-                                phase_timings['llm_timing'] = llm_timing_detail
-                                break
-                            except Exception as e:
-                                llm_error = e
-                                if wait_s:
-                                    time.sleep(wait_s)
-                        if llm_error is not None:
-                            warnings.append({
-                                "code": "LLM_EXTRACTION_FAILED",
-                                "message": "AI extraction failed during detailed timing run after retries. Continuing with rules-only spans.",
-                                "details": str(llm_error)
-                            })
-                    else:
-                        model_spans = _collect_enhanced_spans(
-                            text,
-                            model_id,
-                            chunk_tokens,
-                            overlap,
-                            temperature,
-                            seed,
-                            llm_skip_confidence,
-                            debug,
-                            llm_concurrency=llm_concurrency,
-                            progress_callback=progress_callback,
-                            warnings=warnings,
-                            suppressed=suppressed,
-                            think_mode=think_mode,
-                            format_schema=format_schema,
-                        )
+                    detail_start = time.perf_counter()
+                    model_spans = _collect_enhanced_spans(
+                        text,
+                        model_id,
+                        chunk_tokens,
+                        overlap,
+                        temperature,
+                        seed,
+                        llm_skip_confidence,
+                        debug,
+                        llm_concurrency=llm_concurrency,
+                        progress_callback=progress_callback,
+                        warnings=warnings,
+                        suppressed=suppressed,
+                        backend=backend,
+                        llama_gguf=llama_gguf,
+                        threads=threads,
+                        think_mode=think_mode,
+                        format_schema=format_schema,
+                        generate_rationale=resolved_generate_rationale,
+                    )
+                    if llm_detail:
+                        llm_timing_detail = {
+                            "enhanced_extraction": time.perf_counter() - detail_start,
+                            "chunks_enabled": True,
+                            "instrumentation": "production_enhanced_path",
+                        }
+                        phase_timings["llm_timing"] = llm_timing_detail
                 if debug:
                     print(f"Enhanced AI processing found {len(model_spans)} spans")
+            except LLMChunkExtractionFailed as e:
+                # Privacy-first fail-closed: one or more chunks were never
+                # successfully analyzed by the LLM after retries. Do not
+                # fall through to the generic classification below -- name
+                # this failure mode explicitly and disclose exactly which
+                # document character ranges were never scanned, rather than
+                # a generic "AI processing failed" message.
+                ranges = "; ".join(
+                    f"chars {f['start']}-{f['end']} (chunk {f['chunk_index'] + 1}/{e.total_chunks}): {f['error']}"
+                    for f in e.failures
+                )
+                raise RedactionError(
+                    message="AI could not analyze the entire document; the document was not fully scanned for redaction",
+                    error_code="AI_CHUNK_EXTRACTION_INCOMPLETE",
+                    technical_details=(
+                        f"Model: {model_id}, {len(e.failures)} of {e.total_chunks} chunk(s) failed extraction "
+                        f"after retries. Unanalyzed ranges: {ranges}"
+                    ),
+                    original_error=e
+                ) from e
             except Exception as e:
                 # Check for specific error patterns
                 error_str = str(e).lower()
@@ -1805,28 +2478,28 @@ def run_redaction(
                         error_code="AI_SERVICE_UNAVAILABLE",
                         technical_details=f"Ollama service error: {str(e)}. Ensure Ollama is running and accessible.",
                         original_error=e
-                    )
-                elif "timeout" in error_str:
+                    ) from e
+                elif "timeout" in error_str or "deadline" in error_str:
                     raise RedactionError(
                         message="AI processing timed out",
                         error_code="AI_PROCESSING_TIMEOUT",
                         technical_details=f"Model: {model_id}, Error: {str(e)}. Try with a smaller document or different model.",
                         original_error=e
-                    )
+                    ) from e
                 elif "model" in error_str and ("not found" in error_str or "pull" in error_str):
                     raise RedactionError(
                         message="AI model is not available",
                         error_code="AI_MODEL_UNAVAILABLE",
                         technical_details=f"Model: {model_id}, Error: {str(e)}. Ensure the model is downloaded and available.",
                         original_error=e
-                    )
+                    ) from e
                 else:
                     raise RedactionError(
                         message="AI processing failed with an unexpected error",
                         error_code="AI_PROCESSING_FAILED",
                         technical_details=f"Model: {model_id}, Error: {str(e)}",
                         original_error=e
-                    )
+                    ) from e
 
             if guardrailed_mode:
                 model_spans = _filter_excluded_combo_spans(text, model_spans, suppressed)
@@ -1845,6 +2518,7 @@ def run_redaction(
                     allowed_labels=allowed_labels,
                     suppressed=suppressed,
                     debug=debug,
+                    llama_gguf=llama_gguf,
                     think_mode=think_mode,
                     format_schema=format_schema,
                 )
@@ -1900,7 +2574,7 @@ def run_redaction(
                     error_code="OUTPUT_SAVE_FAILED",
                     technical_details=f"Output path: {output_path}, Error: {str(e)}",
                     original_error=e
-                )
+                ) from e
 
     except RedactionError as err:
         if debug:
@@ -1959,6 +2633,20 @@ def run_redaction_enhanced(
 redact_docx = run_redaction
 
 
+def _metadata_settings_from_env() -> Tuple[MetadataCleaningSettings, List[str], str]:
+    """Read and decode the metadata-cleaning-settings environment variables
+    (set by the Swift UI) exactly as the three call sites below used to do
+    inline. Shared so the decode/validation behavior (issue #94) lives in
+    one place; each caller still gets back the same three values it read
+    before (the resolved settings object, the split arg list, and the raw
+    arg string), so no call site's downstream logic changes.
+    """
+    metadata_args_str = os.environ.get("MARCUT_METADATA_ARGS", "")
+    metadata_args = metadata_args_str.split() if metadata_args_str else []
+    metadata_settings = MetadataCleaningSettings.from_environment(metadata_args)
+    return metadata_settings, metadata_args, metadata_args_str
+
+
 def _default_scrub_report_path(report_path: str, output_path: str):
     if report_path:
         base_dir = os.path.dirname(report_path)
@@ -1987,7 +2675,7 @@ def _sha256_file(path: str) -> str:
     return hasher.hexdigest()
 
 
-def _safe_report_file_info(path: Optional[str]) -> Dict[str, Any]:
+def _safe_report_file_info(path: Optional[str], hash_and_size: bool = True) -> Dict[str, Any]:
     info: Dict[str, Any] = {}
     if not path:
         return info
@@ -2008,6 +2696,9 @@ def _safe_report_file_info(path: Optional[str]) -> Dict[str, Any]:
     except Exception:
         pass
 
+    if not hash_and_size:
+        return info
+
     try:
         info["size_bytes"] = os.path.getsize(path)
     except Exception:
@@ -2018,6 +2709,29 @@ def _safe_report_file_info(path: Optional[str]) -> Dict[str, Any]:
     except Exception:
         pass
 
+    return info
+
+
+def _final_output_file_info(temp_path: str, final_path: str) -> Dict[str, Any]:
+    """Describe the delivered output document.
+
+    The redacted DOCX is written to a transactional temp path and only
+    renamed onto ``final_path`` after every report has been produced, so a
+    report built from ``final_path`` would hash either a stale file or
+    nothing at all. Hash and size the bytes that are actually delivered
+    (the staged temp file), but name them by the path the user receives.
+    Naming fields (file_name/file_extension/mime_type) for ``final_path``
+    are derived from the path string alone -- ``hash_and_size=False`` skips
+    the filesystem stat/read that would otherwise hash or size a stale (or
+    nonexistent) file for values that are discarded below anyway.
+    """
+    info = _safe_report_file_info(temp_path)
+    naming = _safe_report_file_info(final_path, hash_and_size=False)
+    for key in ("file_name", "file_extension", "mime_type"):
+        if key in naming:
+            info[key] = naming[key]
+        else:
+            info.pop(key, None)
     return info
 
 
@@ -2037,6 +2751,37 @@ def _read_metadata_values(dm) -> dict:
     values = {}
     binary_parts: List[Dict[str, Any]] = []
     text_parts: Dict[str, List[str]] = {}
+    capture_warnings: List[Dict[str, Any]] = []
+    forensic_exports_enabled = (
+        _metadata_env_enabled("MARCUT_ENABLE_FORENSIC_EXPORTS")
+        or _metadata_env_enabled("MARCUT_ENABLE_BINARY_EXPORTS")
+    )
+    max_capture_string_chars = _metadata_env_int("MARCUT_METADATA_CAPTURE_MAX_STRING_CHARS", 20_000)
+    max_binary_capture_part_bytes = _metadata_env_int("MARCUT_REPORT_EXPORT_MAX_PART_BYTES", 2 * 1024 * 1024)
+    max_binary_capture_total_bytes = _metadata_env_int("MARCUT_REPORT_EXPORT_MAX_BYTES", 10 * 1024 * 1024)
+    captured_binary_bytes = 0
+
+    def _add_capture_warning(code: str, message: str, details: str = "") -> None:
+        warning = {"code": code, "message": message}
+        if details:
+            warning["details"] = details
+        capture_warnings.append(warning)
+
+    def _bounded_text(value: str, source: str) -> str | Dict[str, Any]:
+        text = value or ""
+        if max_capture_string_chars and len(text) > max_capture_string_chars:
+            _add_capture_warning(
+                "METADATA_CAPTURE_TEXT_TRUNCATED",
+                "A metadata text/XML preview was truncated before report retention.",
+                f"{source}: {len(text)} chars > {max_capture_string_chars} chars",
+            )
+            return {
+                "preview": text[:max_capture_string_chars],
+                "truncated": True,
+                "original_chars": len(text),
+                "limit_chars": max_capture_string_chars,
+            }
+        return text
 
     def _extract_text_from_part(part_blob) -> str:
         try:
@@ -2243,7 +2988,6 @@ def _read_metadata_values(dm) -> dict:
         from docx.oxml.ns import qn
         from lxml import etree
         import posixpath
-        import zipfile
 
         def _iter_part_elements():
             if dm.doc.element is not None:
@@ -2592,7 +3336,7 @@ def _read_metadata_values(dm) -> dict:
                         'part': name,
                         'root_tag': root_tag,
                         'namespace': root_ns,
-                        'xml': xml_content,
+                        'xml': _bounded_text(xml_content, name),
                     })
                 except Exception:
                     custom_xml_parts.append({'part': name})
@@ -2880,14 +3624,30 @@ def _read_metadata_values(dm) -> dict:
             else:
                 part_type = "other"
 
-            binary_parts.append({
+            entry = {
                 "name": name.strip("/"),
                 "type": part_type,
                 "size": len(data),
                 "content_type": getattr(part, "content_type", "") or "",
                 "extension": os.path.splitext(name)[1].lower(),
-                "data": data,
-            })
+            }
+            if forensic_exports_enabled:
+                if max_binary_capture_part_bytes and len(data) > max_binary_capture_part_bytes:
+                    _add_capture_warning(
+                        "METADATA_BINARY_CAPTURE_PART_LIMIT",
+                        "An embedded binary part was summarized instead of retained because it exceeded the per-part export limit.",
+                        f"{name}: {len(data)} bytes > {max_binary_capture_part_bytes} bytes",
+                    )
+                elif max_binary_capture_total_bytes and captured_binary_bytes + len(data) > max_binary_capture_total_bytes:
+                    _add_capture_warning(
+                        "METADATA_BINARY_CAPTURE_TOTAL_LIMIT",
+                        "Additional embedded binary parts were summarized instead of retained because the export byte limit was reached.",
+                        f"limit={max_binary_capture_total_bytes}",
+                    )
+                else:
+                    entry["data"] = data
+                    captured_binary_bytes += len(data)
+            binary_parts.append(entry)
 
         # ========== EXTERNAL RELATIONSHIPS ==========
         external_targets = []
@@ -3008,7 +3768,7 @@ def _read_metadata_values(dm) -> dict:
                 fast_save_entries.append({
                     "tag": tag_name,
                     "attributes": dict(el.attrib) if el.attrib else {},
-                    "xml": etree.tostring(el, encoding='unicode'),
+                    "xml": _bounded_text(etree.tostring(el, encoding='unicode'), tag_name),
                 })
             values['fast_save'] = fast_save_entries
 
@@ -3050,9 +3810,9 @@ def _read_metadata_values(dm) -> dict:
                             'part': name,
                             'namespace': ns,
                             'element': local_name,
-                            'text': (el.text or '').strip(),
+                            'text': _bounded_text((el.text or '').strip(), f"{name}/{local_name}"),
                             'attributes': dict(el.attrib) if el.attrib else {},
-                            'xml': etree.tostring(el, encoding='unicode'),
+                            'xml': _bounded_text(etree.tostring(el, encoding='unicode'), f"{name}/{local_name}"),
                         }
                         if ns in known_namespaces:
                             continue
@@ -3066,9 +3826,10 @@ def _read_metadata_values(dm) -> dict:
                         continue
                 # Alternate content blocks
                 for ac in root.findall(".//mc:AlternateContent", namespaces={"mc": "http://schemas.openxmlformats.org/markup-compatibility/2006"}):
+                    ac_xml = etree.tostring(ac, encoding='unicode')
                     alternate_content.append({
                         "part": name,
-                        "xml": etree.tostring(ac, encoding='unicode'),
+                        "xml": _bounded_text(ac_xml, f"{name}/AlternateContent"),
                     })
             except Exception:
                 continue
@@ -3081,6 +3842,8 @@ def _read_metadata_values(dm) -> dict:
 
     if binary_parts:
         values["_binary_parts"] = binary_parts
+    if capture_warnings:
+        values["_metadata_capture_warnings"] = capture_warnings
     return values
 
 
@@ -3093,15 +3856,27 @@ def _build_scrub_report(
     file_path: Optional[str] = None,
     input_path: Optional[str] = None,
     input_file_info: Optional[Dict[str, Any]] = None,
+    output_file_info: Optional[Dict[str, Any]] = None,
     report_dir: Optional[str] = None,
     warnings: Optional[List[Dict[str, Any]]] = None,
+    content_path: Optional[str] = None,
 ) -> dict:
     """
     Build comprehensive forensic report with before/after values grouped like UI.
 
     Handles list and dict values from enhanced _read_metadata_values,
     exports binary parts to structured binaries/ subdirectory.
+
+    ``file_path`` names the delivered output for display purposes (e.g. the
+    final, not-yet-renamed destination on a transactional write) while
+    ``content_path`` -- defaulting to ``file_path`` -- is the path actually
+    read from disk for post-scrub content inspection (deep explorer,
+    encryption detection). Callers on a staged/rename write path should pass
+    the staged temp path as ``content_path`` so inspection reads the bytes
+    that will actually be delivered, not whatever (possibly stale or
+    nonexistent) file currently sits at the final path.
     """
+    content_path = content_path if content_path is not None else file_path
 
     def _perform_forensic_analysis(before_values: dict, after_values: dict) -> List[Dict[str, Any]]:
         """Run heuristic checks to flag suspicious metadata inconsistencies."""
@@ -3306,17 +4081,65 @@ def _build_scrub_report(
         except Exception:
             return {"status": "unknown"}
 
-    def _serialize_value(val):
+    max_report_string_chars = _metadata_env_int("MARCUT_METADATA_REPORT_MAX_STRING_CHARS", 20_000)
+    max_report_list_items = _metadata_env_int("MARCUT_METADATA_REPORT_MAX_LIST_ITEMS", 200)
+    max_report_dict_items = _metadata_env_int("MARCUT_METADATA_REPORT_MAX_DICT_ITEMS", 200)
+
+    def _serialize_value(val, path: str = "metadata"):
         """Serialize complex values for JSON report while preserving structure."""
         if val is None:
             return None
-        if isinstance(val, (str, int, float, bool)):
+        if isinstance(val, str):
+            if max_report_string_chars and len(val) > max_report_string_chars:
+                _add_report_warning(
+                    "METADATA_REPORT_VALUE_TRUNCATED",
+                    "A metadata report value was truncated to keep the JSON/HTML report within budget.",
+                    f"{path}: {len(val)} chars > {max_report_string_chars} chars",
+                )
+                return {
+                    "preview": val[:max_report_string_chars],
+                    "truncated": True,
+                    "original_chars": len(val),
+                    "limit_chars": max_report_string_chars,
+                }
+            return val
+        if isinstance(val, (int, float, bool)):
             return val
         if isinstance(val, (list, tuple)):
-            return [_serialize_value(v) for v in val]
+            items = list(val)
+            limit = max_report_list_items
+            if limit and len(items) > limit:
+                _add_report_warning(
+                    "METADATA_REPORT_LIST_TRUNCATED",
+                    "A metadata report list was truncated to keep the JSON/HTML report within budget.",
+                    f"{path}: {len(items)} items > {limit} items",
+                )
+                return {
+                    "items": [_serialize_value(v, f"{path}[{idx}]") for idx, v in enumerate(items[:limit])],
+                    "truncated": True,
+                    "original_count": len(items),
+                    "limit_count": limit,
+                }
+            return [_serialize_value(v, f"{path}[{idx}]") for idx, v in enumerate(items)]
         if isinstance(val, dict):
             # Remove binary data, keep metadata
-            return {k: _serialize_value(v) for k, v in val.items() if k != 'data' and not k.startswith('_')}
+            visible_items = [(k, v) for k, v in val.items() if k != 'data' and not str(k).startswith('_')]
+            limit = max_report_dict_items
+            if limit and len(visible_items) > limit:
+                _add_report_warning(
+                    "METADATA_REPORT_DICT_TRUNCATED",
+                    "A metadata report dictionary was truncated to keep the JSON/HTML report within budget.",
+                    f"{path}: {len(visible_items)} entries > {limit} entries",
+                )
+                result = {
+                    k: _serialize_value(v, f"{path}.{k}")
+                    for k, v in visible_items[:limit]
+                }
+                result["_truncated"] = True
+                result["_original_count"] = len(visible_items)
+                result["_limit_count"] = limit
+                return result
+            return {k: _serialize_value(v, f"{path}.{k}") for k, v in visible_items}
         return str(val)
 
     def _summarize_parts(parts, label):
@@ -3466,6 +4289,11 @@ def _build_scrub_report(
             warning["details"] = details
         report_warnings.append(warning)
 
+    for source_values in (before, after):
+        for warning in source_values.get("_metadata_capture_warnings") or []:
+            if isinstance(warning, dict):
+                report_warnings.append(warning)
+
     # ========== STRUCTURED BINARY EXPORT ==========
     binary_exports = []
     large_exports = []
@@ -3572,7 +4400,9 @@ def _build_scrub_report(
 
     # ========== FILE SUMMARY ==========
     input_file_info = dict(input_file_info or _safe_report_file_info(input_path))
-    output_file_info = _safe_report_file_info(file_path or input_path)
+    output_file_info = dict(
+        output_file_info or _safe_report_file_info(file_path or input_path)
+    )
     report["file_info"] = {
         "input": input_file_info,
         "output": output_file_info,
@@ -3759,7 +4589,7 @@ def _build_scrub_report(
         if pre_explorer:
             deep_explorer["pre"] = pre_explorer
         if report["summary"].get("report_type") != "metadata_only":
-            post_explorer = _build_deep_explorer(file_path or input_path, "post_scrub")
+            post_explorer = _build_deep_explorer(content_path or input_path, "post_scrub")
             if post_explorer:
                 deep_explorer["post"] = post_explorer
     elif report_dir:
@@ -3787,7 +4617,7 @@ def _build_scrub_report(
     if "encryption" not in before:
         before["encryption"] = _detect_encryption(input_path)
     if "encryption" not in after:
-        after["encryption"] = _detect_encryption(file_path or input_path)
+        after["encryption"] = _detect_encryption(content_path or input_path)
 
     # ========== PROCESS GROUPS ==========
     for group_name, group_fields in groups.items():
@@ -3812,8 +4642,8 @@ def _build_scrub_report(
                 after_val = _summarize_parts(after_val, "ink parts")
 
             # Serialize for JSON output
-            before_serialized = _serialize_value(before_val)
-            after_serialized = _serialize_value(after_val)
+            before_serialized = _serialize_value(before_val, f"{group_name}.{field_name}.before")
+            after_serialized = _serialize_value(after_val, f"{group_name}.{field_name}.after")
 
             # Determine actual status based on whether values changed
             if was_enabled:
@@ -3853,9 +4683,7 @@ def scrub_metadata_only(
     """
     try:
         # 1. Parse Args
-        metadata_args_str = os.environ.get("MARCUT_METADATA_ARGS", "")
-        metadata_args = metadata_args_str.split() if metadata_args_str else []
-        metadata_settings = MetadataCleaningSettings.from_environment(metadata_args)
+        metadata_settings, metadata_args, metadata_args_str = _metadata_settings_from_env()
 
         # Check for explicit 'None' preset flag for ultra-robust handling
         is_none_preset = "--preset-none" in metadata_args or "--preset-none" in metadata_args_str
@@ -3883,7 +4711,7 @@ def scrub_metadata_only(
             # COPY PATH: Safe handling for None preset
             import shutil
             if debug:
-                print(f"[MARCUT_PIPELINE] None preset: Copying file without processed save.")
+                print("[MARCUT_PIPELINE] None preset: Copying file without processed save.")
             shutil.copy2(input_path, output_path)
             return (True, "", None)
 
@@ -3937,6 +4765,13 @@ def scrub_metadata_only(
             warnings=getattr(dm, "warnings", []) or None,
         )
         report["summary"]["report_type"] = "scrub"
+
+        # Validate the tuple payload before it crosses the PythonKit bridge --
+        # see report_schema.MetadataScrubPayload and step 3 of
+        # docs/design/bridge_schema_migration.md. Keeps the tuple arity/order
+        # unchanged; a malformed report raises here instead of being decoded
+        # on the Swift side as a best-effort dictionary guess.
+        MetadataScrubPayload.model_validate(report)
         return (True, "", report)
 
     except Exception as e:
@@ -3957,9 +4792,7 @@ def metadata_report_only(
     """
     del debug
     try:
-        metadata_args_str = os.environ.get("MARCUT_METADATA_ARGS", "")
-        metadata_args = metadata_args_str.split() if metadata_args_str else []
-        metadata_settings = MetadataCleaningSettings.from_environment(metadata_args)
+        metadata_settings, metadata_args, metadata_args_str = _metadata_settings_from_env()
 
         # Load original document for read-only metadata extraction
         dm = DocxMap.load(input_path)
@@ -3991,6 +4824,12 @@ def metadata_report_only(
                 field["after"] = ""
                 field["status"] = "observed"
 
+        # Validate the in-memory shape before it is written to disk and before
+        # it crosses the PythonKit bridge as this function's tuple element 2
+        # -- see report_schema.MetadataReportPayload (step 3 of
+        # docs/design/bridge_schema_migration.md) and the analogous
+        # ScrubReport check in run_redaction().
+        MetadataReportPayload.model_validate(report)
         write_json_file(report_path, report)
 
         try:

@@ -14,6 +14,7 @@ import os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src', 'python'))
 
 import pytest
+from unittest.mock import patch
 from marcut.report_common import (
     escape_html,
     get_mime_type,
@@ -203,8 +204,6 @@ class TestGetBaseJs:
         # We don't strictly ban arrow functions, but older JS is safer for compatibility
         # assert '=>' not in js
 
-
-from unittest.mock import patch, MagicMock
 
 class TestReadMdlsMetadata:
     """Tests for _read_mdls_metadata function."""

@@ -51,5 +51,34 @@ def test_address_detection():
 
     print(f"\nSummary: {passed_pos}/{len(positive_cases)} Positive, {passed_neg}/{len(negative_cases)} Negative passed")
 
+def test_address_rejects_invalid_state_codes():
+    """Issue #41: the (non-labeled) address patterns must not match an invalid/fake
+    2-letter state code -- e.g. "ZZ" is not a real state abbreviation or US territory
+    code, so "123 Main St ZZ 12345" must not be detected as an address."""
+    invalid_state_cases = [
+        "123 Main St ZZ 12345",
+        "123 Main St, Anytown, ZZ 12345",
+        "123 Main St XX 12345",
+        "123 Main St QQ 12345",
+    ]
+    for text in invalid_state_cases:
+        results = run_rules(text)
+        address_found = any(r['label'] == 'LOC' and r['source'] == 'rule' for r in results)
+        assert not address_found, f"Unexpected address match for invalid state code: {text!r}"
+
+
+def test_address_accepts_valid_state_and_territory_codes():
+    """Regression guard: valid state/DC/territory codes must still be detected."""
+    valid_state_cases = [
+        "123 Main St, Anytown, PR 00901",   # Puerto Rico (territory)
+        "123 Main St, Anytown, DC 20001",   # District of Columbia
+        "123 Main St, Anytown, VI 00801",   # US Virgin Islands (territory)
+    ]
+    for text in valid_state_cases:
+        results = run_rules(text)
+        address_found = any(r['label'] == 'LOC' and r['source'] == 'rule' for r in results)
+        assert address_found, f"Expected address match for valid state/territory code: {text!r}"
+
+
 if __name__ == "__main__":
     test_address_detection()

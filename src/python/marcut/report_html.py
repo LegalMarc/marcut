@@ -19,6 +19,13 @@ from urllib.parse import quote as url_quote
 from .report_common import escape_html, get_mime_type, format_file_size, get_binary_icon
 
 
+def _make_private_file(path: str) -> None:
+    try:
+        os.chmod(path, 0o600)
+    except OSError:
+        pass
+
+
 def _get_css() -> str:
     """Return embedded CSS for the report."""
     return """
@@ -2050,11 +2057,15 @@ def generate_html_report(
     html_content = ''.join(html_parts)
     with open(output_path, 'w', encoding='utf-8') as f:
         f.write(html_content)
+    _make_private_file(output_path)
     
     return output_path
 
 
-def generate_report_from_json_file(json_path: str) -> str:
+def generate_report_from_json_file(
+    json_path: str,
+    json_link_path: Optional[str] = None,
+) -> str:
     """
     Generate an HTML report from a JSON scrub report file.
     
@@ -2062,6 +2073,10 @@ def generate_report_from_json_file(json_path: str) -> str:
     
     Args:
         json_path: Path to the JSON scrub report file
+        json_link_path: Final on-disk path the HTML's "View Raw JSON Data"
+            link should point at. Defaults to ``json_path``; pass the final
+            (post-rename) path when rendering from a transactional temp file
+            so the link is not left dangling.
         
     Returns:
         Path to the generated HTML file
@@ -2070,4 +2085,4 @@ def generate_report_from_json_file(json_path: str) -> str:
     report_dir = os.path.dirname(json_path)
     with open(json_path, 'r', encoding='utf-8') as f:
         json_data = json.load(f)
-    return generate_html_report(json_data, json_path, html_path, report_dir)
+    return generate_html_report(json_data, json_link_path or json_path, html_path, report_dir)

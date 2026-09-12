@@ -59,6 +59,10 @@ Marcut is a native macOS redaction application that combines a deterministic rul
   - `python_stdlib/` is included as a controlled stdlib overlay.
 - **Pinned dependencies** (see `requirements-pinned.txt`): python-docx, lxml, regex, requests, numpy, dateparser, pydantic, rapidfuzz, tqdm.
 
+#### Model Catalog
+- The recommended-models list and their parameters (temperature, skip-confidence, display metadata) live in a single `models.json`, mirrored byte-identically across three locations that must stay in sync: `assets/models.json`, `src/python/marcut/models.json`, and `src/swift/MarcutApp/Sources/MarcutApp/Resources/models.json` (the same pattern used for `excluded-words.txt`).
+- `marcut/model_config.py` (Python) and `ModelCatalog.swift`/`BundleResourceLocator.swift` (Swift) are mirrored loaders that resolve the bundled resource path in both dev and production bundle layouts.
+
 #### 3. Local LLM Service (Ollama)
 - **Purpose**: Local inference for entity extraction in enhanced mode.
 - **Key components**:
@@ -207,6 +211,7 @@ Marcut.app/
 ### Loopback Enforcement
 - **Host**: `OLLAMA_HOST` / `MARCUT_OLLAMA_HOST` are sanitized to `127.0.0.1`.
 - **Port**: The port may vary, but inference remains on the local loopback interface.
+- **Public runtime lockdown**: Public app/CLI runs ignore the legacy `MARCUT_ALLOW_REMOTE_OLLAMA` variable entirely. A source-developer-only `MARCUT_DEVELOPER_UNSAFE_ALLOW_REMOTE_OLLAMA=1` override exists for local development against a remote host; it must never be used with confidential documents and is stripped from the environment before any packaged/public build launches Python.
 
 ---
 
@@ -225,8 +230,25 @@ Marcut.app/
 - **Output**: Track changes and report generation scale with span count.
 
 ### Instrumentation
-- `--llm-detail` provides sub-phase timing (load, prompt eval, generation) for Ollama.
+- `--llm-detail` provides sub-phase timing (load, prompt eval, generation) for Ollama; it wraps the same production extraction path rather than replacing it, so enabling it never changes what gets redacted.
 - Phase timings are returned by the pipeline for diagnostics and UI progress.
+
+### Cancellation and Deadlines
+- `marcut/cancellation.py` provides a shared deadline primitive (`ProcessingDeadlineExceeded`, `check_processing_deadline()`, `remaining_seconds()`) read from the `MARCUT_PROCESSING_DEADLINE_MONOTONIC` environment variable.
+- `PythonKitRunner` sets this deadline marker for each timed processing phase and clears it on completion, cancellation, or before a new run.
+- Ollama HTTP requests, the enhanced extraction/validation thread pool, and chunk-processing waits all check the deadline and bound their own timeouts to the remaining time, so a hung request or a user-initiated Stop is bounded rather than left to run to completion.
+
+### Reliability: Transactional Artifact Writes
+- Final redaction artifacts (DOCX, audit report JSON/HTML, scrub report JSON/HTML) are staged to same-directory hidden temp files and only renamed into their final names after the full artifact set writes successfully.
+- A failure or cancellation after partial staging cleans up the temp files rather than leaving a misleading final DOCX with no matching report.
+
+### Robustness: Watchdogs, Preflight Guards, and Wake Recovery
+Several small, focused Swift components harden the app against a wedged interpreter, a full disk, an idle-sleeping Mac, and raw error text leaking into alerts. Each is deliberately decoupled from `DocumentRedactionViewModel`/`PythonBridgeService` and accepts its side-effecting dependency as an injectable parameter so the logic is unit-testable without touching real system state.
+
+- **Watchdogs (`PythonKitBridge.swift` + `DocumentRedactionViewModel`)** — PythonKit cannot safely kill or preempt an embedded CPython call, so two layered watchdogs bound a wedged worker. The *bridge-level* watchdog wraps every `PythonWorkerThread` call in `performWithWatchdog(timeout:operation:)`: if the worker doesn't respond within the timeout, the call throws `PythonBridgeError.workerStalled`, the runner is abandoned, and it rejects further calls (`PythonRunOutcome.stalled`) until the app restarts. The *heartbeat* watchdog in the view model polls each in-flight document every 5s and, after ~120s of total silence (not a per-chunk gap — a slow-but-alive chunk still refreshes `lastHeartbeat` via the streaming keepalive), gives the user a fast, specific "Processing stalled — restart Marcut" message. Per-operation timeouts default sensibly (e.g. `python_init` 60s, `python_warmup` 90s) and are overridable for debugging via `MARCUT_<OPERATION>_WATCHDOG_TIMEOUT`; `MARCUT_DISABLE_WORKER_WATCHDOG_TIMEOUT=1` (or the blanket `MARCUT_DISABLE_PY_TIMEOUTS`) disables the bound entirely for an unbounded wait.
+- **`DiskSpaceCheck.swift`** — pure disk-space preflight helpers run before long, disk-heavy operations (redaction output, model downloads) so a shortage surfaces immediately with an actionable message instead of partway through. Queries "important usage" free bytes (excludes purgeable/cache space), parses `models.json`-style size labels (`"9.0 GB"`) into byte estimates, and returns an `insufficientSpaceMessage` only when it is confident both sides of the comparison are known — otherwise it fails open, leaving the paired write-permission check to guard correctness.
+- **`PowerAssertionGuard.swift`** — an RAII-style, reference-counted holder for a `PreventUserIdleSystemSleep` IOKit power assertion held while documents process or a model downloads, so an idle Mac doesn't sleep mid-run. Overlapping callers (e.g. a download started mid-batch) share one underlying OS assertion; an unmatched `end()` is clamped at zero rather than underflowing, and a refused `acquire()` fails open (a missed assertion is not a correctness issue). It only prevents *idle* sleep, so B5 pairs it with wake-time Ollama health-checking (`DocumentRedactionViewModel.handleSystemWake()`). Uses plain userspace IOKit power-management API, requiring no new sandbox entitlement.
+- **`FailureMessagePresenter.swift`** — the single place that maps a pipeline `error_code` (see `RedactionError.error_code` / `_write_failure_report` in `pipeline.py`) to a short, plain-English user-facing message plus a suggested action, ending in a pointer to the in-app Log Viewer. It keeps raw bridge/traceback text out of the alert headline; the raw code/message/technical details are still logged via `DebugLogger` alongside it, so nothing is lost. Unknown or code-less (bridge-level) failures fall back to a generic message rather than a bare traceback.
 
 ---
 
@@ -287,7 +309,13 @@ Canonical entrypoint for humans: `build_tui.py`.
 ### Signing + Notarization
 - **Deep signing**: Python.framework, python_site extensions, and Ollama binary.
 - **Entitlements**: App Sandbox, local network (Ollama), user-selected file access.
-- **DMG notarization**: Optional for direct distribution builds.
+- **DMG notarization**: Mandatory for public direct distribution builds; local/test skips require the explicit `MARCUT_ALLOW_NOTARIZATION_SKIP=1` override and are not releasable artifacts.
+- **`scripts/verify_entitlements.sh`**: prints app/helper entitlements from a built bundle and fails on forbidden debug/runtime-bypass entitlements (`disable-library-validation`, `allow-jit`, `get-task-allow`). `build_tui.py` runs it automatically after a Developer ID DMG build or existing-DMG notarization.
+
+### Dependency and SBOM Governance
+- `scripts/generate_python_sbom.py` builds a CycloneDX-style SBOM from either the staged repo checkout (default; matches CI's per-PR gate) or `--bundle-root /path/to/MarcutApp.app` (a real built bundle, used for final release verification), including transitive PyPI packages, SwiftPM dependencies from `Package.resolved`, and manual-review entries for the BeeWare `Python.framework` and embedded Ollama binary.
+- `scripts/check_dependency_vulnerabilities.py --sbom docs/release/python-sbom.json` scans shipped PyPI components against OSV.
+- `scripts/release_preflight.sh` gates a release on tests, SBOM freshness, the vulnerability scan, markdown links, version-sync against the last git tag, and a secrets check, in one command.
 
 ---
 

@@ -398,6 +398,28 @@ validate_resource_bundle_runtimes() {
     fi
 }
 
+sync_python_repo_into_site() {
+    # The python_site/marcut staging copy is local, gitignored build output --
+    # setup_beeware_framework.sh populates it once, but nothing keeps it in
+    # sync with src/python/marcut on every source edit. Re-copying it here
+    # (cheap: source files only, not the Python.framework/pip payload) makes
+    # verify_python_repo_sync below a self-healing step instead of a hard
+    # stop that sends the developer off to re-run the full framework setup
+    # for a one-line source change.
+    local repo_root="$1"
+    local source_root="$2"
+    local repo_pkg="${repo_root}"
+
+    if [ -d "${repo_root}/marcut" ]; then
+        repo_pkg="${repo_root}/marcut"
+    fi
+
+    if [ -d "${repo_pkg}" ] && [ -d "${source_root}" ]; then
+        rm -rf "${source_root}/marcut"
+        cp -R "${repo_pkg}" "${source_root}/marcut"
+    fi
+}
+
 verify_python_repo_sync() {
     local repo_root="$1"
     local source_root="$2"
@@ -1095,6 +1117,7 @@ EOF
     log_step "Installing python_site dependencies..."
     cleanup_path "${APP_BUNDLE}/Contents/Resources/python_site"
     if [ -n "$SWIFT_PYTHON_SITE_SOURCE" ] && [ -d "${SWIFT_PYTHON_SITE_SOURCE}" ]; then
+        sync_python_repo_into_site "${PYTHON_SITE_REPO_SOURCE}" "${SWIFT_PYTHON_SITE_SOURCE}"
         verify_python_repo_sync "${PYTHON_SITE_REPO_SOURCE}" "${SWIFT_PYTHON_SITE_SOURCE}"
         cp -R "${SWIFT_PYTHON_SITE_SOURCE}" "${APP_BUNDLE}/Contents/Resources/python_site"
         log_success "python_site installed ($(du -sh "${APP_BUNDLE}/Contents/Resources/python_site" | cut -f1))"
@@ -1211,6 +1234,16 @@ EOF
     done
     if [ -n "$system_prompt_source" ]; then
         cp "$system_prompt_source" "${APP_BUNDLE}/Contents/Resources/system-prompt.txt"
+    fi
+    local models_json_source=""
+    for candidate in "assets/models.json" "src/python/marcut/models.json" "models.json"; do
+        if [ -f "$candidate" ]; then
+            models_json_source="$candidate"
+            break
+        fi
+    done
+    if [ -n "$models_json_source" ]; then
+        cp "$models_json_source" "${APP_BUNDLE}/Contents/Resources/models.json"
     fi
     local assets_dir="${ASSETS_DIR:-${ROOT_DIR}/assets}"
     local swift_resources_dir="${SWIFT_PROJECT_DIR}/Sources/MarcutApp/Resources"
@@ -1389,7 +1422,8 @@ sign_app_bundle() {
     if codesign --verify --deep --strict --verbose=2 "${APP_BUNDLE}"; then
         log_success "Code signature verified"
     else
-        log_warning "Code signature verification failed; continuing to DMG creation for testing"
+        log_error "Code signature verification failed"
+        exit 1
     fi
 
     # Check signature details
@@ -1606,8 +1640,12 @@ notarize_dmg() {
     log_section "Notarizing for App Store"
 
     if [ "${SKIP_NOTARIZATION:-false}" = "true" ]; then
-        log_warning "Skipping notarization (SKIP_NOTARIZATION=true)"
-        return 0
+        if [ "${MARCUT_ALLOW_NOTARIZATION_SKIP:-}" = "1" ]; then
+            log_warning "Skipping notarization (SKIP_NOTARIZATION=true; MARCUT_ALLOW_NOTARIZATION_SKIP=1)"
+            return 0
+        fi
+        log_error "Refusing to skip notarization without MARCUT_ALLOW_NOTARIZATION_SKIP=1"
+        exit 1
     fi
 
     log_info "Using notarization profile: ${NOTARIZATION_PROFILE}"
@@ -1623,8 +1661,13 @@ notarize_dmg() {
 
     if [ "${NOTARIZATION_STATUS}" -ne 0 ]; then
         if echo "${NOTARIZATION_OUTPUT}" | grep -q "No Keychain password item found"; then
-            log_warning "Notarization skipped: keychain profile '${NOTARIZATION_PROFILE}' not found."
-            return 0
+            if [ "${MARCUT_ALLOW_NOTARIZATION_SKIP:-}" = "1" ]; then
+                log_warning "Notarization skipped: keychain profile '${NOTARIZATION_PROFILE}' not found; MARCUT_ALLOW_NOTARIZATION_SKIP=1"
+                return 0
+            fi
+            log_error "Notarization failed: keychain profile '${NOTARIZATION_PROFILE}' not found."
+            echo "${NOTARIZATION_OUTPUT}"
+            exit 1
         fi
         log_error "Notarization failed"
         echo "${NOTARIZATION_OUTPUT}"
@@ -1671,7 +1714,8 @@ notarize_dmg() {
     if spctl -a -t open --context context:primary-signature -v "${FINAL_DMG}"; then
         log_success "DMG is properly notarized and ready for distribution"
     else
-        log_warning "Notarization verification had issues"
+        log_error "Notarization verification failed"
+        exit 1
     fi
 }
 
@@ -1686,10 +1730,20 @@ final_validation() {
     hdiutil verify "${FINAL_DMG}"
 
     if [ "${SKIP_NOTARIZATION:-false}" = "true" ]; then
-        log_warning "Notarization validation skipped (SKIP_NOTARIZATION=true)"
+        if [ "${APPSTORE_IDENTITY_DETECTED:-false}" = "true" ]; then
+            # App Store builds are structurally exempt from notarization (App
+            # Review substitutes for it), so this isn't the unsafe skip the
+            # override below guards against -- don't demand it here.
+            log_warning "Notarization validation skipped (App Store identity; notarization is not applicable for App Store submissions)"
+        elif [ "${MARCUT_ALLOW_NOTARIZATION_SKIP:-}" = "1" ]; then
+            log_warning "Notarization validation skipped (SKIP_NOTARIZATION=true; MARCUT_ALLOW_NOTARIZATION_SKIP=1)"
+        else
+            log_error "Refusing to skip notarization validation without MARCUT_ALLOW_NOTARIZATION_SKIP=1"
+            exit 1
+        fi
     else
         log_step "Notarization validation..."
-        spctl -a -t open --context context:primary-signature -v "${FINAL_DMG}" || true
+        spctl -a -t open --context context:primary-signature -v "${FINAL_DMG}"
     fi
 
     log_success "All validations complete"
@@ -1721,6 +1775,7 @@ clean_app_logs() {
 main() {
     # Parse command line arguments
     SKIP_NOTARIZATION=false
+    APPSTORE_IDENTITY_DETECTED=false
     for arg in "$@"; do
         case $arg in
             --skip-notarization)
@@ -1761,8 +1816,13 @@ main() {
     echo -e "${CYAN}║                     Version ${VERSION}                          ║${NC}"
     echo -e "${CYAN}╚══════════════════════════════════════════════════════════════╝${NC}"
 
-    if [ "$SKIP_NOTARIZATION" = false ]; then
-        if [[ "${DEVELOPER_ID}" != "Developer ID Application"* ]]; then
+    if [[ "${DEVELOPER_ID}" != "Developer ID Application"* ]]; then
+        # Distinguishes this structural, App-Store-exempt skip from an
+        # explicit/unsafe direct-distribution skip, so final_validation
+        # doesn't demand MARCUT_ALLOW_NOTARIZATION_SKIP=1 for a build
+        # that was never notarization-eligible in the first place.
+        APPSTORE_IDENTITY_DETECTED=true
+        if [ "$SKIP_NOTARIZATION" = false ]; then
             log_warning "Notarization requires a Developer ID Application certificate."
             log_warning "Current signing identity: ${DEVELOPER_ID}"
             log_warning "Skipping notarization for App Store identity."
@@ -1795,7 +1855,11 @@ main() {
     log_section "Build Complete! 🎉"
     echo ""
     echo -e "${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-    echo -e "${GREEN}  SUCCESS: ${APP_NAME} v${VERSION} ready for App Store${NC}"
+    if [ "$SKIP_NOTARIZATION" = false ]; then
+        echo -e "${GREEN}  SUCCESS: ${APP_NAME} v${VERSION} notarized and distribution-ready${NC}"
+    else
+        echo -e "${GREEN}  SUCCESS: ${APP_NAME} v${VERSION} built; notarization not completed in this script${NC}"
+    fi
     echo -e "${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
     echo ""
     echo "📦 Distribution Package: ${FINAL_DMG}"
@@ -1804,7 +1868,8 @@ main() {
     if [ "$SKIP_NOTARIZATION" = false ]; then
         echo "✅ Notarized and ready for direct distribution"
     else
-        echo "ℹ️  Notarization skipped for App Store identity"
+        echo "ℹ️  Notarization skipped by explicit local/test or intermediate-build override"
+        echo "🚫 Not ready for public direct distribution until notarization, stapling, and Gatekeeper verification pass"
     fi
     echo ""
     echo "📋 Next Steps:"

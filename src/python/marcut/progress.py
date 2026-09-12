@@ -2,10 +2,14 @@
 Progress tracking and time estimation for Marcut redaction pipeline.
 """
 
+import json
 import time
-from typing import Dict, Any, Callable, Optional
+from typing import Annotated, Any, Callable, Dict, Literal, Optional, Union
 from dataclasses import dataclass
 from enum import Enum
+
+import pydantic.dataclasses
+from pydantic import BaseModel, ConfigDict, Field, TypeAdapter
 
 
 class ProcessingPhase(Enum):
@@ -110,9 +114,17 @@ class TimeEstimator:
         return total
 
 
-@dataclass
+@pydantic.dataclasses.dataclass
 class ProgressUpdate:
-    """Progress update information."""
+    """Progress update information.
+
+    A ``pydantic`` dataclass rather than a plain one (bridge schema
+    migration step 4a, docs/design/bridge_schema_migration.md, #92) so a
+    malformed update (e.g. a non-numeric progress value) raises immediately
+    on construction instead of crossing the Swift bridge as silently wrong
+    data. ``phase`` stays a ``ProcessingPhase`` enum member, not a string --
+    pydantic validates and coerces into the enum without widening it.
+    """
     phase: ProcessingPhase
     phase_progress: float  # 0.0 to 1.0
     overall_progress: float  # 0.0 to 1.0
@@ -122,26 +134,172 @@ class ProgressUpdate:
     message: Optional[str] = None
 
 
+# --- Mass-event models (bridge schema migration step 4b, issue #93) -------
+#
+# `IntelligentRedactionPipeline.process_document`'s `emit_mass_event()`
+# (model_enhanced.py) prints one JSON object per line on stdout -- the
+# channel `PythonKitBridge.swift` reads and `DocumentModels.swift`'s
+# `ingestProgressPayload` parses structurally to drive the enhanced-
+# detection progress bar (see the Notes on issue #93: the design doc's
+# claim that Swift only displays these as text was verified false on
+# 2026-09-09). Each dict `emit_mass_event` is handed must validate against
+# exactly one of these five models -- keyed on `type`, `extra="forbid"` so
+# an unexpected field is caught at the same point a missing/mistyped one
+# would be -- before it is serialized, so a producer-side typo or shape
+# drift raises in Python instead of crossing the bridge as silently wrong
+# or dropped data.
+#
+# Field sets below are copied from each emit site, not inferred from the
+# Swift consumer, per the ticket's instruction.
+
+
+class MassTotalEvent(BaseModel):
+    """Emitted once before extraction begins, with the document's total
+    character count across all chunks."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    type: Literal["mass_total"] = "mass_total"
+    value: int
+
+
+class ChunkStartEvent(BaseModel):
+    """Emitted immediately before a chunk is dispatched to the extractor."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    type: Literal["chunk_start"] = "chunk_start"
+    size: int
+    estimated_time: float
+
+
+class ChunkEndEvent(BaseModel):
+    """Emitted when a chunk's extraction finishes, successfully or not."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    type: Literal["chunk_end"] = "chunk_end"
+    size: int
+
+
+class KeepaliveEvent(BaseModel):
+    """Emitted every ~3s while extraction is in flight so a slow model call
+    doesn't look hung. `chunk`/`total` are only attached once at least one
+    chunk has started, so both stay optional."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    type: Literal["keepalive"] = "keepalive"
+    message: str
+    chunk: Optional[int] = None
+    total: Optional[int] = None
+
+
+class TokenProgressEvent(BaseModel):
+    """Intra-chunk streaming progress emitted as an Ollama chunk extraction
+    call streams NDJSON response lines (docs/design/streaming_progress.md,
+    Option B).
+
+    `eval_count` is `Optional` because Ollama only reports it on the final
+    `done: true` line of the stream: `model.py`'s streaming loop passes
+    `event.get("eval_count")` straight through on every emission, its
+    callback contract is `Callable[[int, Optional[int]], None]`
+    (model.py, llm_timing.py), and the guard around that call deliberately
+    fires when a response `piece` arrived *without* an `eval_count`. So
+    `None` here is the normal case, not a malformation -- typing it `int`
+    made validation reject every intermediate event and, because the
+    callback is invoked inside a `try: ... except Exception: pass`, drop
+    intra-chunk progress silently.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    type: Literal["token_progress"] = "token_progress"
+    chunk_index: int
+    chars: int
+    eval_count: Optional[int] = None
+
+
+MassEvent = Annotated[
+    Union[
+        MassTotalEvent,
+        ChunkStartEvent,
+        ChunkEndEvent,
+        KeepaliveEvent,
+        TokenProgressEvent,
+    ],
+    Field(discriminator="type"),
+]
+
+_MASS_EVENT_ADAPTER: TypeAdapter = TypeAdapter(MassEvent)
+
+# The exact `type` strings `DocumentModels.swift`'s `ingestProgressPayload`
+# switch recognizes, readable from Python without opening the Swift source.
+# This is a mirror, so it is never the authority: the parity test
+# (`test_emitted_type_strings_match_swift_handled_set`) parses the switch out
+# of DocumentModels.swift and asserts models == this constant == the parsed
+# Swift set, so drift on any of the three sides fails the suite (issue #93).
+# `token_progress` is handled there via an explicit no-op case (deliberately
+# ignored, not decoded into the progress bar) rather than driving progress --
+# see the switch's own comment.
+SWIFT_HANDLED_MASS_EVENT_TYPES = frozenset(
+    {"mass_total", "chunk_start", "chunk_end", "keepalive", "token_progress"}
+)
+
+
+def validate_mass_event(payload: Dict[str, Any]) -> MassEvent:
+    """Validate one `emit_mass_event` payload dict against the closed set
+    of mass-event models above.
+
+    Raises `pydantic.ValidationError` on an unknown `type`, a missing or
+    mistyped field, or an unexpected extra field. Deliberately not caught
+    here -- the caller decides how a malformed event (a programming error)
+    should surface; see `emit_mass_event`'s own docstring/comments in
+    model_enhanced.py. This path fires many times per document, so it stays
+    a plain function around a cached `TypeAdapter` rather than doing any
+    per-call model construction beyond what validation itself requires.
+    """
+    return _MASS_EVENT_ADAPTER.validate_python(payload)
+
+
+def serialize_mass_event(event: MassEvent) -> str:
+    """Serialize an already-validated `MassEvent` for the stdout mass-event
+    channel the Swift bridge reads.
+
+    Callers used to serialize the raw input dict they handed to
+    `validate_mass_event` instead of the validated model it returned (#95).
+    Pydantic's default coercion is lax -- a payload like
+    `{"type": "mass_total", "value": "4200"}` validates cleanly (the string
+    coerces to an int) -- so serializing the original dict let an
+    uncoerced value cross the bridge even though validation "passed".
+    Serializing the model here closes that gap.
+
+    `exclude_unset=True` reproduces `json.dumps(payload)`'s behavior of
+    omitting fields the caller never included (e.g. `KeepaliveEvent`'s
+    optional `chunk`/`total` when no chunk is in flight yet) rather than
+    emitting them as explicit `null`s that were never in the original
+    payload.
+    """
+    return json.dumps(event.model_dump(exclude_unset=True))
+
+
 class ProgressTracker:
     """Tracks progress through processing phases with time estimation."""
 
     def __init__(self, callback, text: str, word_count: Optional[int] = None):
+        # Every registered callback receives a single rich ProgressUpdate
+        # object (bridge schema migration step 4a, #92). A parallel
+        # `(chunk, total, message)` three-argument shape used to be
+        # dispatched to callbacks `inspect.signature` reported as taking
+        # exactly three parameters; the audit for #92 found no such
+        # callback registered anywhere in the codebase (CLI and GUI both
+        # register a one-parameter rich callback via
+        # `create_progress_callback`, and the Swift bridge's callback is an
+        # unintrospectable `PyCFunction` that `inspect.signature` cannot
+        # read the arity of, so it always took the rich path too) and
+        # removed the branch. See the audit comment on issue #92 for the
+        # full trace.
         self.callback = callback
-        self.is_simple_callback = False
-
-        # Detect callback signature: simple (chunk, total, message) vs rich (ProgressUpdate)
-        import inspect
-        try:
-            sig = inspect.signature(callback)
-        except (TypeError, ValueError):
-            sig = None
-
-        if sig is not None and len(sig.parameters) == 3:
-            # Simple callback: (chunk, total, message)
-            self.is_simple_callback = True
-        else:
-            # Rich callback: (ProgressUpdate)
-            self.is_simple_callback = False
         self.estimator = TimeEstimator()
         self.complexity = self.estimator.estimate_document_complexity(text, word_count)
         self.start_time = time.time()
@@ -203,16 +361,9 @@ class ProgressTracker:
             message=message
         )
         
-        # Send callback in appropriate format
-        if self.is_simple_callback:
-            # Convert to simple (chunk, total, message) format
-            chunk = int(update.phase_progress * 100)  # 0-100 percentage
-            total = 100
-            message = f"{update.phase_name}: {update.phase_progress:.0%} - {update.message or ''}"
-            self.callback(chunk, total, message)
-        else:
-            # Send rich ProgressUpdate object
-            self.callback(update)
+        # Send the rich ProgressUpdate object -- the only shape this
+        # tracker dispatches (see __init__).
+        self.callback(update)
     
     def complete(self):
         """Mark processing as complete."""

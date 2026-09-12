@@ -1,11 +1,14 @@
 
-from typing import List, Dict, Any, Optional, Set
-import json, requests
+from typing import List, Dict, Any, Optional, Set, Callable
+import json
+import requests
 import os
 import sys
 import re
 import time
+import threading
 from .network_utils import normalize_ollama_base_url
+from .cancellation import check_processing_deadline, remaining_seconds, ProcessingDeadlineExceeded
 
 DEFAULT_EXTRACT_SYSTEM = """Extract entities for legal document redaction. Output JSON only.
 
@@ -44,6 +47,10 @@ _DETERMINER_PREFIX_RE = re.compile(
     re.IGNORECASE,
 )
 _TRAILING_PAREN_S_RE = re.compile(r"\(s\)\s*$", re.IGNORECASE)
+# Trailing possessive suffix (e.g. "Company's" -> "Company", "Companies'" -> "Companies")
+# so an excluded term still matches when a document uses its possessive form.
+# Handles both straight (') and curly (’) apostrophes.
+_TRAILING_POSSESSIVE_RE = re.compile(r"['’]s\s*$|['’]\s*$")
 
 # Optimized cache: split literals (O(1) set lookup) from regex patterns
 _EXCLUDED_CACHE = {
@@ -76,8 +83,108 @@ def _log_app_event(message: str) -> None:
         pass
 
 def get_ollama_base_url() -> str:
-    allow_remote = os.getenv("MARCUT_ALLOW_REMOTE_OLLAMA") == "1"
+    allow_remote = os.getenv("MARCUT_DEVELOPER_UNSAFE_ALLOW_REMOTE_OLLAMA") == "1"
     return normalize_ollama_base_url(loopback_only=not allow_remote)
+
+
+def _repair_unbalanced_json(json_str: str) -> Optional[str]:
+    """
+    Best-effort tolerant repair for truncated/unbalanced JSON -- e.g. an LLM
+    response cut off mid-generation by a token limit before its closing
+    brackets were emitted.
+
+    Walks the string tracking open `{`/`[` and whether we're inside a string
+    literal, then: closes an unterminated string, strips a dangling trailing
+    comma, and appends whatever closing brackets/braces are needed to balance
+    what was opened -- innermost first, matching normal JSON nesting order.
+
+    Returns None when the input isn't a truncation this can safely repair
+    (already balanced, or a closer appears with nothing open), so the caller
+    falls through to raising the original decode error unchanged.
+    """
+    if not json_str:
+        return None
+
+    stack: List[str] = []
+    in_string = False
+    escape = False
+    for ch in json_str:
+        if in_string:
+            if escape:
+                escape = False
+            elif ch == '\\':
+                escape = True
+            elif ch == '"':
+                in_string = False
+            continue
+        if ch == '"':
+            in_string = True
+        elif ch in '{[':
+            stack.append(ch)
+        elif ch in '}]':
+            if not stack:
+                # A closer with nothing open isn't a truncation -- some other
+                # syntax problem. Not safe to guess a repair.
+                return None
+            stack.pop()
+
+    if not stack and not in_string:
+        # Already balanced; whatever made json.loads fail isn't something
+        # bracket/string repair can fix.
+        return None
+
+    repaired = json_str
+    if in_string:
+        repaired += '"'
+    repaired = repaired.rstrip()
+    repaired = re.sub(r',\s*$', '', repaired)
+    closers = {'{': '}', '[': ']'}
+    repaired += ''.join(closers[ch] for ch in reversed(stack))
+    return repaired
+
+
+def _strip_line_comments_outside_strings(json_str: str) -> str:
+    """
+    Strip `//`-style line comments that appear outside JSON string literals.
+
+    A naive `re.sub(r'//.*$', '', ...)` would also truncate legitimate string
+    values that happen to contain `//` -- most commonly a URL entity like
+    `"https://legal.example"` extracted by the LLM -- corrupting otherwise-
+    valid JSON. This walks the string tracking whether we're inside a string
+    literal (respecting `\\"` escapes) and only treats `//` as a comment
+    start when outside one.
+    """
+    out: List[str] = []
+    in_string = False
+    escape = False
+    i = 0
+    n = len(json_str)
+    while i < n:
+        ch = json_str[i]
+        if in_string:
+            out.append(ch)
+            if escape:
+                escape = False
+            elif ch == '\\':
+                escape = True
+            elif ch == '"':
+                in_string = False
+            i += 1
+            continue
+        if ch == '"':
+            in_string = True
+            out.append(ch)
+            i += 1
+            continue
+        if ch == '/' and i + 1 < n and json_str[i + 1] == '/':
+            newline_pos = json_str.find('\n', i)
+            if newline_pos == -1:
+                break
+            i = newline_pos
+            continue
+        out.append(ch)
+        i += 1
+    return ''.join(out)
 
 
 def parse_llm_response(response_text: str) -> Dict[str, Any]:
@@ -90,16 +197,52 @@ def parse_llm_response(response_text: str) -> Dict[str, Any]:
     if code_block_match:
         json_str = code_block_match.group(1).strip()
     else:
-        start = cleaned.find('{')
-        end = cleaned.rfind('}') + 1
-        if start == -1 or end <= start:
-            raise json.JSONDecodeError("No JSON object found in response", cleaned, 0)
-        json_str = cleaned[start:end]
+        start_brace = cleaned.find('{')
+        start_bracket = cleaned.find('[')
+        if start_brace == -1 and start_bracket == -1:
+            raise json.JSONDecodeError("No JSON object or array found in response", cleaned, 0)
 
-    json_str = re.sub(r'(?m)//.*$', '', json_str)
+        if start_bracket != -1 and (start_brace == -1 or start_bracket < start_brace):
+            start = start_bracket
+            end = cleaned.rfind(']') + 1
+        else:
+            start = start_brace
+            end = cleaned.rfind('}') + 1
+
+        if end <= start:
+            # No closing brace anywhere -- likely generation was cut off
+            # before any closer was emitted. Take the rest of the string
+            # from the opening brace and let the tolerant-repair fallback
+            # below attempt to balance it, rather than giving up here.
+            json_str = cleaned[start:]
+        else:
+            json_str = cleaned[start:end]
+
+    json_str = _strip_line_comments_outside_strings(json_str)
     json_str = re.sub(r',\s*(\]|\})', r'\1', json_str)
 
-    return json.loads(json_str)
+    try:
+        loaded = json.loads(json_str)
+    except json.JSONDecodeError as decode_error:
+        # Tolerant-repair fallback for truncated JSON (e.g. the response hit
+        # a token limit mid-object) before giving up: try to balance
+        # brackets/strings and re-parse. If that still doesn't parse, raise
+        # the original error so callers see the real failure, not a repair
+        # artifact.
+        repaired = _repair_unbalanced_json(json_str)
+        if repaired is not None:
+            try:
+                loaded = json.loads(repaired)
+            except json.JSONDecodeError:
+                raise decode_error from None
+        else:
+            raise decode_error
+
+    if isinstance(loaded, list):
+        return {"entities": loaded}
+    if isinstance(loaded, dict):
+        return loaded
+    raise json.JSONDecodeError("Parsed JSON is not an object or array", json_str, 0)
 
 def llama_cpp_extract(
     model_path: str,
@@ -168,7 +311,8 @@ def llama_cpp_extract(
                 entities = data["entities"]
                 all_spans = []
                 for ent in entities:
-                    if not isinstance(ent, dict): continue
+                    if not isinstance(ent, dict):
+                        continue
                     etext = ent.get("text", "")
                     etype = ent.get("type", "")
                     label = _map_label(etype)
@@ -207,13 +351,20 @@ def llama_cpp_extract(
 
 def _map_label(lbl: str) -> Optional[str]:
     t = (lbl or '').strip().upper()
-    if t in ("NAME", "PERSON", "HUMAN", "INDIVIDUAL"): return "NAME"
-    if t in ("ORG", "ORGANIZATION", "COMPANY", "INSTITUTION", "BUSINESS"): return "ORG"
-    if t in ("BRAND", "PRODUCT", "SERVICE"): return "BRAND"
-    if t in ("LOC", "LOCATION", "GPE", "PLACE", "ADDRESS"): return "LOC"
-    if t in ("MONEY", "CURRENCY"): return "MONEY"
-    if t in ("NUMBER", "QUANTITY", "COUNT", "AMOUNT"): return "NUMBER"
-    if t in ("DATE",): return "DATE"
+    if t in ("NAME", "PERSON", "HUMAN", "INDIVIDUAL"):
+        return "NAME"
+    if t in ("ORG", "ORGANIZATION", "COMPANY", "INSTITUTION", "BUSINESS"):
+        return "ORG"
+    if t in ("BRAND", "PRODUCT", "SERVICE"):
+        return "BRAND"
+    if t in ("LOC", "LOCATION", "GPE", "PLACE", "ADDRESS"):
+        return "LOC"
+    if t in ("MONEY", "CURRENCY"):
+        return "MONEY"
+    if t in ("NUMBER", "QUANTITY", "COUNT", "AMOUNT"):
+        return "NUMBER"
+    if t in ("DATE",):
+        return "DATE"
     # IMPORTANT: no fallback. Unknown labels are dropped.
     return None
 
@@ -226,6 +377,10 @@ def _normalize_for_exclusion(text: str) -> str:
     """
     text = _strip_leading_determiner(text)
     text = text.strip().lower()
+    # Strip a trailing possessive ("company's" -> "company", "companies'" -> "companies")
+    # before the generic trailing-punctuation strip below, so possessive forms of an
+    # excluded term normalize to the same key as the base term.
+    text = _TRAILING_POSSESSIVE_RE.sub("", text)
     # Strip common trailing punctuation to allow matching at sentence ends
     # e.g. "Delaware corporation." -> "delaware corporation"
     text = text.rstrip(".,;:!?\"'")
@@ -581,15 +736,49 @@ def _find_entity_spans(text: str, entity_text: str, label: str) -> List[Dict[str
 
     return spans
 
+
+class OllamaStreamIncompleteError(json.JSONDecodeError):
+    """Raised when Ollama's streamed NDJSON response ends before a `done: true`
+    line arrives (e.g. a dropped/reset connection mid-generation).
+
+    Subclasses ``json.JSONDecodeError`` on purpose: per
+    docs/design/streaming_progress.md's cancellation/deadline analysis, a
+    dropped stream must fall through to the *existing* malformed-JSON
+    self-correction retry in ``ollama_extract()`` rather than becoming a new,
+    parallel failure path. The partial text accumulated before the drop is
+    discarded (never treated as a valid, if truncated, answer) -- callers see
+    this exactly like any other unparseable response.
+    """
+
+    def __init__(self, message: str = "Ollama stream ended before completion (no done:true line)"):
+        super().__init__(message, "", 0)
+
+
 def ollama_extract(
     model: str,
     text: str,
     temperature: float = 0.0,
     seed: int = 42,
-    context: Optional[str] = None
+    context: Optional[str] = None,
+    *,
+    stream: bool = False,
+    cancel_event: Optional[threading.Event] = None,
+    on_token_progress: Optional[Callable[[int, Optional[int]], None]] = None,
 ) -> List[Dict[str,Any]]:
     """
     Extract entities using Ollama with a single self-correction retry on malformed JSON.
+
+    ``stream``/``cancel_event``/``on_token_progress`` implement Option B of
+    docs/design/streaming_progress.md: when ``stream=True``, Ollama's
+    `/api/generate` NDJSON stream is iterated instead of waiting for a single
+    blocking response, so progress can be reported from *inside* a single
+    chunk's generation instead of only at chunk boundaries. ``cancel_event``
+    (checked every NDJSON line, in addition to the existing
+    ``check_processing_deadline()``) lets a caller's cooperative-cancellation
+    event unwind a long streaming call without waiting for it to finish.
+    ``on_token_progress(chars_so_far, eval_count_so_far)`` is invoked as text
+    accumulates so the caller can surface finer-grained progress; it is never
+    called after cancellation.
     """
     base_url = get_ollama_base_url()
     try:
@@ -601,27 +790,91 @@ def ollama_extract(
     except (TypeError, ValueError):
         num_predict = 2048
 
-    def _request(prompt: str, format_value) -> str:
+    def _request(prompt: str, format_value, *, seed_override: Optional[int] = None) -> str:
+        check_processing_deadline()
+        if cancel_event is not None and cancel_event.is_set():
+            raise ProcessingDeadlineExceeded("Processing cancelled")
+        body = {
+            "model": model,
+            "prompt": prompt,
+            "format": format_value,
+            "stream": stream,
+            "think": False,   # Disable thinking mode for Qwen 3.5 and similar models
+            "options": {
+                "temperature": max(temperature, 0.1),
+                "seed": seed if seed_override is None else seed_override,
+                "num_ctx": 12288,
+                "num_predict": num_predict,
+                "top_p": 0.9
+            },
+        }
+
+        if not stream:
+            resp = requests.post(
+                f"{base_url}/api/generate",
+                json=body,
+                timeout=remaining_seconds(request_timeout)
+            )
+            resp.raise_for_status()
+            payload = resp.json()
+            # Support both standard and thinking-model response fields
+            return payload.get("response") or payload.get("thinking", "")
+
+        # Streaming branch: iterate Ollama's NDJSON stream, accumulating the
+        # `response` delta from each line. The deadline/cancel_event checks
+        # happen on *every* line, not just once before the request opens --
+        # per the T6 cancellation invariants (docs/design/streaming_progress.md),
+        # a long generation must not be able to run silently past the
+        # deadline between the first line and `done: true`, since `stream=True`
+        # makes `requests`' timeout apply per socket read rather than to the
+        # whole call.
         resp = requests.post(
             f"{base_url}/api/generate",
-            json={
-                "model": model,
-                "prompt": prompt,
-                "format": format_value,
-                "stream": False,  # CRITICAL: Disable streaming to get single JSON response
-                "options": {
-                    "temperature": max(temperature, 0.1),
-                    "seed": seed,
-                    "num_ctx": 12288,
-                    "num_predict": num_predict,
-                    "top_p": 0.9
-                },
-                },
-            timeout=request_timeout
+            json=body,
+            timeout=remaining_seconds(request_timeout),
+            stream=True,
         )
         resp.raise_for_status()
-        payload = resp.json()
-        return payload.get("response", "")
+
+        accumulated_parts: List[str] = []
+        chars_so_far = 0
+        saw_done = False
+        try:
+            for line in resp.iter_lines(decode_unicode=True):
+                if cancel_event is not None and cancel_event.is_set():
+                    # T6 invariant: never emit progress after cancellation --
+                    # stop reading immediately, do not call on_token_progress.
+                    raise ProcessingDeadlineExceeded("Processing cancelled")
+                check_processing_deadline()
+                if not line:
+                    continue
+                try:
+                    event = json.loads(line)
+                except json.JSONDecodeError:
+                    # A blank/keepalive transport line; keep reading.
+                    continue
+                piece = event.get("response") or event.get("thinking") or ""
+                if piece:
+                    accumulated_parts.append(piece)
+                    chars_so_far += len(piece)
+                if on_token_progress is not None and (piece or event.get("eval_count") is not None):
+                    try:
+                        on_token_progress(chars_so_far, event.get("eval_count"))
+                    except Exception:
+                        pass
+                if event.get("done"):
+                    saw_done = True
+                    break
+        finally:
+            resp.close()
+
+        if not saw_done:
+            # Dropped/truncated stream: discard the partial text and route
+            # through the existing malformed-JSON self-correction retry
+            # rather than treating it as a valid (if truncated) answer.
+            raise OllamaStreamIncompleteError()
+
+        return "".join(accumulated_parts)
 
     def _schema_fallback_allowed(err: requests.exceptions.HTTPError) -> bool:
         resp = err.response
@@ -673,10 +926,38 @@ def ollama_extract(
         raise RuntimeError(
             f"Ollama is not reachable at {base_url} or rejected the request. Ensure the Ollama service is running and the model is pulled."
         ) from e
+    except OllamaStreamIncompleteError as e:
+        # Streamed NDJSON response ended before `done: true` (dropped/reset
+        # connection mid-generation). Discard the partial text and fall
+        # through to the same malformed-JSON self-correction retry below --
+        # not a new, parallel failure path.
+        _log_app_event(
+            f"Ollama stream ended before completion: {e}. Treating as malformed response for self-correction retry."
+        )
+        response_text = ""
+
+    if not response_text.strip():
+        # An empty completion is a distinct failure mode from "present but
+        # malformed" JSON: Ollama's sampling is otherwise deterministic for a
+        # fixed seed, so simply retrying the identical request (or even a
+        # differently-worded correction prompt at the same seed) reproduces
+        # the same empty output. Perturb the seed for one direct retry of the
+        # original request before falling through to self-correction below,
+        # so the retry actually has a chance to sample something different.
+        _log_app_event("Ollama returned an empty response; retrying once with a perturbed seed.")
+        try:
+            response_text = _request(base_prompt, schema_format, seed_override=seed + 1)
+        except (
+            requests.exceptions.HTTPError,
+            requests.exceptions.RequestException,
+            requests.exceptions.ConnectionError,
+            OllamaStreamIncompleteError,
+        ):
+            response_text = ""
 
     try:
         parsed = parse_llm_response(response_text)
-    except json.JSONDecodeError as first_error:
+    except json.JSONDecodeError:
         _log_app_event(
             "JSON parsing failed. "
             f"Response length={len(response_text)} chars. Raw response omitted from logs."
@@ -696,7 +977,10 @@ Your invalid response was:
 
 Please correct your response. Return ONLY the valid JSON object that adheres to the schema. Do not include any other text or explanations.
 """
-        corrected_text = _request(correction_prompt, "json")
+        # seed + 2, not + 1: if the empty-response retry above already tried
+        # seed + 1 and still came back empty, reusing it here would repeat
+        # the same failure again -- use a third distinct seed.
+        corrected_text = _request(correction_prompt, "json", seed_override=seed + 2)
         try:
             parsed = parse_llm_response(corrected_text)
         except json.JSONDecodeError as final_error:

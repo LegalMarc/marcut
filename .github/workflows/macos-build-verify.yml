@@ -14,14 +14,16 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      # Self-hosted runner: use its own pre-installed python3.11 rather than
+      # actions/setup-python, which isn't cached here and is slow/unreliable to
+      # provision on demand.
       - name: Set up Python 3.11
         run: python3.11 --version
 
       - name: Install Python deps + tests
         run: |
           python3.11 -m pip install -U pip
-          python3.11 -m pip install -e .
-          python3.11 -m pip install pytest
+          python3.11 -m pip install -e ".[dev]"
           python3.11 scripts/check_dependency_vulnerabilities.py requirements-pinned.txt
           python3.11 scripts/generate_python_sbom.py --check
           python3.11 scripts/check_markdown_links.py
@@ -43,6 +45,9 @@ jobs:
 
       - name: Swift unit tests
         run: swift test --package-path src/swift/MarcutApp
+
+      - name: Release preflight gate
+        run: bash scripts/release_preflight.sh
 
       - name: Build Debug DMG (Swift-only)
         run: |

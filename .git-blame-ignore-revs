@@ -1,0 +1,6 @@
+# Commits listed here are ignored by `git blame` (configure once per clone with:
+# git config blame.ignoreRevsFile .git-blame-ignore-revs)
+#
+# One-time SwiftFormat reformat of the entire Swift source tree -- purely
+# mechanical, no logic changes.
+4d57122a261e204a6b96c095eb9d9d64a37e9929

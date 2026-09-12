@@ -12,7 +12,6 @@ import subprocess
 import sys
 import os
 from pathlib import Path
-from datetime import datetime
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 

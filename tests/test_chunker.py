@@ -2,7 +2,6 @@
 Tests for the chunker module, including Phase 1 small document optimization.
 """
 
-import pytest
 from marcut.chunker import make_chunks, SMALL_DOC_THRESHOLD
 
 
@@ -200,10 +199,54 @@ class TestEdgeCases:
         # Mix of ASCII and multi-byte characters
         text = "Hello 世界! Émoji: 🎉 " * 500
         chunks = make_chunks(text)
-        
+
         # Should not raise and should cover all text
         total_unique_chars = set()
         for chunk in chunks:
             total_unique_chars.update(range(chunk['start'], chunk['end']))
-        
+
         assert len(total_unique_chars) == len(text)
+
+
+class TestOverlapGreaterThanOrEqualMaxLen:
+    """Regression coverage: overlap >= max_len must never hang (issue reachable
+    via the Settings sliders: chunkTokens down to 500 and overlap up to 500,
+    both times 4 in pipeline.py, produce max_len == overlap == 2000)."""
+
+    def test_overlap_equal_to_max_len_terminates_and_covers_text(self):
+        """overlap == max_len must not spin forever; each step must still advance."""
+        text = "a" * 10000
+        chunks = make_chunks(text, max_len=2000, overlap=2000)
+
+        assert chunks[0]['start'] == 0
+        assert chunks[-1]['end'] == len(text)
+        # The sliding window must strictly advance every step.
+        starts = [c['start'] for c in chunks]
+        assert starts == sorted(set(starts)), "chunk start positions must strictly increase"
+
+    def test_overlap_greater_than_max_len_terminates_and_covers_text(self):
+        """overlap > max_len is clamped the same way as overlap == max_len."""
+        text = "a" * 10000
+        chunks = make_chunks(text, max_len=2000, overlap=5000)
+
+        assert chunks[0]['start'] == 0
+        assert chunks[-1]['end'] == len(text)
+        starts = [c['start'] for c in chunks]
+        assert starts == sorted(set(starts)), "chunk start positions must strictly increase"
+
+    def test_overlap_one_less_than_max_len_is_unaffected(self):
+        """The clamp must not change behavior for the normal (overlap < max_len) case."""
+        text = "a" * 10000
+        chunks = make_chunks(text, max_len=2000, overlap=1999)
+
+        for i in range(len(chunks) - 1):
+            assert chunks[i]['end'] - chunks[i + 1]['start'] == 1999
+
+    def test_max_len_non_positive_raises(self):
+        """max_len <= 0 must raise ValueError to prevent infinite loops or invalid chunking."""
+        import pytest
+        with pytest.raises(ValueError, match="max_len must be positive"):
+            make_chunks("Hello world", max_len=0)
+        with pytest.raises(ValueError, match="max_len must be positive"):
+            make_chunks("Hello world", max_len=-10)
+

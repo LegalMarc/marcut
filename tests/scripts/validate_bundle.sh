@@ -117,6 +117,7 @@ main() {
     test_dir_exists "$APP_BUNDLE" "App bundle" || ((failed_tests++))
     test_file_exists "$RESOURCES_DIR/run_python.sh" "run_python.sh script" || ((failed_tests++))
     test_file_exists "$RESOURCES_DIR/excluded-words.txt" "excluded-words.txt" || ((failed_tests++))
+    test_file_exists "$RESOURCES_DIR/models.json" "models.json" || ((failed_tests++))
     if [[ -x "$APP_BUNDLE/Contents/MacOS/ollama" ]]; then
         echo -e "${GREEN}✅${NC} Ollama binary: $APP_BUNDLE/Contents/MacOS/ollama"
     elif [[ -x "$RESOURCES_DIR/ollama" ]]; then

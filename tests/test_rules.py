@@ -5,12 +5,10 @@ Tests regex patterns for EMAIL, PHONE, SSN, CURRENCY, DATE, URL, ADDRESS,
 and signature block name extraction.
 """
 
-import pytest
 import os
 from marcut.rules import (
-    run_rules, EMAIL, PHONE, SSN, CURRENCY, DATE, URL, IPV4, ADDRESS,
-    SIGNATURE_NAME, INDIVIDUAL_NAME, luhn_ok, COMPANY_SUFFIX, NUMBER_BRACKET,
-    _is_excluded, _is_generic_org_span, _is_excluded_combo, _is_specific_org_span
+    run_rules, INDIVIDUAL_NAME, luhn_ok, _is_excluded, _is_generic_org_span, _is_excluded_combo, _is_specific_org_span,
+    _trim_org_jurisdiction_suffix
 )
 
 
@@ -117,9 +115,55 @@ class TestSSNPattern:
         text = "Not an SSN: 12345-6789 or 123456789"
         spans = run_rules(text)
         ssns = [s for s in spans if s['label'] == 'SSN']
-        
+
         # Should not match these
         assert len(ssns) == 0
+
+    def test_undashed_ssn_with_label(self):
+        """Issue #41: undashed SSN is detected when a label sits directly in front of it."""
+        text = "SSN: 123456789"
+        spans = run_rules(text)
+        ssns = [s for s in spans if s['label'] == 'SSN']
+
+        assert len(ssns) == 1
+        assert ssns[0]['text'] == '123456789'
+
+    def test_undashed_ssn_with_social_security_label(self):
+        """Issue #41: 'Social Security Number' label also triggers undashed detection."""
+        text = "Social Security Number: 123456789"
+        spans = run_rules(text)
+        ssns = [s for s in spans if s['label'] == 'SSN']
+
+        assert len(ssns) == 1
+        assert ssns[0]['text'] == '123456789'
+
+    def test_undashed_ssn_with_copula_label(self):
+        """Issue #41: 'SSN is <digits>' phrasing (no colon) still counts as labeled."""
+        text = "His SSN is 123456789 for our records."
+        spans = run_rules(text)
+        ssns = [s for s in spans if s['label'] == 'SSN']
+
+        assert len(ssns) == 1
+        assert ssns[0]['text'] == '123456789'
+
+    def test_undashed_bare_digits_not_ssn_without_label(self):
+        """Issue #41: a bare 9-digit run with no SSN/Social Security label stays ACCOUNT,
+        not SSN -- undashed 9-digit matching is high-false-positive (order numbers,
+        account numbers, etc.) without an adjacent context label."""
+        text = "Order number 123456789 was shipped yesterday."
+        spans = run_rules(text)
+
+        assert not any(s['label'] == 'SSN' for s in spans)
+        assert any(s['label'] == 'ACCOUNT' and s['text'].strip() == '123456789' for s in spans)
+
+    def test_undashed_ssn_requires_adjacent_label_not_just_nearby(self):
+        """Issue #41 regression guard: an 'SSN' mention earlier in the sentence that is
+        NOT immediately in front of the digits must not cause a false-positive match --
+        only a label directly adjacent to the digit run counts."""
+        text = "SSN policy requires safeguarding numbers like 123456789 from disclosure."
+        spans = run_rules(text)
+
+        assert not any(s['label'] == 'SSN' for s in spans)
 
 
 class TestCurrencyPattern:
@@ -329,15 +373,15 @@ class TestLuhnValidation:
     def test_valid_card(self):
         """Test valid credit card number."""
         # Known valid test card number
-        assert luhn_ok("4532015112830366") == True
+        assert luhn_ok("4532015112830366")
     
     def test_invalid_card(self):
         """Test invalid credit card number."""
-        assert luhn_ok("1234567890123456") == False
+        assert not luhn_ok("1234567890123456")
     
     def test_too_short(self):
         """Test number that's too short."""
-        assert luhn_ok("123456789012") == False  # 12 digits
+        assert not luhn_ok("123456789012")  # 12 digits
 
 
 class TestNumberBracketPattern:
@@ -465,6 +509,44 @@ class TestCompanySuffixPattern:
         spans = run_rules(text)
         assert any(s['label'] == 'PHONE' and s['text'] == '4155551234' for s in spans)
 
+    def test_dashed_account_number_not_labeled_phone(self):
+        """Issue #41: a dash-formatted account number must not win the PHONE label just
+        because it happens to match the phone separator grammar -- account-context
+        suppression previously only applied to digit-only PHONE matches, so any
+        separator-formatted match (e.g. "123-456-7890") skipped the account-context
+        check entirely and always kept the PHONE label."""
+        text = "Account Number: 123-456-7890"
+        spans = run_rules(text)
+        labels = {s['label'] for s in spans if '123-456-7890' in s['text']}
+
+        assert 'ACCOUNT' in labels
+        assert 'PHONE' not in labels
+
+    def test_dashed_account_no_variant_not_labeled_phone(self):
+        """Issue #41: 'Account No.' label variant also suppresses the PHONE label."""
+        text = "Account No. 123-456-7890"
+        spans = run_rules(text)
+        labels = {s['label'] for s in spans if '123-456-7890' in s['text']}
+
+        assert 'ACCOUNT' in labels
+        assert 'PHONE' not in labels
+
+    def test_dashed_phone_with_real_phone_context_stays_phone(self):
+        """Negative test: a real dash-formatted phone number in a phone context must
+        keep the PHONE label -- the widened account-context check must not swallow it."""
+        text = "Call us at (555) 123-4567"
+        spans = run_rules(text)
+
+        assert any(s['label'] == 'PHONE' and '555' in s['text'] for s in spans)
+
+    def test_dashed_phone_with_country_code_stays_phone(self):
+        """Negative test: an international phone number with no account-context keyword
+        nearby must still be labeled PHONE."""
+        text = "International: +1 555-123-4567"
+        spans = run_rules(text)
+
+        assert any(s['label'] == 'PHONE' for s in spans)
+
     def test_contract_party_orgs_trim_legal_prose(self):
         text = (
             "This Framework Agreement is made by and between Plant-A Insights Group LLC, "
@@ -483,6 +565,101 @@ class TestCompanySuffixPattern:
 
         assert any(s["text"] == "TIME USA, LLC" for s in orgs)
         assert _is_specific_org_span("TIME USA, LLC") is True
+
+    def test_org_suffix_does_not_bridge_paragraph_boundary(self):
+        """COMPANY_SUFFIX's inter-token separator must not let \\s match \\n: a
+        signature-block NAME line immediately before an unrelated ORG-suffix line
+        must not be absorbed into one bogus cross-boundary ORG span."""
+        text = " Sam Jacobs\nName:   Alex Rivera\nVertex Analytics Group LLC\n"
+        spans = run_rules(text)
+
+        orgs = [s for s in spans if s["label"] == "ORG"]
+        names = [s for s in spans if s["label"] == "NAME"]
+
+        assert any(s["text"] == "Vertex Analytics Group LLC" for s in orgs)
+        assert not any("\n" in s["text"] for s in orgs)
+        assert any(s["text"] == "Alex Rivera" for s in names)
+
+    def test_org_suffix_tail_extension_does_not_bridge_paragraph_boundary(self):
+        """_extend_org_suffix_tail's leading separator must not cross a paragraph
+        boundary either, e.g. a table cell that merely starts with "LLC" must not
+        be fused onto an unrelated ORG name in the preceding cell/paragraph."""
+        text = "Vertex Analytics Group\nLLC filed a motion.\n"
+        spans = run_rules(text)
+        orgs = [s for s in spans if s["label"] == "ORG"]
+
+        assert any(s["text"] == "Vertex Analytics Group" for s in orgs)
+        assert not any("\n" in s["text"] for s in orgs)
+
+        # Same-line extension must still work.
+        text2 = "Vertex Analytics Group LLC filed a motion.\n"
+        orgs2 = [s for s in run_rules(text2) if s["label"] == "ORG"]
+        assert any(s["text"] == "Vertex Analytics Group LLC" for s in orgs2)
+
+    def test_jurisdiction_tail_trimmed_from_org_span(self):
+        """_trim_org_jurisdiction_suffix must actually trim jurisdiction clauses.
+
+        Regression: every \\s inside _JURISDICTION_TAIL_RE was written as a
+        double-escaped "\\\\s" inside a raw string, which regex compiles to a
+        literal backslash followed by 's' -- so the pattern never matched
+        anything at all, silently disabling this trimming entirely.
+        """
+        assert _trim_org_jurisdiction_suffix(
+            "EXOS, LLC, a Delaware limited liability company"
+        ) == "EXOS, LLC"
+        assert _trim_org_jurisdiction_suffix(
+            "TIME USA, LLC, a New York limited liability company"
+        ) == "TIME USA, LLC"
+        assert _trim_org_jurisdiction_suffix(
+            "Acme Inc, a District of Columbia corporation"
+        ) == "Acme Inc"
+        assert _trim_org_jurisdiction_suffix(
+            "Vertex Analytics Group LLC"
+        ) == "Vertex Analytics Group LLC"
+
+    def test_jurisdiction_tail_does_not_bridge_paragraph_boundary(self):
+        """The now-fixed jurisdiction-tail regex must still not match across \\n."""
+        text = "EXOS, LLC, a Delaware\nlimited liability company"
+        assert _trim_org_jurisdiction_suffix(text) == text
+
+    def test_state_name_before_bare_legal_form_word_is_not_bogus_org(self):
+        """COMPANY_SUFFIX's suffix alternation is ORDERED (first-alternative-wins,
+        not longest-match), and bare "Limited" precedes the "Limited Liability
+        Company" phrase in that alternation. So a jurisdiction clause like "a
+        Delaware limited liability company" also produces a raw, standalone
+        2-token candidate "Delaware limited" (state name + bare suffix word,
+        stopping short of "liability company"). _is_generic_org_span must
+        recognize this as jurisdiction-clause noise for both single- and
+        multi-word state names -- not just single-word ones like "Delaware",
+        which happened to already work because "Delaware" alone is a literal
+        entry in excluded-words.txt while "New York" (split into "New" + "York")
+        is not matched by the per-word exclusion check.
+        """
+        text = (
+            "This Agreement is between EXOS, LLC, a Delaware limited liability "
+            "company, and TIME USA, LLC, a New York limited liability company."
+        )
+        orgs = [s["text"] for s in run_rules(text) if s["label"] == "ORG"]
+
+        assert orgs == ["EXOS, LLC", "TIME USA, LLC"]
+
+        # Direct unit coverage: no state name (single- or multi-word) immediately
+        # followed by a bare legal-form word should ever be treated as a
+        # distinctive org name, regardless of which legal-form word follows.
+        for state in ("Delaware", "Nevada", "New York", "North Carolina", "West Virginia"):
+            for suffix in ("limited", "corporation", "company"):
+                assert _is_generic_org_span(f"{state} {suffix}") is True, (
+                    f"{state!r} + {suffix!r} should be generic jurisdiction noise"
+                )
+
+    def test_state_name_as_part_of_longer_distinctive_org_name_still_detected(self):
+        """The jurisdiction-name generic check must only fire when the ENTIRE
+        name portion is a bare state name -- a real company name that merely
+        contains a state name (e.g. "New York Life Insurance Company") must
+        still be detected in full, not suppressed."""
+        text = "Contract with New York Life Insurance Company regarding the policy."
+        orgs = [s["text"] for s in run_rules(text) if s["label"] == "ORG"]
+        assert "New York Life Insurance Company" in orgs
 
 
 class TestRunRulesIntegration:
@@ -534,23 +711,38 @@ class TestExclusionHelpers:
     """Test exclusion helper behavior for determiners and plurals."""
 
     def test_is_excluded_strips_determiners(self):
-        assert _is_excluded("The Agreement") == True
-        assert _is_excluded("An Agreement") == True
+        assert _is_excluded("The Agreement")
+        assert _is_excluded("An Agreement")
 
     def test_is_excluded_handles_plural_variants(self):
-        assert _is_excluded("Agreements") == True
-        assert _is_excluded("Agreement(s)") == True
+        assert _is_excluded("Agreements")
+        assert _is_excluded("Agreement(s)")
+
+    def test_is_excluded_handles_possessive(self):
+        """Issue #41: an excluded term's possessive form must also be excluded --
+        e.g. if "Company" is excluded, "Company's" must not slip through and get
+        redacted just because the apostrophe-s wasn't stripped before lookup."""
+        assert _is_excluded("Company's")
+        assert _is_excluded("Company’s")  # curly apostrophe
+        assert _is_excluded("the Company's")
+        assert _is_excluded("Companies'")  # plural possessive
+
+    def test_is_excluded_possessive_does_not_overmatch(self):
+        """Negative test: possessive stripping must not cause non-excluded terms to be
+        treated as excluded."""
+        assert not _is_excluded("Acme's")
+        assert not _is_excluded("Foobar's")
 
     def test_is_excluded_combo_all_tokens(self):
-        assert _is_excluded_combo("Company Parties") == True
-        assert _is_excluded_combo("Sample 123 Parties") == False
+        assert _is_excluded_combo("Company Parties")
+        assert not _is_excluded_combo("Sample 123 Parties")
 
     def test_is_generic_org_with_determiners(self):
-        assert _is_generic_org_span("The Company") == True
-        assert _is_generic_org_span("Certain Company") == True
-        assert _is_generic_org_span("Sample 123 Company") == False
-        assert _is_generic_org_span("TIME USA, LLC") == False
-        assert _is_generic_org_span("Limited Liability Company") == True
+        assert _is_generic_org_span("The Company")
+        assert _is_generic_org_span("Certain Company")
+        assert not _is_generic_org_span("Sample 123 Company")
+        assert not _is_generic_org_span("TIME USA, LLC")
+        assert _is_generic_org_span("Limited Liability Company")
 
 
 class TestDocIdPattern:
@@ -581,11 +773,65 @@ class TestSentenceBoundary:
         from marcut.rules import _contains_sentence_boundary
         
         # Should NOT be boundaries
-        assert _contains_sentence_boundary("U.S. Navy") == False
-        assert _contains_sentence_boundary("Mr. Smith") == False
-        assert _contains_sentence_boundary("St. John") == False
-        assert _contains_sentence_boundary("Inc. A") == False
+        assert not _contains_sentence_boundary("U.S. Navy")
+        assert not _contains_sentence_boundary("Mr. Smith")
+        assert not _contains_sentence_boundary("St. John")
+        assert not _contains_sentence_boundary("Inc. A")
         
         # Should BE boundaries
-        assert _contains_sentence_boundary("End. Start") == True
-        assert _contains_sentence_boundary("Company. Then") == True
+        assert _contains_sentence_boundary("End. Start")
+        assert _contains_sentence_boundary("Company. Then")
+
+
+class TestSignatureLineExclusions:
+    """Test signature block name extraction respects exclusion rules."""
+
+    def test_excluded_corporate_titles_not_emitted(self):
+        text = "Name: Authorized Representative\nTitle: Officer"
+        spans = run_rules(text)
+        names = [s for s in spans if s["label"] == "NAME"]
+        assert names == []
+
+    def test_multiple_names_with_one_excluded_title(self):
+        text = "Name: Authorized Representative    John Smith"
+        spans = run_rules(text)
+        names = [s for s in spans if s["label"] == "NAME"]
+        assert len(names) == 1
+        assert names[0]["text"] == "John Smith"
+        assert text[names[0]["start"]:names[0]["end"]] == "John Smith"
+
+
+class TestDefinedTermPersonFallback:
+    """Test defined-term person name fallback pattern."""
+
+    def test_single_quote_and_curly_quote_variants(self):
+        text = "John Doe ('Doe') entered into the contract with Jane Smith (‘Smith’)."
+        spans = run_rules(text)
+        names = [s for s in spans if s["label"] == "NAME"]
+        name_texts = {s["text"] for s in names}
+        assert "John Doe" in name_texts
+        assert "Doe" in name_texts
+        assert "Jane Smith" in name_texts
+        assert "Smith" in name_texts
+        for s in names:
+            assert text[s["start"]:s["end"]] == s["text"]
+
+    def test_excluded_terms_not_emitted(self):
+        text = "The Company (“Company”) agreed to the terms."
+        spans = run_rules(text)
+        names = [s for s in spans if s["label"] == "NAME"]
+        assert names == []
+
+
+class TestOrgPrefixTrimWhitespacePreservation:
+    """Test that trimming excluded prefix preserves exact character offsets."""
+
+    def test_irregular_whitespace_preserves_text_and_bounds(self):
+        text = "FOR VALUE RECEIVED,   Acme Corp hereby promises to pay."
+        spans = run_rules(text)
+        orgs = [s for s in spans if s["label"] == "ORG"]
+        assert len(orgs) >= 1
+        acme_org = next(s for s in orgs if "Acme" in s["text"])
+        assert acme_org["text"] == "Acme Corp"
+        assert text[acme_org["start"]:acme_org["end"]] == acme_org["text"]
+

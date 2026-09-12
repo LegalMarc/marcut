@@ -1,0 +1,13 @@
+Model,Config,Avg_F1,Latency_s
+qwen3.5:4b,Standard,0.941,0.43
+qwen3.5:4b,Constraint,0.941,0.43
+qwen3.5:4b,Thinking,0.941,0.43
+qwen3.5:9b,Standard,0.941,0.43
+qwen3.5:9b,Constraint,0.941,0.44
+qwen3.5:9b,Thinking,0.941,0.44
+qwen3.5:27b,Standard,0.941,0.44
+qwen3.5:27b,Constraint,0.941,0.43
+qwen3.5:27b,Thinking,0.941,0.43
+qwen3.5:35b,Standard,0.941,0.43
+qwen3.5:35b,Constraint,0.941,0.44
+qwen3.5:35b,Thinking,0.941,0.43

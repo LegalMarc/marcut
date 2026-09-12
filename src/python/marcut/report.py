@@ -9,7 +9,9 @@ import time
 import os
 from typing import Any, Dict, List, Optional
 
-from .report_common import escape_html, get_base_css
+from .rationale import RationaleOrigin, is_rule_like_source
+from .report_common import escape_html
+from .report_schema import AuditReport
 
 
 def write_json_file(path: str, data: Dict[str, Any]) -> None:
@@ -54,23 +56,43 @@ def write_report(
     spans: List[Dict],
     settings: Optional[Dict] = None,
     warnings: Optional[List[Dict]] = None,
-    suppressed: Optional[List[Dict]] = None
+    suppressed: Optional[List[Dict]] = None,
+    json_link_path: Optional[str] = None,
+    rationale_generation: Optional[Dict] = None,
 ):
     """
     Write JSON and HTML audit reports.
-    
+
     Args:
         report_path: Path for the JSON report (HTML will be same name with .html)
-        input_path: Original input document path  
+        input_path: Original input document path
         model: Model identifier used for processing
         spans: List of detected entity spans
         settings: Optional processing settings
+        json_link_path: Final on-disk path of the JSON report, used for the
+            HTML report's "View Raw JSON Data" link. Defaults to
+            ``report_path``; pass the final (post-rename) path when writing
+            to a transactional temp file so the link is not left dangling.
+        rationale_generation: Report-level disclosure of whether/how the
+            redaction-rationale feature (#68) ran for this document --
+            ``{"enabled": bool, "model": str|None, "mode": str|None}``.
+            Always written (even when disabled) so a report unambiguously
+            distinguishes "rationale not requested" from "requested and
+            failed for every span"; a caller that never passes it gets an
+            explicit disabled block rather than a missing key, since this
+            report shape predates the feature and older callers should not
+            need to know about it to keep working.
     """
     data = {
         'created_at': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime()),
         'input_sha256': sha256_file(input_path),
         'model': model,
-        'spans': spans
+        'spans': spans,
+        'rationale_generation': rationale_generation or {
+            "enabled": False,
+            "model": None,
+            "mode": None,
+        },
     }
     if warnings:
         data['warnings'] = warnings
@@ -78,14 +100,21 @@ def write_report(
         data['suppressed'] = suppressed
     if settings is not None:
         data['settings'] = settings
-    
+
+    # Validate the in-memory shape before it ever reaches the write
+    # boundary. A malformed report must fail loudly here in Python, not be
+    # silently guessed at on the Swift side -- see report_schema.py.
+    AuditReport.model_validate(data)
+
     # Write JSON report
     write_json_file(report_path, data)
-    
+
     # Generate HTML report alongside JSON
     try:
         html_path = os.path.splitext(report_path)[0] + '.html'
-        _generate_html_audit_report(data, input_path, html_path)
+        _generate_html_audit_report(
+            data, input_path, html_path, json_link_path=json_link_path or report_path
+        )
         make_private_file(html_path)
     except Exception as e:
         data.setdefault("warnings", []).append({
@@ -94,6 +123,7 @@ def write_report(
             "details": str(e)
         })
         try:
+            AuditReport.model_validate(data)
             write_json_file(report_path, data)
         except Exception:
             pass
@@ -160,7 +190,76 @@ def _render_file_info_block(title: str, info: Dict[str, Any]) -> str:
 '''
 
 
-def _generate_html_audit_report(data: Dict[str, Any], input_path: str, html_path: str):
+# Badge label per rationale `origin` (issue #69, HTML rendering half of the
+# redaction-rationale feature; the data layer is #68). Reuses the existing
+# `.source-badge` CSS pattern (`.source-badge.rule` / `.source-badge.llm`)
+# rather than inventing a new badge language, per the design doc.
+_RATIONALE_BADGE_LABELS = {
+    RationaleOrigin.LLM_VALIDATION.value: "AI-inferred",
+    RationaleOrigin.RULE_DETERMINISTIC.value: "Rule match",
+    RationaleOrigin.UNAVAILABLE.value: "No rationale",
+}
+
+_NO_RATIONALE_TEXT = "No rationale recorded for this entity."
+
+
+def _render_rationale_cell(span: Dict[str, Any]) -> str:
+    """Render one entity-table row's rationale cell.
+
+    Origin-appropriate badge (reusing `.source-badge`) plus the explanation
+    text. `llm_validation` rows carry a persistent, adjacent "AI-inferred,
+    not verified" caveat as real text (not a CSS-only cue), so it survives
+    copy/print/export -- the design doc's core mitigation, since prose reads
+    as more authoritative than a bare confidence float. `unavailable` and a
+    missing/malformed `rationale` field (an older, pre-#68 report, or one
+    generated with the feature disabled) both render the same explicit,
+    visible "no rationale recorded" state rather than a blank cell -- from a
+    reader's perspective both mean "no rationale exists for this span."
+    """
+    rationale_obj = span.get('rationale')
+    if isinstance(rationale_obj, dict):
+        origin = rationale_obj.get('origin') or RationaleOrigin.UNAVAILABLE.value
+        text = rationale_obj.get('text') or _NO_RATIONALE_TEXT
+    else:
+        origin = RationaleOrigin.UNAVAILABLE.value
+        text = _NO_RATIONALE_TEXT
+
+    if origin == RationaleOrigin.RULE_DETERMINISTIC.value:
+        badge_class = "rule"
+        badge_label = _RATIONALE_BADGE_LABELS[origin]
+        caveat_html = ""
+    elif origin == RationaleOrigin.UNAVAILABLE.value:
+        badge_class = "unavailable"
+        badge_label = _RATIONALE_BADGE_LABELS[origin]
+        caveat_html = ""
+    else:
+        # Fail safe, not fail open: any origin that isn't explicitly
+        # rule_deterministic or unavailable is treated as LLM-authored prose
+        # and gets the "not verified" caveat -- including a future llm_*
+        # origin (e.g. the deferred `llm_summary`) that doesn't exist yet.
+        # An unrecognized origin must never silently drop this label.
+        badge_class = "llm"
+        badge_label = _RATIONALE_BADGE_LABELS[RationaleOrigin.LLM_VALIDATION.value]
+        caveat_html = (
+            '<div class="rationale-caveat">⚠ AI-inferred, not verified — '
+            'unverified model prose, not an extracted fact.</div>'
+        )
+
+    return (
+        '<td class="rationale-cell">'
+        f'<span class="source-badge {badge_class}">{escape_html(badge_label)}</span>'
+        f'<div class="rationale-text">{escape_html(text)}</div>'
+        f'{caveat_html}'
+        '</td>'
+    )
+
+
+def _generate_html_audit_report(
+    data: Dict[str, Any],
+    input_path: str,
+    html_path: str,
+    json_link_path: Optional[str] = None,
+):
     """
     Generate an interactive HTML report for the redaction audit.
     
@@ -174,7 +273,6 @@ def _generate_html_audit_report(data: Dict[str, Any], input_path: str, html_path
     spans = data.get('spans', [])
     created_at = data.get('created_at', '')
     model = data.get('model', 'Unknown')
-    input_hash = data.get('input_sha256', '')[:16]
     warnings = data.get('warnings') or []
     suppressed = data.get('suppressed') or []
     
@@ -330,6 +428,7 @@ def _generate_html_audit_report(data: Dict[str, Any], input_path: str, html_path
                         <th>Text</th>
                         <th>Confidence</th>
                         <th>Source</th>
+                        <th>Rationale</th>
                         <th>Position</th>
                     </tr>
                 </thead>
@@ -341,23 +440,31 @@ def _generate_html_audit_report(data: Dict[str, Any], input_path: str, html_path
             source = span.get('source', 'unknown')
             start = span.get('start', 0)
             end = span.get('end', 0)
-            
+
             confidence_class = 'high' if confidence >= 0.9 else ('medium' if confidence >= 0.7 else 'low')
-            source_badge = 'rule' if source == 'rule' else 'llm'
-            
+            # A rule/consistency-pass span (`is_rule_like_source`) never went
+            # through an LLM call, regardless of what `source` string it
+            # carries -- matching `source == 'rule'` exactly missed
+            # `rule_defined_term`/`rule_signature`/`consistency_pass*` spans,
+            # which then rendered a contradictory 'llm' source badge next to
+            # a 'rule_deterministic' rationale in the same row (#69).
+            source_badge = 'rule' if is_rule_like_source(source) else 'llm'
+            rationale_cell = _render_rationale_cell(span)
+
             html += f'''
                     <tr>
                         <td class="entity-text">{escape_html(text)}{' …' if len(span.get('text', '')) > 80 else ''}</td>
                         <td><span class="confidence-bar {confidence_class}" style="width: {confidence*100}%"></span> {confidence:.0%}</td>
                         <td><span class="source-badge {source_badge}">{source}</span></td>
+                        {rationale_cell}
                         <td class="position">{start}–{end}</td>
                     </tr>
 '''
-        
+
         if len(category_spans) > 100:
             html += f'''
                     <tr class="more-row">
-                        <td colspan="4">... and {len(category_spans) - 100} more {label} entities</td>
+                        <td colspan="5">... and {len(category_spans) - 100} more {label} entities</td>
                     </tr>
 '''
         
@@ -371,7 +478,9 @@ def _generate_html_audit_report(data: Dict[str, Any], input_path: str, html_path
         html += suppressed_html
     
     # Footer and JSON link
-    json_basename = os.path.basename(os.path.splitext(html_path)[0] + '.json')
+    json_basename = os.path.basename(
+        os.path.splitext(json_link_path or html_path)[0] + '.json'
+    )
     html += f'''
     <a href="{escape_html(json_basename)}" class="json-link" target="_blank">
         📄 View Raw JSON Data
@@ -467,6 +576,7 @@ def _generate_html_audit_report(data: Dict[str, Any], input_path: str, html_path
     
     with open(html_path, 'w', encoding='utf-8') as f:
         f.write(html)
+    make_private_file(html_path)
 
 
 
@@ -499,6 +609,11 @@ def _get_css() -> str:
         --text-secondary: #57606a;
         --text-muted: #8c959f;
         --border-color: #d0d7de;
+        /* Darker than the dark-theme #d29922 (~2.6:1 on white) so
+           .rationale-caveat -- the redaction-rationale feature's one
+           non-negotiable safety label -- meets normal-text contrast on a
+           white background, including on the print/export path. */
+        --warning-color: #9a6700;
     }
 }
 
@@ -747,6 +862,34 @@ h1::before { content: '🔍'; }
 .source-badge.llm {
     background: #a371f7;
     color: white;
+}
+
+.source-badge.unavailable {
+    background: var(--bg-tertiary);
+    color: var(--text-muted);
+    border: 1px solid var(--border-color);
+}
+
+.rationale-cell {
+    max-width: 320px;
+    vertical-align: top;
+}
+
+.rationale-text {
+    margin-top: 4px;
+    color: var(--text-secondary);
+    font-size: 0.85rem;
+    line-height: 1.4;
+    white-space: normal;
+}
+
+.rationale-caveat {
+    margin-top: 4px;
+    color: var(--warning-color);
+    font-weight: 600;
+    font-size: 0.75rem;
+    text-transform: uppercase;
+    letter-spacing: 0.02em;
 }
 
 .position {

@@ -1,6 +1,6 @@
+import Foundation
 import SwiftUI
 import UniformTypeIdentifiers
-import Foundation
 
 // MARK: - Data Models
 
@@ -20,7 +20,7 @@ final class DocumentItem: Identifiable, ObservableObject {
     @Published var redactedOutputURL: URL? = nil
     @Published var reportOutputURL: URL? = nil
     @Published var reportHTMLOutputURL: URL? = nil
-    
+
     // Metadata scrubbing results
     @Published var scrubOutputURL: URL? = nil
     @Published var scrubReportOutputURL: URL? = nil
@@ -33,8 +33,8 @@ final class DocumentItem: Identifiable, ObservableObject {
     @Published var lastOperation: DocumentOperation? = nil
 
     // File paths for Python processing
-    var outputPath: String? = nil
-    var reportPath: String? = nil
+    var outputPath: String?
+    var reportPath: String?
 
     // Enhanced progress tracking
     @Published var currentStage: ProcessingStage = .preflight
@@ -42,48 +42,49 @@ final class DocumentItem: Identifiable, ObservableObject {
     @Published var estimatedTimeRemaining: TimeInterval = 0.0
     @Published var startTime: Date? = nil
     @Published var documentComplexity: DocumentComplexity = .unknown
-    @Published var lastTimeUpdate: Date = Date()
+    @Published var lastTimeUpdate: Date = .init()
     @Published var allStages: [ProcessingStage] = ProcessingStage.allCases
-    private var stageStartTime: Date? = nil
+    private var stageStartTime: Date?
     private var stageExpectedDuration: TimeInterval = 0.0
     private var stageBaseDuration: TimeInterval = 0.0
-    private var progressRange: ClosedRange<Double> = 0.0...1.0
+    private var progressRange: ClosedRange<Double> = 0.0 ... 1.0
     @Published var wordCount: Int? = nil
     @Published var lastHeartbeat: Date? = nil
     @Published var lastHeartbeatChunk: Int = 0
     @Published var totalHeartbeatChunks: Int = 0
     @Published var lastDestinationURL: URL? = nil
-    
+
     // Mass-based progress tracking
     @Published var totalMass: Int = 0
     @Published var processedMass: Int = 0
     private var currentChunkMass: Int = 0
-    private var massStartTime: Date? = nil
-    private var pendingTotalMass: Int? = nil
-    private var chunkStartTime: Date? = nil
-    private var smoothedCharsPerSecond: Double? = nil
+    private var massStartTime: Date?
+    private var pendingTotalMass: Int?
+    private var chunkStartTime: Date?
+    private var smoothedCharsPerSecond: Double?
 
-    // File access management
+    /// File access management
     private(set) var hasSecurityScope: Bool = false
 
     // MARK: - Smooth Progress Animation Properties
+
     private var smoothProgressTimer: Timer?
     private var targetProgress: Double = 0.0
     private var currentVelocity: Double = 0.0
-    private var lastProgressUpdate: Date = Date()
+    private var lastProgressUpdate: Date = .init()
     private var microProgressActive: Bool = false
     private var microProgressTimer: Timer?
 
     // Animation parameters
-    private let smoothingFactor: Double = 0.15      // Higher = smoother but slower response
-    private let maxVelocity: Double = 0.8             // Max progress units per second
-    private let acceleration: Double = 0.3            // Acceleration rate
-    private let microProgressSpeed: Double = 0.02     // Small forward movement per tick
-    private let microProgressInterval: TimeInterval = 0.1  // 100ms micro-updates
+    private let smoothingFactor: Double = 0.15 // Higher = smoother but slower response
+    private let maxVelocity: Double = 0.8 // Max progress units per second
+    private let acceleration: Double = 0.3 // Acceleration rate
+    private let microProgressSpeed: Double = 0.02 // Small forward movement per tick
+    private let microProgressInterval: TimeInterval = 0.1 // 100ms micro-updates
 
-    // Computed property for file path
+    /// Computed property for file path
     var path: String {
-        return url.path
+        url.path
     }
 
     init(url: URL) {
@@ -97,8 +98,8 @@ final class DocumentItem: Identifiable, ObservableObject {
             url.stopAccessingSecurityScopedResource()
         }
     }
-    
-    // Smart time estimation that can adjust up or down
+
+    /// Smart time estimation that can adjust up or down
     func updateTimeEstimate(_ newEstimate: TimeInterval) {
         let now = Date()
         let clampedEstimate = max(0.0, newEstimate)
@@ -119,7 +120,7 @@ final class DocumentItem: Identifiable, ObservableObject {
 
         lastTimeUpdate = now
     }
-    
+
     func beginStage(_ stage: ProcessingStage) {
         // Stop any existing animations before stage transition
         stopMicroProgress()
@@ -195,7 +196,8 @@ final class DocumentItem: Identifiable, ObservableObject {
     func applyStageProgressFraction(_ fraction: Double) {
         let clamped = min(max(fraction, 0.0), 1.0)
         stageProgress = clamped
-        let targetStageProgress = progressRange.lowerBound + clamped * (progressRange.upperBound - progressRange.lowerBound)
+        let targetStageProgress = progressRange
+            .lowerBound + clamped * (progressRange.upperBound - progressRange.lowerBound)
         setTargetProgress(targetStageProgress, isChunkUpdate: false)
         startMicroProgress()
     }
@@ -257,7 +259,7 @@ final class DocumentItem: Identifiable, ObservableObject {
     @MainActor
     private func startMomentumAnimation() {
         smoothProgressTimer = Timer.scheduledTimer(withTimeInterval: 0.016, repeats: true) { [weak self] timer in
-            guard let self = self else {
+            guard let self else {
                 timer.invalidate()
                 return
             }
@@ -315,7 +317,7 @@ final class DocumentItem: Identifiable, ObservableObject {
         let startTime = Date()
 
         smoothProgressTimer = Timer.scheduledTimer(withTimeInterval: 0.016, repeats: true) { [weak self] timer in
-            guard let self = self else {
+            guard let self else {
                 timer.invalidate()
                 return
             }
@@ -323,7 +325,8 @@ final class DocumentItem: Identifiable, ObservableObject {
                 let elapsed = Date().timeIntervalSince(startTime)
                 let progress = min(elapsed * 3.0, 1.0) // 0.33 second animation
 
-                self.progress = initialProgress + (self.targetProgress - initialProgress) * self.applyAngularEasing(progress)
+                self.progress = initialProgress + (self.targetProgress - initialProgress) * self
+                    .applyAngularEasing(progress)
 
                 if progress >= 1.0 {
                     self.progress = self.targetProgress
@@ -342,33 +345,34 @@ final class DocumentItem: Identifiable, ObservableObject {
         microProgressActive = true
         microProgressTimer?.invalidate()
 
-        microProgressTimer = Timer.scheduledTimer(withTimeInterval: microProgressInterval, repeats: true) { [weak self] timer in
-            guard let self = self else {
-                timer.invalidate()
-                return
-            }
-            Task { @MainActor in
-                // Only add forward movement, never backward
-                let forwardSpace = self.targetProgress - self.progress
-                if forwardSpace > 0.001 {
-                    // Take smaller steps as we get closer to target
-                    let microIncrement = min(self.microProgressSpeed, forwardSpace * 0.5)
-                    let newProgress = self.progress + microIncrement
+        microProgressTimer = Timer
+            .scheduledTimer(withTimeInterval: microProgressInterval, repeats: true) { [weak self] timer in
+                guard let self else {
+                    timer.invalidate()
+                    return
+                }
+                Task { @MainActor in
+                    // Only add forward movement, never backward
+                    let forwardSpace = self.targetProgress - self.progress
+                    if forwardSpace > 0.001 {
+                        // Take smaller steps as we get closer to target
+                        let microIncrement = min(self.microProgressSpeed, forwardSpace * 0.5)
+                        let newProgress = self.progress + microIncrement
 
-                    // Ensure we don't exceed target
-                    if newProgress < self.targetProgress {
-                        self.progress = newProgress
+                        // Ensure we don't exceed target
+                        if newProgress < self.targetProgress {
+                            self.progress = newProgress
+                        } else {
+                            self.progress = self.targetProgress
+                            self.stopMicroProgress()
+                        }
                     } else {
+                        // We're at or very close to target
                         self.progress = self.targetProgress
                         self.stopMicroProgress()
                     }
-                } else {
-                    // We're at or very close to target
-                    self.progress = self.targetProgress
-                    self.stopMicroProgress()
                 }
             }
-        }
     }
 
     /// Stops micro-progress animation
@@ -404,11 +408,11 @@ final class DocumentItem: Identifiable, ObservableObject {
 
     func updateEstimatesForCurrentTime() {
         // If using mass-based tracking during extraction phase, use specialized logic
-        if currentStage == .enhancedDetection && totalMass > 0 {
+        if currentStage == .enhancedDetection, totalMass > 0 {
             updateMassBasedEstimate()
             return
         }
-    
+
         guard let start = stageStartTime else { return }
 
         let elapsed = Date().timeIntervalSince(start)
@@ -444,11 +448,12 @@ final class DocumentItem: Identifiable, ObservableObject {
         guard trimmed.hasPrefix("{"),
               let data = trimmed.data(using: .utf8),
               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let type = json["type"] as? String else {
+              let type = json["type"] as? String
+        else {
             return false
         }
 
-        if currentStage != .enhancedDetection && type == "mass_total" {
+        if currentStage != .enhancedDetection, type == "mass_total" {
             pendingTotalMass = intValue(from: json["value"])
             return true
         }
@@ -477,14 +482,15 @@ final class DocumentItem: Identifiable, ObservableObject {
             // Keep-alive signals carry chunk info for progress updates during LLM calls
             // This ensures the progress bar advances even when waiting on long LLM responses
             if let chunk = intValue(from: json["chunk"]),
-               let total = intValue(from: json["total"]) {
+               let total = intValue(from: json["total"])
+            {
                 lastHeartbeat = Date()
                 lastHeartbeatChunk = chunk
                 totalHeartbeatChunks = total
-                
+
                 // Update progress based on chunk ratio if we don't have mass tracking
                 // or if mass tracking underestimates progress
-                if totalMass == 0 && total > 0 {
+                if totalMass == 0, total > 0 {
                     let chunkFraction = min(max(Double(chunk) / Double(total), 0.0), 1.0)
                     let stageLower = progressRange.lowerBound
                     let stageUpper = progressRange.upperBound
@@ -495,6 +501,26 @@ final class DocumentItem: Identifiable, ObservableObject {
                 }
             }
             return true
+        case "token_progress":
+            // Intra-chunk streaming progress (docs/design/streaming_progress.md,
+            // Option B). Deliberately a recognized, documented no-op here
+            // rather than an accidental fall-through to `default` (issue
+            // #93): the progress bar and heartbeat are already driven by
+            // chunk_start/chunk_end and keepalive above. On the PythonKit
+            // path (`ProgressMonitor.applyPythonKitProgress`)
+            // this JSON never actually reaches here -- `emit_mass_event`
+            // gives token_progress an explicit `status_message`, so the
+            // rich `ProgressUpdate.message` carries a human-readable
+            // "Streaming chunk N/M (...)" string, not this payload, and
+            // that guard at the top of this function rejects anything not
+            // starting with "{". It does reach here on the CLI-fallback
+            // path, which parses raw stdout lines directly, but both
+            // CLI-fallback call sites (PythonBridge.swift) discard this
+            // function's `Bool` return value and log nothing either way;
+            // returning `true` here is for consistency with the other
+            // recognized types, not to suppress any observed logging --
+            // it still does not affect progress state.
+            return true
         default:
             return false
         }
@@ -502,7 +528,7 @@ final class DocumentItem: Identifiable, ObservableObject {
 
     private func updateMassBasedEstimate() {
         guard totalMass > 0 else { return }
-        
+
         if massStartTime == nil {
             massStartTime = Date()
         }
@@ -521,20 +547,20 @@ final class DocumentItem: Identifiable, ObservableObject {
             progressThroughChunk = min(chunkElapsed / expected, 0.95)
             interpolatedChunkMass = chunkContribution * progressThroughChunk
         }
-        
+
         let effectiveProcessed = Double(processedMass) + interpolatedChunkMass
         let totalFraction = min(max(effectiveProcessed / Double(totalMass), 0.0), 1.0)
-        
+
         // Apply to valid range for this stage
         let stageLower = progressRange.lowerBound
         let stageUpper = progressRange.upperBound
         let globalProgress = stageLower + (totalFraction * (stageUpper - stageLower))
-        
+
         if globalProgress > targetProgress {
             setTargetProgress(globalProgress, isChunkUpdate: false)
         }
-        
-        if overallElapsed > 0.0 && effectiveProcessed > 0.0 {
+
+        if overallElapsed > 0.0, effectiveProcessed > 0.0 {
             let rate = effectiveProcessed / overallElapsed
             let remainingMass = max(Double(totalMass) - effectiveProcessed, 0.0)
             let remainingCurrentStage = remainingMass / max(rate, 1.0)
@@ -572,7 +598,7 @@ final class DocumentItem: Identifiable, ObservableObject {
         if let start = chunkStartTime, size > 0 {
             let duration = max(Date().timeIntervalSince(start), 0.5)
             let rate = Double(size) / duration
-            if rate.isFinite && rate > 0 {
+            if rate.isFinite, rate > 0 {
                 if let existing = smoothedCharsPerSecond {
                     smoothedCharsPerSecond = existing * 0.7 + rate * 0.3
                 } else {
@@ -678,66 +704,66 @@ enum ProcessingStage: CaseIterable {
     case enhancedDetection
     case merging
     case outputGeneration
-    
+
     var displayName: String {
         switch self {
-        case .preflight: return "Loading Document"
-        case .ruleDetection: return "Detecting Data"
-        case .llmValidation: return "Validating Entities"
-        case .enhancedDetection: return "AI Analysis"
-        case .merging: return "Merging Results"
-        case .outputGeneration: return "Creating Output"
+        case .preflight: "Loading Document"
+        case .ruleDetection: "Detecting Data"
+        case .llmValidation: "Validating Entities"
+        case .enhancedDetection: "AI Analysis"
+        case .merging: "Merging Results"
+        case .outputGeneration: "Creating Output"
         }
     }
 
     var expectedDuration: TimeInterval {
         switch self {
-        case .preflight: return 5
-        case .ruleDetection: return 15
-        case .llmValidation: return 20
-        case .enhancedDetection: return 120  // Most time-consuming
-        case .merging: return 12
-        case .outputGeneration: return 18
+        case .preflight: 5
+        case .ruleDetection: 15
+        case .llmValidation: 20
+        case .enhancedDetection: 120 // Most time-consuming
+        case .merging: 12
+        case .outputGeneration: 18
         }
     }
 
     var icon: String {
         switch self {
-        case .preflight: return "checkmark.shield"
-        case .ruleDetection: return "text.magnifyingglass"
-        case .llmValidation: return "brain"
-        case .enhancedDetection: return "sparkles"
-        case .merging: return "arrow.triangle.merge"
-        case .outputGeneration: return "doc.badge.gearshape"
+        case .preflight: "checkmark.shield"
+        case .ruleDetection: "text.magnifyingglass"
+        case .llmValidation: "brain"
+        case .enhancedDetection: "sparkles"
+        case .merging: "arrow.triangle.merge"
+        case .outputGeneration: "doc.badge.gearshape"
         }
     }
 
     var progressRange: ClosedRange<Double> {
         switch self {
-        case .preflight: return 0.0...0.12
-        case .ruleDetection: return 0.12...0.25
-        case .llmValidation: return 0.25...0.40
-        case .enhancedDetection: return 0.40...0.80
-        case .merging: return 0.80...0.92
-        case .outputGeneration: return 0.92...1.0
+        case .preflight: 0.0 ... 0.12
+        case .ruleDetection: 0.12 ... 0.25
+        case .llmValidation: 0.25 ... 0.40
+        case .enhancedDetection: 0.40 ... 0.80
+        case .merging: 0.80 ... 0.92
+        case .outputGeneration: 0.92 ... 1.0
         }
     }
 }
 
 enum DocumentComplexity {
     case unknown
-    case simple     // < 10 pages
-    case moderate   // 10-50 pages  
-    case complex    // 50-100 pages
-    case massive    // 100+ pages
+    case simple // < 10 pages
+    case moderate // 10-50 pages
+    case complex // 50-100 pages
+    case massive // 100+ pages
 
     var multiplier: Double {
         switch self {
-        case .unknown: return 1.0
-        case .simple: return 0.5
-        case .moderate: return 1.0
-        case .complex: return 2.0
-        case .massive: return 4.0
+        case .unknown: 1.0
+        case .simple: 0.5
+        case .moderate: 1.0
+        case .complex: 2.0
+        case .massive: 4.0
         }
     }
 
@@ -761,13 +787,13 @@ enum DocumentComplexity {
     static func fallback(forFileSize size: Int64) -> DocumentComplexity {
         switch size {
         case ..<150_000: // <150 KB
-            return .simple
+            .simple
         case ..<600_000: // <600 KB
-            return .moderate
+            .moderate
         case ..<2_500_000: // <2.5 MB
-            return .complex
+            .complex
         default:
-            return .massive
+            .massive
         }
     }
 }
@@ -778,7 +804,7 @@ struct AlertInfo: Identifiable {
     let message: String
 }
 
-enum RedactionStatus: Sendable {
+enum RedactionStatus {
     case checking
     case validDocument
     case invalidDocument
@@ -788,65 +814,65 @@ enum RedactionStatus: Sendable {
     case completed
     case failed
     case cancelled
-    
+
     var displayText: String {
         switch self {
-        case .checking: return "[Checking...]"
-        case .validDocument: return "[Valid DOCX]"
-        case .invalidDocument: return "[Invalid File]"
-        case .processing: return "[Processing...]"
-        case .analyzing: return "[Analyzing...]"
-        case .redacting: return "[Redacting...]"
-        case .completed: return "[Completed]"
-        case .failed: return "[Failed]"
-        case .cancelled: return "[Cancelled]"
+        case .checking: "[Checking...]"
+        case .validDocument: "[Valid DOCX]"
+        case .invalidDocument: "[Invalid File]"
+        case .processing: "[Processing...]"
+        case .analyzing: "[Analyzing...]"
+        case .redacting: "[Redacting...]"
+        case .completed: "[Completed]"
+        case .failed: "[Failed]"
+        case .cancelled: "[Cancelled]"
         }
     }
-    
+
     var isProcessing: Bool {
         switch self {
         case .checking, .processing, .analyzing, .redacting:
-            return true
+            true
         default:
-            return false
+            false
         }
     }
-    
+
     var isComplete: Bool {
         switch self {
         case .completed:
-            return true
+            true
         default:
-            return false
+            false
         }
     }
-    
+
     var isPendingReview: Bool {
         switch self {
         case .validDocument, .checking:
-            return true
+            true
         default:
-            return false
+            false
         }
     }
-    
+
     var canRetry: Bool {
         switch self {
         case .failed, .cancelled:
-            return true
+            true
         default:
-            return false
+            false
         }
     }
 }
 
-enum DocumentOperation: String, Sendable {
+enum DocumentOperation: String {
     case redaction
     case scrub
 }
 
-enum RedactionMode: String, CaseIterable {
-    case rules = "rules"
+enum RedactionMode: String, CaseIterable, Codable {
+    case rules
     case rulesOverride = "rules_override"
     case constrainedOverrides = "constrained_overrides"
     case llmOverrides = "llm_overrides"
@@ -854,26 +880,26 @@ enum RedactionMode: String, CaseIterable {
     var displayName: String {
         switch self {
         case .rules:
-            return "Rules Only"
+            "Rules Only"
         case .rulesOverride:
-            return "Rules + AI (Rules Override)"
+            "Rules + AI (Rules Override)"
         case .constrainedOverrides:
-            return "Rules + AI (Constrained LLM Overrides)"
+            "Rules + AI (Constrained LLM Overrides)"
         case .llmOverrides:
-            return "Rules + AI (LLM Overrides)"
+            "Rules + AI (LLM Overrides)"
         }
     }
 
     var description: String {
         switch self {
         case .rules:
-            return "Fast rule-based detection for structured PII"
+            "Fast rule-based detection for structured PII"
         case .rulesOverride:
-            return "AI expands coverage, but deterministic rules always win"
+            "AI expands coverage, but deterministic rules always win"
         case .constrainedOverrides:
-            return "LLM can veto rules for ORG/NAME/LOC with high confidence"
+            "LLM can veto rules for ORG/NAME/LOC with high confidence"
         case .llmOverrides:
-            return "LLM can override any rule when confident"
+            "LLM can override any rule when confident"
         }
     }
 
@@ -900,63 +926,65 @@ enum RedactionRule: String, CaseIterable, Identifiable, Codable, Hashable {
     case signatureNames = "SIGNATURE"
     case images = "IMAGES"
 
-    var id: String { rawValue }
+    var id: String {
+        rawValue
+    }
 
     var displayName: String {
         switch self {
-        case .email: return "EMAIL"
-        case .phone: return "PHONE"
-        case .ssn: return "SSN"
-        case .money: return "MONEY"
-        case .percent: return "PERCENT"
-        case .number: return "NUMBER"
-        case .date: return "DATE"
-        case .account: return "ACCOUNT"
-        case .swift: return "SWIFT/BIC"
-        case .card: return "CARD"
-        case .url: return "URL"
-        case .ip: return "IP"
-        case .org: return "ORG"
-        case .loc: return "Address (LOC)"
-        case .signatureNames: return "Signature Names"
-        case .images: return "IMAGES"
+        case .email: "EMAIL"
+        case .phone: "PHONE"
+        case .ssn: "SSN"
+        case .money: "MONEY"
+        case .percent: "PERCENT"
+        case .number: "NUMBER"
+        case .date: "DATE"
+        case .account: "ACCOUNT"
+        case .swift: "SWIFT/BIC"
+        case .card: "CARD"
+        case .url: "URL"
+        case .ip: "IP"
+        case .org: "ORG"
+        case .loc: "Address (LOC)"
+        case .signatureNames: "Signature Names"
+        case .images: "IMAGES"
         }
     }
 
     var description: String {
         switch self {
         case .email:
-            return "RFC-like email addresses: sample123@domain.tld (case-insensitive)."
+            "RFC-like email addresses: sample123@domain.tld (case-insensitive)."
         case .phone:
-            return "U.S./international phone numbers with country codes, separators, or parentheses."
+            "U.S./international phone numbers with country codes, separators, or parentheses."
         case .ssn:
-            return "U.S. Social Security numbers in ###-##-#### format."
+            "U.S. Social Security numbers in ###-##-#### format."
         case .money:
-            return "Currency amounts, ISO codes, bracketed dollars, or spelled-out figures."
+            "Currency amounts, ISO codes, bracketed dollars, or spelled-out figures."
         case .percent:
-            return "Numeric percentages (0.06%) and spelled-out (six-hundredths of one percent)."
+            "Numeric percentages (0.06%) and spelled-out (six-hundredths of one percent)."
         case .number:
-            return "Bracketed numeric quantities like [1,200] when not preceded by currency."
+            "Bracketed numeric quantities like [1,200] when not preceded by currency."
         case .date:
-            return "Numeric, ISO, written date formats, plus placeholders like \"June ___, 2025\"."
+            "Numeric, ISO, written date formats, plus placeholders like \"June ___, 2025\"."
         case .account:
-            return "Bank/account-style digit sequences (8–20 digits)."
+            "Bank/account-style digit sequences (8–20 digits)."
         case .swift:
-            return "SWIFT/BIC codes (8 or 11 characters)."
+            "SWIFT/BIC codes (8 or 11 characters)."
         case .card:
-            return "Credit/debit card numbers (13–19 digits) with Luhn validation."
+            "Credit/debit card numbers (13–19 digits) with Luhn validation."
         case .url:
-            return "HTTP/HTTPS/FTP URLs, mailto links, www hosts, bare domains with paths."
+            "HTTP/HTTPS/FTP URLs, mailto links, www hosts, bare domains with paths."
         case .ip:
-            return "IPv4 addresses."
+            "IPv4 addresses."
         case .org:
-            return "Company names ending with legal suffixes (Inc., LLC, Ltd., etc.)."
+            "Company names ending with legal suffixes (Inc., LLC, Ltd., etc.)."
         case .loc:
-            return "Street addresses (US/Intl) including PO Boxes and explicit address labels."
+            "Street addresses (US/Intl) including PO Boxes and explicit address labels."
         case .signatureNames:
-            return "Names extracted from signature blocks (Name: John Q. Public …)."
+            "Names extracted from signature blocks (Name: John Q. Public …)."
         case .images:
-            return "Delete ALL images in the document (if disabled, only thumbnails are deleted)."
+            "Delete ALL images in the document (if disabled, only thumbnails are deleted)."
         }
     }
 
@@ -966,12 +994,12 @@ enum RedactionRule: String, CaseIterable, Identifiable, Codable, Hashable {
 
     static func serializedList(from set: Set<RedactionRule>) -> String {
         set.sorted { $0.rawValue < $1.rawValue }
-            .map { $0.rawValue }
+            .map(\.rawValue)
             .joined(separator: ",")
     }
 }
 
-struct RedactionSettings {
+struct RedactionSettings: Codable, Equatable {
     static let standardNormalMode: RedactionMode = .rulesOverride
     static let standardNormalModeConfidence: Int = 99
     static let standardNormalModeTemperature: Double = 0.0
@@ -979,15 +1007,15 @@ struct RedactionSettings {
     static let standardNormalModeOverlap: Int = 200
 
     var mode: RedactionMode = RedactionSettings.standardNormalMode
-    var model: String = "llama3.1:8b"
+    var model: String = ModelCatalog.shared.defaultModelId
     var backend: String = "ollama" // 'ollama' or 'mock' (for fast tests)
-    var debug: Bool = false  // Default to false for production
+    var debug: Bool = false // Default to false for production
     var temperature: Double = RedactionSettings.standardNormalModeTemperature
     var seed: Int = 42
     var chunkTokens: Int = RedactionSettings.standardNormalModeChunkTokens
     var overlap: Int = RedactionSettings.standardNormalModeOverlap
     var llmConcurrency: Int = 2
-    var processingTimeoutSeconds: Int = 7200  // 120 minutes
+    var processingTimeoutSeconds: Int = 7200 // 120 minutes
     var enabledRules: Set<RedactionRule> = RedactionRule.defaultSelection
     var llmConfidenceThreshold: Int = RedactionSettings.standardNormalModeConfidence
 
@@ -1003,6 +1031,71 @@ struct RedactionSettings {
 
     var llmConfidenceThresholdValue: Double {
         Double(llmConfidenceThreshold) / 100.0
+    }
+}
+
+// MARK: - Shareable Settings Profile (Export/Import)
+
+/// A JSON-serializable bundle of `MetadataCleaningSettings` and `RedactionSettings` that a user
+/// can export to a file and share with a legal team, or import to replace their current settings.
+struct RedactionProfile: Codable, Equatable {
+    /// Bump this whenever the profile's on-disk shape changes in a way older/newer clients can't
+    /// safely round-trip (e.g. removing a field, changing its meaning). Additive fields with
+    /// `decodeIfPresent` + defaults do not require a bump.
+    static let currentSchemaVersion = 1
+
+    var schemaVersion: Int
+    var metadataCleaningSettings: MetadataCleaningSettings
+    var redactionSettings: RedactionSettings
+
+    init(metadataCleaningSettings: MetadataCleaningSettings, redactionSettings: RedactionSettings) {
+        self.schemaVersion = Self.currentSchemaVersion
+        self.metadataCleaningSettings = metadataCleaningSettings
+        self.redactionSettings = redactionSettings
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case schemaVersion
+        case metadataCleaningSettings
+        case redactionSettings
+    }
+
+    enum ProfileError: LocalizedError {
+        case unsupportedSchemaVersion(found: Int, supported: Int)
+        case malformed(String)
+
+        var errorDescription: String? {
+            switch self {
+            case let .unsupportedSchemaVersion(found, supported):
+                "This profile was created with an unsupported schema version (\(found)). This version of Marcut supports schema version \(supported)."
+            case let .malformed(detail):
+                "This profile file could not be read: \(detail)"
+            }
+        }
+    }
+
+    /// Encodes this profile to JSON data (sorted keys for stable, diffable output).
+    func encoded() throws -> Data {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        return try encoder.encode(self)
+    }
+
+    /// Decodes and validates a profile from JSON data. Throws `ProfileError` on malformed JSON
+    /// or an unrecognized schema version rather than partially applying any values.
+    static func decoded(from data: Data) throws -> RedactionProfile {
+        let profile: RedactionProfile
+        do {
+            profile = try JSONDecoder().decode(RedactionProfile.self, from: data)
+        } catch {
+            throw ProfileError.malformed(error.localizedDescription)
+        }
+
+        guard profile.schemaVersion == currentSchemaVersion else {
+            throw ProfileError.unsupportedSchemaVersion(found: profile.schemaVersion, supported: currentSchemaVersion)
+        }
+
+        return profile
     }
 }
 
@@ -1038,14 +1131,25 @@ enum DebugPreferences {
 class DebugLogger {
     static let shared = DebugLogger()
 
-    private var isDebugEnabled: Bool = false  // Default to false for production
+    private var isDebugEnabled: Bool = false // Default to false for production
     private let logDirectoryURL: URL
     private let writeQueue = DispatchQueue(label: "com.marclaw.marcutapp.debuglogger", qos: .utility)
 
-    // Centralized log location under Application Support
-    // ~/Library/Application Support/MarcutApp/logs/marcut.log
-    var logURL: URL { logDirectoryURL.appendingPathComponent("marcut.log") }
-    var logPath: String { logURL.path }
+    /// Centralized log location under Application Support
+    /// ~/Library/Application Support/MarcutApp/logs/marcut.log
+    var logURL: URL {
+        logDirectoryURL.appendingPathComponent("marcut.log")
+    }
+
+    var logPath: String {
+        logURL.path
+    }
+
+    /// Directory containing this instance's log files (`~/Library/Application Support/MarcutApp/logs`,
+    /// or a fallback under the temporary directory if Application Support is unavailable/sandboxed).
+    var logsDirectoryURL: URL {
+        logDirectoryURL
+    }
 
     private init() {
         logDirectoryURL = DebugLogger.resolveLogDirectory()
@@ -1065,7 +1169,9 @@ class DebugLogger {
             }
         }
 
-        if let groupBase = fm.containerURL(forSecurityApplicationGroupIdentifier: "QG85EMCQ75.group.com.marclaw.marcutapp") {
+        if let groupBase = fm
+            .containerURL(forSecurityApplicationGroupIdentifier: "QG85EMCQ75.group.com.marclaw.marcutapp")
+        {
             let dir = groupBase
                 .appendingPathComponent("Library", isDirectory: true)
                 .appendingPathComponent("Application Support", isDirectory: true)
@@ -1093,7 +1199,7 @@ class DebugLogger {
         }
     }
 
-    public func ensureLogInitialized() {
+    func ensureLogInitialized() {
         writeQueue.async { [logURL = self.logURL, logDirectoryURL = self.logDirectoryURL] in
             DebugLogger.ensureLogInitializedAsync(logURL: logURL, logDirectoryURL: logDirectoryURL)
         }
@@ -1104,12 +1210,12 @@ class DebugLogger {
         let version = bundle.infoDictionary?["CFBundleShortVersionString"] as? String ?? "?"
         let build = bundle.infoDictionary?["CFBundleVersion"] as? String ?? "?"
         let header = "=== MarcutApp Log Started (v\(version) b\(build)) ===\n"
-        
+
         // Ensure directory exists first
         if !FileManager.default.fileExists(atPath: logDirectoryURL.path) {
             _ = ensureDirectoryExists(logDirectoryURL, fileManager: FileManager.default)
         }
-        
+
         if !FileManager.default.fileExists(atPath: logURL.path) {
             try? header.write(to: logURL, atomically: true, encoding: .utf8)
         }
@@ -1158,7 +1264,10 @@ class DebugLogger {
         let logURL = self.logURL
         writeQueue.async {
             // Ensure directory exists before writing
-            try? FileManager.default.createDirectory(at: logURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try? FileManager.default.createDirectory(
+                at: logURL.deletingLastPathComponent(),
+                withIntermediateDirectories: true
+            )
 
             if FileManager.default.fileExists(atPath: logURL.path) {
                 if let fileHandle = try? FileHandle(forWritingTo: logURL) {
@@ -1174,5 +1283,34 @@ class DebugLogger {
 
     func clearLog() {
         try? FileManager.default.removeItem(at: logURL)
+    }
+
+    /// Discovers log files (`.log` extension) in `directory`, most-recently-modified first.
+    ///
+    /// Pure/testable: takes an explicit directory rather than reaching for `shared.logsDirectoryURL`,
+    /// so tests can point it at a temporary fixture directory. Returns an empty array if the
+    /// directory doesn't exist or contains no `.log` files.
+    static func discoverLogFiles(in directory: URL, fileManager: FileManager = .default) -> [URL] {
+        guard let entries = try? fileManager.contentsOfDirectory(
+            at: directory,
+            includingPropertiesForKeys: [.contentModificationDateKey],
+            options: [.skipsHiddenFiles]
+        ) else {
+            return []
+        }
+
+        let logFiles = entries.filter { $0.pathExtension.lowercased() == "log" }
+
+        return logFiles.sorted { lhs, rhs in
+            let lhsDate = (try? lhs.resourceValues(forKeys: [.contentModificationDateKey]))?
+                .contentModificationDate ?? .distantPast
+            let rhsDate = (try? rhs.resourceValues(forKeys: [.contentModificationDateKey]))?
+                .contentModificationDate ?? .distantPast
+            if lhsDate != rhsDate {
+                return lhsDate > rhsDate
+            }
+            // Stable tiebreaker for files with identical mtimes (e.g. fixtures created in the same instant).
+            return lhs.lastPathComponent < rhs.lastPathComponent
+        }
     }
 }

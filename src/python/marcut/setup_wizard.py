@@ -5,7 +5,6 @@ import subprocess
 import sys
 import os
 import threading
-import requests
 from pathlib import Path
 import json
 

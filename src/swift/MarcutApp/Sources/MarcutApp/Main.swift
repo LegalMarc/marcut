@@ -1,5 +1,5 @@
-import SwiftUI
 import AppKit
+import SwiftUI
 
 @main
 struct MarcutMain {
@@ -17,13 +17,13 @@ struct MarcutMain {
         LaunchDiagnostics.shared.configure(forceDiagnosticWindow: forceDiagnosticsWindow)
         LaunchDiagnostics.shared.mark(.delegateLaunched, extra: "args=\(redactedLaunchArguments(args))")
 
-        let cliFlags: Set<String> = [
+        let cliFlags: Set = [
             "--cli",
             "--test",
             "--diagnose",
             "--help",
             "--redact",
-            "--download-model"
+            "--download-model",
         ]
         let isCLIMode = args.contains { cliFlags.contains($0) }
 

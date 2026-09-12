@@ -138,7 +138,7 @@ def main():
     
     if updates["error"]:
         print(f"{RED}❌ Failed to check:{NC}")
-        for pkg, curr, _ in updates["error"]:
+        for pkg, _, _ in updates["error"]:
             print(f"   {pkg}")
         print()
     

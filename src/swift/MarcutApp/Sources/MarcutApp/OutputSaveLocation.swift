@@ -5,16 +5,18 @@ enum OutputSaveLocation: Int, CaseIterable, Identifiable {
     case sameAsOriginal = 1
     case alwaysAsk = 2
 
-    var id: Int { rawValue }
+    var id: Int {
+        rawValue
+    }
 
     var label: String {
         switch self {
         case .downloads:
-            return "Downloads"
+            "Downloads"
         case .sameAsOriginal:
-            return "Same as Original"
+            "Same as Original"
         case .alwaysAsk:
-            return "Always Ask"
+            "Always Ask"
         }
     }
 

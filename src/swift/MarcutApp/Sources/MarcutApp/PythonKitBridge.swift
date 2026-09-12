@@ -1,7 +1,7 @@
-import Foundation
-import PythonKit
 import Darwin
+import Foundation
 import Network
+import PythonKit
 
 struct PythonRunnerProgressUpdate {
     let phaseIdentifier: String?
@@ -94,7 +94,7 @@ private enum PythonSymbolState {
         "PyGILState_Release",
         "PyErr_SetInterrupt",
         "PyErr_CheckSignals",
-        "PyErr_Clear"
+        "PyErr_Clear",
     ]
 
     static func registerMissing(_ name: String) {
@@ -144,49 +144,66 @@ private func loadPythonSymbol<T>(
 }
 
 private func Py_IsInitialized() -> Int32 {
-    guard let fn: @convention(c) () -> Int32 = loadPythonSymbol("Py_IsInitialized", as: (@convention(c) () -> Int32).self) else {
+    guard let fn: @convention(c) () -> Int32 = loadPythonSymbol(
+        "Py_IsInitialized",
+        as: (@convention(c) () -> Int32).self
+    ) else {
         return 0
     }
     return fn()
 }
 
 private func Py_Initialize() {
-    guard let fn: @convention(c) () -> Void = loadPythonSymbol("Py_Initialize", as: (@convention(c) () -> Void).self) else {
+    guard let fn: @convention(c) () -> Void = loadPythonSymbol("Py_Initialize", as: (@convention(c) () -> Void).self)
+    else {
         return
     }
     fn()
 }
 
 private func PyGILState_Ensure() -> PyGILState_STATE? {
-    guard let fn: @convention(c) () -> PyGILState_STATE = loadPythonSymbol("PyGILState_Ensure", as: (@convention(c) () -> PyGILState_STATE).self) else {
+    guard let fn: @convention(c) () -> PyGILState_STATE = loadPythonSymbol(
+        "PyGILState_Ensure",
+        as: (@convention(c) () -> PyGILState_STATE).self
+    ) else {
         return nil
     }
     return fn()
 }
 
 private func PyGILState_Release(_ state: PyGILState_STATE) {
-    guard let fn: @convention(c) (PyGILState_STATE) -> Void = loadPythonSymbol("PyGILState_Release", as: (@convention(c) (PyGILState_STATE) -> Void).self) else {
+    guard let fn: @convention(c) (PyGILState_STATE) -> Void = loadPythonSymbol(
+        "PyGILState_Release",
+        as: (@convention(c) (PyGILState_STATE) -> Void).self
+    ) else {
         return
     }
     fn(state)
 }
 
 private func PyErr_SetInterrupt() {
-    guard let fn: @convention(c) () -> Void = loadPythonSymbol("PyErr_SetInterrupt", as: (@convention(c) () -> Void).self) else {
+    guard let fn: @convention(c) () -> Void = loadPythonSymbol(
+        "PyErr_SetInterrupt",
+        as: (@convention(c) () -> Void).self
+    ) else {
         return
     }
     fn()
 }
 
 private func PyErr_CheckSignals() -> Int32 {
-    guard let fn: @convention(c) () -> Int32 = loadPythonSymbol("PyErr_CheckSignals", as: (@convention(c) () -> Int32).self) else {
+    guard let fn: @convention(c) () -> Int32 = loadPythonSymbol(
+        "PyErr_CheckSignals",
+        as: (@convention(c) () -> Int32).self
+    ) else {
         return 0
     }
     return fn()
 }
 
 private func PyErr_Clear() {
-    guard let fn: @convention(c) () -> Void = loadPythonSymbol("PyErr_Clear", as: (@convention(c) () -> Void).self) else {
+    guard let fn: @convention(c) () -> Void = loadPythonSymbol("PyErr_Clear", as: (@convention(c) () -> Void).self)
+    else {
         return
     }
     fn()
@@ -210,10 +227,48 @@ enum PythonInitError: Error {
     case ollamaUnavailable(String)
 }
 
+/// Errors raised by the bridge-level watchdog around `PythonWorkerThread` calls (see
+/// `PythonWorkerThread.performWithWatchdog`). This is a distinct, outer safety net from the
+/// existing interrupt-based step/total timeout system (`withTimeout` + `cancelCurrentOperation`
+/// below): that system depends on the embedded CPython interpreter cooperating -- periodically
+/// checking for a pending signal -- which only happens between bytecode instructions. A call
+/// stuck in native C code (a pathological lxml parse, a hung syscall, a GIL held forever by a
+/// wedged extension) never reaches such a checkpoint, so `PyErr_SetInterrupt()` never has an
+/// effect and the worker thread's blocking wait never returns. `PythonBridgeError` is what the
+/// caller sees instead of hanging forever in that case.
+enum PythonBridgeError: Error, CustomStringConvertible, LocalizedError {
+    /// `operation` did not return from the embedded Python worker thread within its configured
+    /// watchdog timeout. PythonKit cannot safely kill or preempt an embedded interpreter
+    /// mid-call, so the in-flight call is abandoned in place (its eventual result, if the
+    /// underlying native thread is merely slow rather than truly wedged, is discarded) and the
+    /// owning `PythonWorkerThread` is marked permanently stalled: every later call on that same
+    /// worker -- for this document or any other queued after it -- fails fast with this same
+    /// error instead of silently queuing forever behind a thread that will never run it, which
+    /// is what "only force-quit recovers" looked like before this existed. Recovery requires a
+    /// fresh `PythonKitRunner`, i.e. restarting the app.
+    case workerStalled(operation: String)
+
+    var description: String {
+        switch self {
+        case let .workerStalled(operation):
+            "Embedded Python worker did not respond within the watchdog timeout during '\(operation)'; the runner has been abandoned and will reject further calls until Marcut is restarted."
+        }
+    }
+
+    var errorDescription: String? {
+        description
+    }
+}
+
 public enum PythonRunOutcome {
     case success
     case cancelled
     case failure
+    /// The bridge-level watchdog gave up waiting on the embedded worker (see
+    /// `PythonBridgeError.workerStalled`) -- either this call itself timed out, or the worker
+    /// was already marked stalled by an earlier one. Kept distinct from `.failure` so callers
+    /// can surface a specific "processing stalled" message instead of a generic failure.
+    case stalled
 }
 
 private enum PythonTimeoutOverrides {
@@ -233,9 +288,22 @@ private enum PythonTimeoutOverrides {
 
     static func disable(for operation: String) -> Bool {
         let envVars = env()
-        if envVars["MARCUT_DISABLE_PY_TIMEOUTS"] == "1" { return true }
-        if envVars["MARCUT_DISABLE_\(operation.uppercased())_TIMEOUT"] == "1" { return true }
+        if envVars["MARCUT_DISABLE_PY_TIMEOUTS"] == "1" {
+            return true
+        }
+        if envVars["MARCUT_DISABLE_\(operation.uppercased())_TIMEOUT"] == "1" {
+            return true
+        }
         return false
+    }
+
+    /// Outer bridge-level watchdog bound for a `PythonWorkerThread.performWithWatchdog` call
+    /// site (see `PythonBridgeError`). Independent of `step`/`total`/`disable` above, but
+    /// `disable(for: "WORKER_WATCHDOG")` (or the blanket `MARCUT_DISABLE_PY_TIMEOUTS`) is
+    /// checked separately by callers before using this value, matching the existing pattern.
+    static func watchdog(for operation: String, default defaultValue: TimeInterval) -> TimeInterval {
+        let key = "MARCUT_\(operation.uppercased())_WATCHDOG_TIMEOUT"
+        return value(for: key, default: defaultValue)
     }
 
     private static func value(for key: String, default defaultValue: TimeInterval) -> TimeInterval {
@@ -246,11 +314,14 @@ private enum PythonTimeoutOverrides {
     }
 }
 
-private final class PythonWorkerThread: Thread {
+/// Internal (not private) so the watchdog behavior below is directly unit-testable via
+/// `@testable import MarcutApp` without needing a live embedded CPython interpreter.
+final class PythonWorkerThread: Thread {
     private let condition = NSCondition()
     private var tasks: [() -> Void] = []
     private var running = true
     private let readySemaphore = DispatchSemaphore(value: 0)
+    private var isStalled = false
 
     override init() {
         super.init()
@@ -293,22 +364,75 @@ private final class PythonWorkerThread: Thread {
         condition.unlock()
     }
 
-    func perform<T>(_ work: @escaping () throws -> T) throws -> T {
+    /// Whether an earlier `performWithWatchdog` call already timed out on this worker. Once
+    /// true, the underlying `Thread` is presumed permanently wedged -- it is single-threaded
+    /// and drains `tasks` strictly in FIFO order in `main()`, so a task that never returns
+    /// blocks every task queued after it, forever -- and is abandoned: no further work is
+    /// enqueued onto it.
+    func isCurrentlyStalled() -> Bool {
+        condition.lock()
+        let stalled = isStalled
+        condition.unlock()
+        return stalled
+    }
+
+    private func markStalled() {
+        condition.lock()
+        isStalled = true
+        condition.unlock()
+    }
+
+    /// Runs `work` on the dedicated Python worker thread and blocks the caller until it
+    /// returns -- but for at most `timeout` seconds (`nil` or a non-positive value waits
+    /// indefinitely, matching the historical unbounded behavior; used when the caller has
+    /// explicitly disabled watchdog timeouts for debugging).
+    ///
+    /// If `work` has not signalled completion within `timeout`, this worker is abandoned:
+    /// there is no safe way to preempt an embedded CPython call that may be holding the GIL or
+    /// blocked in native C code (see `PythonBridgeError`), so the call is given up on and this
+    /// thread is marked stalled for the rest of the process's lifetime. Every subsequent call
+    /// -- for this document or any other -- fails fast with `PythonBridgeError.workerStalled`
+    /// instead of silently queuing behind the now-dead thread.
+    func performWithWatchdog<T>(
+        timeout: TimeInterval?,
+        operation: String,
+        _ work: @escaping () throws -> T
+    ) throws -> T {
+        if isCurrentlyStalled() {
+            throw PythonBridgeError.workerStalled(operation: operation)
+        }
+
         let semaphore = DispatchSemaphore(value: 0)
         var result: Result<T, Error>!
         enqueue {
             do {
-                result = .success(try work())
+                result = try .success(work())
             } catch {
                 result = .failure(error)
             }
             semaphore.signal()
         }
-        semaphore.wait()
+
+        guard let timeout, timeout > 0 else {
+            semaphore.wait()
+            return try result.get()
+        }
+
+        let waitOutcome = semaphore.wait(timeout: .now() + timeout)
+        if waitOutcome == .timedOut {
+            markStalled()
+            throw PythonBridgeError.workerStalled(operation: operation)
+        }
         return try result.get()
     }
 
     func performAsync(_ work: @escaping () -> Void) {
+        // Fire-and-forget calls (e.g. broadcasting cancellation) don't block a caller, so a
+        // stalled worker can't hang anything here -- but skip enqueueing anyway so the task
+        // queue on an already-abandoned thread doesn't grow forever.
+        if isCurrentlyStalled() {
+            return
+        }
         enqueue(work)
     }
 }
@@ -317,7 +441,7 @@ private func pythonSetupTracingEnabled() -> Bool {
     ProcessInfo.processInfo.environment["MARCUT_TRACE_PY_SETUP"] == "1"
 }
 
-public final class PythonRuntime {
+public enum PythonRuntime {
     static func resolvedOllamaHost() -> String {
         loopbackHost(
             from: ProcessInfo.processInfo.environment["MARCUT_OLLAMA_HOST"],
@@ -340,10 +464,12 @@ public final class PythonRuntime {
             }
             let parts = hostPort.split(separator: ":")
             if let last = parts.last, parts.count >= 2,
-               let parsed = Int(last), (1...65535).contains(parsed) {
+               let parsed = Int(last), (1 ... 65535).contains(parsed)
+            {
                 port = parsed
             } else if parts.count == 1,
-                      let parsed = Int(parts[0]), (1...65535).contains(parsed) {
+                      let parsed = Int(parts[0]), (1 ... 65535).contains(parsed)
+            {
                 port = parsed
             }
         }
@@ -354,11 +480,10 @@ public final class PythonRuntime {
     static func checkOllamaPort(_ port: UInt16 = 11434) -> Bool {
         let hostString = resolvedOllamaHost()
         let components = hostString.split(separator: ":")
-        let resolvedPort: UInt16
-        if components.count == 2, let parsed = UInt16(components[1]) {
-            resolvedPort = parsed
+        let resolvedPort: UInt16 = if components.count == 2, let parsed = UInt16(components[1]) {
+            parsed
         } else {
-            resolvedPort = port
+            port
         }
 
         let group = DispatchGroup()
@@ -424,7 +549,9 @@ public final class PythonRuntime {
 
         let isOllamaRunning = checkOllamaPort()
         let checkTime = Date().timeIntervalSince(start)
-        logger("PK_FAST_CHECK: Ollama \(isOllamaRunning ? "running" : "not running") host=\(hostString) (\(String(format: "%.0f", checkTime * 1000))ms total)")
+        logger(
+            "PK_FAST_CHECK: Ollama \(isOllamaRunning ? "running" : "not running") host=\(hostString) (\(String(format: "%.0f", checkTime * 1000))ms total)"
+        )
 
         return isOllamaRunning
     }
@@ -447,7 +574,9 @@ public final class PythonRuntime {
             }
         }
 
-        appendCandidate(label: "private frameworks") { Bundle.main.privateFrameworksURL?.appendingPathComponent("Python.framework") }
+        appendCandidate(label: "private frameworks") {
+            Bundle.main.privateFrameworksURL?.appendingPathComponent("Python.framework")
+        }
         appendCandidate(label: "app/Contents/Frameworks") {
             bundleURL
                 .appendingPathComponent("Contents", isDirectory: true)
@@ -492,7 +621,11 @@ public final class PythonRuntime {
         var pythonVersionDir = currentLink
         if let resolved = try? FileManager.default.destinationOfSymbolicLink(atPath: currentLink.path) {
             pythonVersionDir = URL(fileURLWithPath: resolved, relativeTo: versionsDir)
-        } else if let firstVersion = try? FileManager.default.contentsOfDirectory(at: versionsDir, includingPropertiesForKeys: nil, options: [.skipsHiddenFiles]).first(where: { $0.lastPathComponent.contains(".") }) {
+        } else if let firstVersion = try? FileManager.default.contentsOfDirectory(
+            at: versionsDir,
+            includingPropertiesForKeys: nil,
+            options: [.skipsHiddenFiles]
+        ).first(where: { $0.lastPathComponent.contains(".") }) {
             pythonVersionDir = firstVersion
         } else {
             pythonVersionDir = versionsDir.appendingPathComponent("3.10")
@@ -515,7 +648,10 @@ public final class PythonRuntime {
         var siteCandidates: [URL] = []
 
         if let resourcePath = Bundle.main.resourcePath {
-            siteCandidates.append(URL(fileURLWithPath: resourcePath).appendingPathComponent("python_site", isDirectory: true))
+            siteCandidates.append(URL(fileURLWithPath: resourcePath).appendingPathComponent(
+                "python_site",
+                isDirectory: true
+            ))
         }
 
         siteCandidates.append(
@@ -548,7 +684,6 @@ public final class PythonRuntime {
         )
     }
 
-
     private static func sanitizeProcessEnvironment(logger: (String) -> Void) {
         let keysToUnset = [
             "PYTHONHOME",
@@ -563,7 +698,7 @@ public final class PythonRuntime {
             "PYENV_ROOT",
             "CONDA_PREFIX",
             "CONDA_DEFAULT_ENV",
-            "VIRTUAL_ENV"
+            "VIRTUAL_ENV",
         ]
 
         for key in keysToUnset {
@@ -593,12 +728,13 @@ public final class PythonRuntime {
     @discardableResult
     public static func initialize(logger: (String) -> Void) throws -> PythonRuntimeConfig {
         let startTime = Date()
-        let totalTimeout: TimeInterval = 30.0  // 30s total
+        let totalTimeout: TimeInterval = 30.0 // 30s total
 
         func checkTimeout(step: String) throws {
             let elapsed = Date().timeIntervalSince(startTime)
             if elapsed > totalTimeout {
-                throw PythonInitError.timeout("Total timeout exceeded (\(elapsed)s > \(totalTimeout)s) at step: \(step)")
+                throw PythonInitError
+                    .timeout("Total timeout exceeded (\(elapsed)s > \(totalTimeout)s) at step: \(step)")
             }
         }
 
@@ -658,7 +794,7 @@ public final class PythonRuntime {
         do {
             if FileManager.default.fileExists(atPath: tempDir.path) {
                 Self.secureEraseDirectory(tempDir, logger: logger)
-                // Re-create it immediately so it's ready for next use, or just leave it gone? 
+                // Re-create it immediately so it's ready for next use, or just leave it gone?
                 // Leaving it gone is fine, but if we run another job, does it need it?
                 // The environment variable TMPDIR is still set to this path for the process.
                 // It is safer to re-create the empty directory so subsequent calls don't fail if they assume existence.
@@ -674,10 +810,16 @@ public final class PythonRuntime {
         let fm = FileManager.default
         guard fm.fileExists(atPath: dir.path) else { return }
 
-        if let enumerator = fm.enumerator(at: dir, includingPropertiesForKeys: [.isRegularFileKey], options: [], errorHandler: nil) {
+        if let enumerator = fm.enumerator(
+            at: dir,
+            includingPropertiesForKeys: [.isRegularFileKey],
+            options: [],
+            errorHandler: nil
+        ) {
             for case let fileURL as URL in enumerator {
                 if let values = try? fileURL.resourceValues(forKeys: [.isRegularFileKey]),
-                   values.isRegularFile == true {
+                   values.isRegularFile == true
+                {
                     secureEraseFile(fileURL)
                 }
             }
@@ -695,7 +837,8 @@ public final class PythonRuntime {
         guard let attributes = try? fm.attributesOfItem(atPath: url.path),
               let size = attributes[.size] as? Int64,
               size > 0,
-              let handle = try? FileHandle(forWritingTo: url) else {
+              let handle = try? FileHandle(forWritingTo: url)
+        else {
             try? fm.removeItem(at: url)
             return
         }
@@ -717,6 +860,119 @@ public final class PythonRuntime {
     }
 }
 
+/// Minimal recursive JSON value, used only to decode the intentionally
+/// loosely-typed nested fields of `MetadataScrubPayload`/`MetadataReportPayload`
+/// below (`summary`, `groups`, etc. mirror `report_schema.ScrubReport`'s
+/// `Dict[str, Any]` typing -- see that module's docstring for why those
+/// stay untyped on purpose) into a genuine `Decodable` value instead of an
+/// `as? [String: Any]` cast.
+enum JSONValue: Decodable {
+    case string(String)
+    case int(Int)
+    case double(Double)
+    case bool(Bool)
+    case object([String: JSONValue])
+    case array([JSONValue])
+    case null
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.singleValueContainer()
+        if container.decodeNil() {
+            self = .null
+        } else if let value = try? container.decode(Bool.self) {
+            self = .bool(value)
+        } else if let value = try? container.decode(Int.self) {
+            self = .int(value)
+        } else if let value = try? container.decode(Double.self) {
+            self = .double(value)
+        } else if let value = try? container.decode(String.self) {
+            self = .string(value)
+        } else if let value = try? container.decode([String: JSONValue].self) {
+            self = .object(value)
+        } else if let value = try? container.decode([JSONValue].self) {
+            self = .array(value)
+        } else {
+            throw DecodingError.dataCorruptedError(in: container, debugDescription: "Unsupported JSON value")
+        }
+    }
+
+    /// Recursive conversion back to the loosely-typed `Any` representation
+    /// existing downstream consumers already expect (e.g.
+    /// `DocumentRedactionViewModel`'s `report["summary"] as? [String: Any]`
+    /// reads and the `JSONSerialization` write of the full report to disk).
+    /// This is what keeps this ticket's scope to the two call sites below
+    /// rather than requiring every downstream consumer to be rewritten.
+    var anyValue: Any {
+        switch self {
+        case let .string(value): value
+        case let .int(value): value
+        case let .double(value): value
+        case let .bool(value): value
+        case .null: NSNull()
+        case let .object(value): value.mapValues { $0.anyValue }
+        case let .array(value): value.map(\.anyValue)
+        }
+    }
+}
+
+/// Shared top-level shape decoded from both `scrub_metadata_only()`'s and
+/// `metadata_report_only()`'s tuple element 2 (step 3 of
+/// docs/design/bridge_schema_migration.md). Both are validated in Python
+/// against `report_schema.MetadataScrubPayload`/`MetadataReportPayload`
+/// respectively -- two distinct pydantic models guarding two distinct
+/// function boundaries -- but both are built by the same
+/// `pipeline._build_scrub_report()`, so they share this identical
+/// `Decodable` shape on the Swift side rather than duplicating it.
+struct MetadataReportBridgePayload: Decodable {
+    let summary: [String: JSONValue]
+    let groups: [String: JSONValue]
+    let fileInfo: [String: JSONValue]?
+    let warnings: [JSONValue]?
+    let forensicFindings: [String: JSONValue]?
+    let deepExplorer: [String: JSONValue]?
+    let binaryExports: [JSONValue]?
+    let largeExports: [JSONValue]?
+
+    enum CodingKeys: String, CodingKey {
+        case summary
+        case groups
+        case fileInfo = "file_info"
+        case warnings
+        case forensicFindings = "forensic_findings"
+        case deepExplorer = "deep_explorer"
+        case binaryExports = "binary_exports"
+        case largeExports = "large_exports"
+    }
+
+    /// Reconstructs the `[String: Any]` shape existing downstream consumers
+    /// expect (see `JSONValue.anyValue` above).
+    var asDictionary: [String: Any] {
+        var dict: [String: Any] = [
+            "summary": summary.mapValues { $0.anyValue },
+            "groups": groups.mapValues { $0.anyValue },
+        ]
+        if let fileInfo {
+            dict["file_info"] = fileInfo.mapValues { $0.anyValue }
+        }
+        if let warnings {
+            dict["warnings"] = warnings.map(\.anyValue)
+        }
+        if let forensicFindings {
+            dict["forensic_findings"] = forensicFindings.mapValues { $0.anyValue }
+        }
+        if let deepExplorer {
+            dict["deep_explorer"] = deepExplorer.mapValues { $0.anyValue }
+        }
+        if let binaryExports {
+            dict["binary_exports"] = binaryExports.map(\.anyValue)
+        }
+        if let largeExports {
+            dict["large_exports"] = largeExports.map(\.anyValue)
+        }
+        return dict
+    }
+}
+
 public final class PythonKitRunner {
     let logger: (String) -> Void
     private let cfg: PythonRuntimeConfig
@@ -735,8 +991,16 @@ public final class PythonKitRunner {
         "MARCUT_RULE_FILTER",
         "MARCUT_EXCLUDED_WORDS_PATH",
         "MARCUT_SYSTEM_PROMPT_PATH",
-        "MARCUT_LOG_PATH"
+        "MARCUT_LOG_PATH",
     ]
+
+    /// Resolves the outer bridge-level watchdog bound for `operation`, or `nil` for an
+    /// unbounded wait when watchdog timeouts have been explicitly disabled for debugging
+    /// (`MARCUT_DISABLE_WORKER_WATCHDOG_TIMEOUT=1` or the blanket `MARCUT_DISABLE_PY_TIMEOUTS`).
+    private static func watchdogTimeout(for operation: String, default defaultValue: TimeInterval) -> TimeInterval? {
+        guard !PythonTimeoutOverrides.disable(for: "WORKER_WATCHDOG") else { return nil }
+        return PythonTimeoutOverrides.watchdog(for: operation, default: defaultValue)
+    }
 
     init(logger: @escaping (String) -> Void) throws {
         self.logger = logger
@@ -744,13 +1008,18 @@ public final class PythonKitRunner {
         worker.start()
         worker.waitUntilReady()
 
-        let config: PythonRuntimeConfig = try worker.perform {
+        let initTimeout = Self.watchdogTimeout(for: "PYTHON_INIT", default: 60.0)
+        let config: PythonRuntimeConfig = try worker.performWithWatchdog(
+            timeout: initTimeout,
+            operation: "python_init"
+        ) {
             try PythonRuntime.initialize(logger: logger)
         }
         self.cfg = config
 
         do {
-            try worker.perform {
+            let warmupTimeout = Self.watchdogTimeout(for: "PYTHON_WARMUP", default: 90.0)
+            try worker.performWithWatchdog(timeout: warmupTimeout, operation: "python_warmup") {
                 try Self.warmupPythonEnvironment(logger: logger)
             }
             logger("PK_WARMUP_OK")
@@ -769,7 +1038,11 @@ public final class PythonKitRunner {
         stateLock.lock()
         isCancellationRequested = true
         stateLock.unlock()
+        setenv("MARCUT_PROCESSING_DEADLINE_MONOTONIC", String(ProcessInfo.processInfo.systemUptime), 1)
 
+        if Py_IsInitialized() != 0 {
+            PyErr_SetInterrupt()
+        }
         worker.performAsync { [logger] in
             if Py_IsInitialized() != 0 {
                 PyErr_SetInterrupt()
@@ -783,6 +1056,7 @@ public final class PythonKitRunner {
         let wasCancelled = isCancellationRequested
         isCancellationRequested = false
         stateLock.unlock()
+        unsetenv("MARCUT_PROCESSING_DEADLINE_MONOTONIC")
         if wasCancelled {
             logger("PK_CANCEL_CLEARED: was_cancelled=true")
         }
@@ -794,6 +1068,7 @@ public final class PythonKitRunner {
         activeRunToken = token
         isCancellationRequested = false
         stateLock.unlock()
+        unsetenv("MARCUT_PROCESSING_DEADLINE_MONOTONIC")
         return token
     }
 
@@ -805,6 +1080,9 @@ public final class PythonKitRunner {
     }
 
     private func syncEmbeddedEnvToPython(_ py_os: PythonObject) {
+        for key in ["MARCUT_ALLOW_REMOTE_OLLAMA", "MARCUT_DEVELOPER_UNSAFE_ALLOW_REMOTE_OLLAMA"] {
+            _ = py_os.environ.pop(PythonObject(key), Python.None)
+        }
         for key in Self.pythonEnvKeys {
             if let raw = getenv(key) {
                 py_os.environ[key] = PythonObject(String(cString: raw))
@@ -898,7 +1176,7 @@ public final class PythonKitRunner {
             "os",
             "lxml",
             "docx",
-            "marcut.pipeline"
+            "marcut.pipeline",
         ]
 
         for name in modules {
@@ -951,7 +1229,8 @@ public final class PythonKitRunner {
         let timersEnabled = !disableTimeouts
 
         if timersEnabled && elapsed > totalTimeout {
-            throw PythonInitError.timeout("Total timeout exceeded (\(elapsed)s > \(totalTimeout)s) during: \(operation)")
+            throw PythonInitError
+                .timeout("Total timeout exceeded (\(elapsed)s > \(totalTimeout)s) during: \(operation)")
         }
 
         if pythonSetupTracingEnabled() || operationKey == "ENV_SETUP" {
@@ -995,7 +1274,7 @@ public final class PythonKitRunner {
         }
 
         let operationElapsed = Date().timeIntervalSince(operationStart)
-        if timersEnabled && operationElapsed > stepTimeout {
+        if timersEnabled, operationElapsed > stepTimeout {
             logger("PK_\(operationKey)_TIMEOUT: \(String(format: "%.2f", operationElapsed))s > \(stepTimeout)s")
             throw PythonInitError.timeout("Step timeout: \(operation) took \(operationElapsed)s > \(stepTimeout)s")
         }
@@ -1010,7 +1289,7 @@ public final class PythonKitRunner {
         outputPath: String,
         reportPath: String,
         debug: Bool,
-        cancellationChecker: @escaping () -> Bool
+        cancellationChecker _: @escaping () -> Bool
     ) -> PythonRunOutcome {
         let startTime = Date()
         _ = startNewRunToken()
@@ -1120,9 +1399,10 @@ public final class PythonKitRunner {
         } catch {
             let totalElapsed = Date().timeIntervalSince(startTime)
             logger("PK_RULES_MOCK_ERROR: \(error) total=\(String(format: "%.2f", totalElapsed))s")
-            if case PythonError.exception(let exc, _) = error,
+            if case let PythonError.exception(exc, _) = error,
                let description = String(exc),
-               description.contains("KeyboardInterrupt") {
+               description.contains("KeyboardInterrupt")
+            {
                 return .cancelled
             }
             return .failure
@@ -1137,12 +1417,13 @@ public final class PythonKitRunner {
         debug: Bool,
         mode: String,
         llmSkipConfidence: Double = 0.95,
+        llmConcurrency: Int = 2,
         chunkTokens: Int = 500,
         overlap: Int = 120,
         temperature: Double = 0.1,
         seed: Int = 42,
         processingStepTimeout: TimeInterval? = nil,
-        cancellationChecker: @escaping () -> Bool,
+        cancellationChecker _: @escaping () -> Bool,
         heartbeat: ((PythonRunnerProgressUpdate) -> Void)? = nil
     ) -> PythonRunOutcome {
         let startTime = Date()
@@ -1152,7 +1433,7 @@ public final class PythonKitRunner {
         logger("PK_ENHANCED_OLLAMA_START: model=\(model) mode=\(normalizedMode) needs_ollama=\(needsOllama)")
 
         // Skip environment check for rules-only mode
-        if needsOllama && !PythonRuntime.fastEnvironmentCheck(logger: logger) {
+        if needsOllama, !PythonRuntime.fastEnvironmentCheck(logger: logger) {
             let host = PythonRuntime.resolvedOllamaHost()
             logger("PK_ENHANCED_OLLAMA_ERROR: Fast environment check failed host=\(host)")
             return .failure
@@ -1181,17 +1462,17 @@ public final class PythonKitRunner {
             let host = PythonRuntime.resolvedOllamaHost()
             py_os.environ["OLLAMA_HOST"] = PythonObject(host)
             py_os.environ["MARCUT_OLLAMA_HOST"] = PythonObject(host)
-        logger("PK_ENV_SETUP_RESOLVED_HOST: \(host)")
-        py_os.environ["HTTP_PROXY"] = ""
-        py_os.environ["HTTPS_PROXY"] = ""
-        py_os.environ["ALL_PROXY"] = ""
-        py_os.environ["NO_PROXY"] = "127.0.0.1,localhost"
-        py_os.environ["http_proxy"] = ""
+            logger("PK_ENV_SETUP_RESOLVED_HOST: \(host)")
+            py_os.environ["HTTP_PROXY"] = ""
+            py_os.environ["HTTPS_PROXY"] = ""
+            py_os.environ["ALL_PROXY"] = ""
+            py_os.environ["NO_PROXY"] = "127.0.0.1,localhost"
+            py_os.environ["http_proxy"] = ""
             py_os.environ["https_proxy"] = ""
             py_os.environ["all_proxy"] = ""
             py_os.environ["no_proxy"] = "127.0.0.1,localhost"
             py_os.environ["NO_COLOR"] = "1"
-           logger("PK_ENV_SETUP_READY")
+            logger("PK_ENV_SETUP_READY")
 
             // Phase 2: Heavy imports
             let importsStepTimeout = PythonTimeoutOverrides.step(for: "IMPORTS", default: 180.0)
@@ -1232,6 +1513,21 @@ public final class PythonKitRunner {
                 resolvedProcessingStepTimeout
             )
             let processingDisableTimeouts = PythonTimeoutOverrides.disable(for: "PROCESSING")
+            if !processingDisableTimeouts {
+                do {
+                    let pyTime = try Python.attemptImport("time")
+                    let deadline = (Double(pyTime.monotonic()) ?? 0.0) + resolvedProcessingStepTimeout
+                    py_os.environ["MARCUT_PROCESSING_DEADLINE_MONOTONIC"] = PythonObject(String(deadline))
+                    logger("PK_PROCESSING_DEADLINE_SET: \(String(format: "%.2f", resolvedProcessingStepTimeout))s")
+                } catch {
+                    logger("PK_PROCESSING_DEADLINE_ERROR: \(error)")
+                }
+            } else {
+                _ = py_os.environ.pop(PythonObject("MARCUT_PROCESSING_DEADLINE_MONOTONIC"), Python.None)
+            }
+            defer {
+                _ = py_os.environ.pop(PythonObject("MARCUT_PROCESSING_DEADLINE_MONOTONIC"), Python.None)
+            }
             let code: Int = try withTimeout(
                 operation: "processing",
                 stepTimeout: resolvedProcessingStepTimeout,
@@ -1241,8 +1537,8 @@ public final class PythonKitRunner {
             ) {
                 try checkCancellation()
                 let progressCallback: PythonObject = {
-                    guard let heartbeat = heartbeat else { return Python.None }
-                    let function = PythonFunction { args, kwargs in
+                    guard let heartbeat else { return Python.None }
+                    let function = PythonFunction { args, _ in
                         guard let firstArg = args.first else {
                             return Python.None
                         }
@@ -1290,6 +1586,7 @@ public final class PythonKitRunner {
                     temperature: temperature,
                     seed: seed,
                     llm_skip_confidence: llmSkipConfidence,
+                    llm_concurrency: llmConcurrency,
                     debug: debug,
                     progress_callback: progressCallback
                 )
@@ -1309,7 +1606,7 @@ public final class PythonKitRunner {
             return .cancelled
         } catch {
             let totalElapsed = Date().timeIntervalSince(startTime)
-            if case PythonError.exception(let exc, _) = error {
+            if case let PythonError.exception(exc, _) = error {
                 let typeName = (exc.__class__.__name__).toOptionalString() ?? "UnknownPythonException"
                 let message = exc.toOptionalString() ?? "n/a"
                 var tracebackSummary = ""
@@ -1322,16 +1619,19 @@ public final class PythonKitRunner {
                 logger("PK_ENHANCED_OLLAMA_PYERROR: type=\(typeName) message=\(message) traceback=\(tracebackSummary)")
             }
             logger("PK_ENHANCED_OLLAMA_ERROR: \(error) total=\(String(format: "%.2f", totalElapsed))s")
-            if case PythonError.exception(let exc, _) = error,
+            if case let PythonError.exception(exc, _) = error,
                let description = String(exc),
-               description.contains("KeyboardInterrupt") {
+               description.contains("KeyboardInterrupt")
+            {
                 return .cancelled
             }
             return .failure
         }
     }
 
-    private func scheduleTimeout(for operationKey: String, seconds: TimeInterval, runToken: UUID) -> Task<Void, Never>? {
+    private func scheduleTimeout(for operationKey: String, seconds: TimeInterval,
+                                 runToken: UUID) -> Task<Void, Never>?
+    {
         guard seconds > 0 else { return nil }
         // Capture handler to avoid Sendable warnings
         let handler = self.handleTimeoutTrigger
@@ -1365,6 +1665,7 @@ public final class PythonKitRunner {
         debug: Bool,
         mode: String,
         llmSkipConfidence: Double = 0.95,
+        llmConcurrency: Int = 2,
         chunkTokens: Int = 500,
         overlap: Int = 120,
         temperature: Double = 0.1,
@@ -1374,12 +1675,32 @@ public final class PythonKitRunner {
     ) -> (stream: AsyncStream<PythonRunnerProgressUpdate>, result: Task<PythonRunOutcome, Never>) {
         let streamContinuation = AsyncStream<PythonRunnerProgressUpdate>.makeStream()
 
+        // Outer bridge-level watchdog bound (see `PythonBridgeError`): generous enough to sit
+        // well above every inner phase timeout this call could legitimately take (env setup +
+        // imports + pipeline import + the configured/default processing step), plus a grace
+        // period for the existing interrupt-based cancellation to unwind on its own first. Only
+        // fires for a call the inner mechanism truly could not unstick.
+        let enhancedWatchdogTimeout = Self.watchdogTimeout(
+            for: "ENHANCED_OLLAMA",
+            default: {
+                let baseline = processingStepTimeout ?? PythonTimeoutOverrides.step(for: "PROCESSING", default: 600.0)
+                let setupBudget = PythonTimeoutOverrides.total(for: "ENV_SETUP", default: 600.0)
+                    + PythonTimeoutOverrides.total(for: "IMPORTS", default: 600.0)
+                    + PythonTimeoutOverrides.total(for: "PIPELINE_IMPORT", default: 600.0)
+                let grace = PythonTimeoutOverrides.watchdog(for: "ENHANCED_OLLAMA_GRACE", default: 120.0)
+                return baseline + setupBudget + grace
+            }()
+        )
+
         // Run processing off the main actor to avoid UI blocking
         let processingTask = Task.detached(priority: .userInitiated) { [weak self] in
             guard let self else { return PythonRunOutcome.failure }
             let outcome: PythonRunOutcome
             do {
-                outcome = try self.worker.perform {
+                outcome = try self.worker.performWithWatchdog(
+                    timeout: enhancedWatchdogTimeout,
+                    operation: "enhanced_ollama"
+                ) {
                     self.externalCancellationChecker = cancellationChecker
                     defer {
                         self.externalCancellationChecker = nil
@@ -1393,6 +1714,7 @@ public final class PythonKitRunner {
                         debug: debug,
                         mode: mode,
                         llmSkipConfidence: llmSkipConfidence,
+                        llmConcurrency: llmConcurrency,
                         chunkTokens: chunkTokens,
                         overlap: overlap,
                         temperature: temperature,
@@ -1408,6 +1730,10 @@ public final class PythonKitRunner {
                         }
                     )
                 }
+            } catch let stallError as PythonBridgeError {
+                self.logger("PK_ENHANCED_OLLAMA_WATCHDOG_STALL: \(stallError)")
+                streamContinuation.continuation.finish()
+                return .stalled
             } catch {
                 self.logger("PK_ENHANCED_OLLAMA_EXCEPTION: \(error)")
                 streamContinuation.continuation.finish()
@@ -1435,7 +1761,7 @@ public final class PythonKitRunner {
             guard let self else { return PythonRunOutcome.failure }
             // Simulated progress for deterministic mode
             let totalSteps = 5
-            for step in 1...totalSteps {
+            for step in 1 ... totalSteps {
                 if cancellationChecker() {
                     streamContinuation.continuation.finish()
                     return .cancelled
@@ -1445,9 +1771,23 @@ public final class PythonKitRunner {
                 try? await Task.sleep(nanoseconds: 200_000_000)
             }
 
+            // Same outer watchdog rationale as the enhanced/Ollama path above, sized against
+            // the rules-mock pipeline's own (larger, deterministic) phase timeout defaults.
+            let rulesWatchdogTimeout = Self.watchdogTimeout(
+                for: "RULES_MOCK",
+                default: {
+                    let setupBudget = PythonTimeoutOverrides.total(for: "ENV_SETUP", default: 600.0)
+                        + PythonTimeoutOverrides.total(for: "IMPORTS", default: 600.0)
+                        + PythonTimeoutOverrides.total(for: "PIPELINE_IMPORT", default: 600.0)
+                        + PythonTimeoutOverrides.total(for: "PROCESSING", default: 7200.0)
+                    let grace = PythonTimeoutOverrides.watchdog(for: "RULES_MOCK_GRACE", default: 120.0)
+                    return setupBudget + grace
+                }()
+            )
+
             let outcome: PythonRunOutcome
             do {
-                outcome = try self.worker.perform {
+                outcome = try self.worker.performWithWatchdog(timeout: rulesWatchdogTimeout, operation: "rules_mock") {
                     self.externalCancellationChecker = cancellationChecker
                     defer {
                         self.externalCancellationChecker = nil
@@ -1461,6 +1801,10 @@ public final class PythonKitRunner {
                         cancellationChecker: cancellationChecker
                     )
                 }
+            } catch let stallError as PythonBridgeError {
+                self.logger("PK_RULES_WATCHDOG_STALL: \(stallError)")
+                streamContinuation.continuation.finish()
+                return .stalled
             } catch {
                 self.logger("PK_RULES_EXCEPTION: \(error)")
                 streamContinuation.continuation.finish()
@@ -1482,9 +1826,15 @@ public final class PythonKitRunner {
     ) async throws -> (success: Bool, error: String?, report: [String: Any]?) {
         let startTime = Date()
         logger("PK_METADATA_SCRUB_START: \(inputPath)")
-        
-        // Perform Python call on worker thread
-        let result: (Bool, String?, [String: Any]?) = try worker.perform { [logger, self] in
+
+        // Perform Python call on worker thread, bounded by the bridge-level watchdog (see
+        // `PythonBridgeError`) -- this is a fast, deterministic, non-LLM operation, so a
+        // generous-but-finite bound is enough to catch a genuine hang without false positives.
+        let scrubWatchdogTimeout = Self.watchdogTimeout(for: "METADATA_SCRUB", default: 120.0)
+        let result: (Bool, String?, [String: Any]?) = try worker.performWithWatchdog(
+            timeout: scrubWatchdogTimeout,
+            operation: "metadata_scrub"
+        ) { [logger, self] in
             guard let state = PyGILState_Ensure() else {
                 let missing = PythonSymbolState.missingList().joined(separator: ", ")
                 let detail = missing.isEmpty ? "Missing CPython symbols" : "Missing CPython symbols: \(missing)"
@@ -1499,7 +1849,7 @@ public final class PythonKitRunner {
             } else {
                 PyErr_Clear()
             }
-            
+
             do {
                 let py_os = try Python.attemptImport("os")
                 self.syncEmbeddedEnvToPython(py_os)
@@ -1511,28 +1861,32 @@ public final class PythonKitRunner {
                         "debug": false,
                     ]
                 )
-                
+
                 // Parse tuple result (success: bool, error: str, report: dict)
                 if Bool(Python.isinstance(rawResult, Python.tuple)) == true {
                     let success = Bool(rawResult[0]) == true
                     let errorMsg = String(rawResult[1]) ?? ""
-                    
-                    // Extract report dictionary (full payload with groups) via JSON serialization
+
+                    // Extract report dictionary (full payload with groups). Validated in
+                    // Python (report_schema.MetadataScrubPayload) before this tuple was
+                    // returned; decode into the matching named type here rather than
+                    // guessing the shape with an `as? [String: Any]` cast (step 3 of
+                    // docs/design/bridge_schema_migration.md).
                     var reportDict: [String: Any]? = nil
                     let pyReport = rawResult[2]
                     if Bool(Python.isinstance(pyReport, Python.dict)) == true {
                         do {
                             let json = try Python.attemptImport("json")
                             let jsonString = String(json.dumps(pyReport)) ?? ""
-                            if let data = jsonString.data(using: .utf8),
-                               let obj = try JSONSerialization.jsonObject(with: data) as? [String: Any] {
-                                reportDict = obj
+                            if let data = jsonString.data(using: .utf8) {
+                                let payload = try JSONDecoder().decode(MetadataReportBridgePayload.self, from: data)
+                                reportDict = payload.asDictionary
                             }
                         } catch {
                             reportDict = nil
                         }
                     }
-                    
+
                     return (success, errorMsg.isEmpty ? nil : errorMsg, reportDict)
                 }
                 return (false, "Unexpected result from Python", nil)
@@ -1541,7 +1895,7 @@ public final class PythonKitRunner {
                 return (false, "Python error: \(error)", nil)
             }
         }
-        
+
         let totalElapsed = Date().timeIntervalSince(startTime)
         if result.0 {
             logger("PK_METADATA_SCRUB_OK total=\(String(format: "%.2f", totalElapsed))s")
@@ -1554,7 +1908,7 @@ public final class PythonKitRunner {
         } else {
             logger("PK_METADATA_SCRUB_FAILED: \(result.1 ?? "Unknown") total=\(String(format: "%.2f", totalElapsed))s")
         }
-        
+
         return result
     }
 
@@ -1565,7 +1919,12 @@ public final class PythonKitRunner {
     ) async throws -> (success: Bool, error: String?, report: [String: Any]?, htmlPath: String?) {
         logger("PK_METADATA_REPORT_START: \(inputPath)")
 
-        let result: (Bool, String?, [String: Any]?, String?, String?) = try worker.perform { [logger, self] in
+        // Same bridge-level watchdog rationale as `scrubMetadataOnlyAsync` above.
+        let reportWatchdogTimeout = Self.watchdogTimeout(for: "METADATA_REPORT", default: 120.0)
+        let result: (Bool, String?, [String: Any]?, String?, String?) = try worker.performWithWatchdog(
+            timeout: reportWatchdogTimeout,
+            operation: "metadata_report"
+        ) { [logger, self] in
             guard let state = PyGILState_Ensure() else {
                 let missing = PythonSymbolState.missingList().joined(separator: ", ")
                 let detail = missing.isEmpty ? "Missing CPython symbols" : "Missing CPython symbols: \(missing)"
@@ -1596,22 +1955,31 @@ public final class PythonKitRunner {
                 if Bool(Python.isinstance(rawResult, Python.tuple)) == true {
                     let success = Bool(rawResult[0]) == true
                     let errorMsg = String(rawResult[1]) ?? ""
+                    // Validated in Python (report_schema.MetadataReportPayload) before this
+                    // tuple was returned; decode into the matching named type here (step 3
+                    // of docs/design/bridge_schema_migration.md).
                     var reportDict: [String: Any]? = nil
                     let pyReport = rawResult[2]
                     if Bool(Python.isinstance(pyReport, Python.dict)) == true {
                         do {
                             let json = try Python.attemptImport("json")
                             let jsonString = String(json.dumps(pyReport)) ?? ""
-                            if let data = jsonString.data(using: .utf8),
-                               let obj = try JSONSerialization.jsonObject(with: data) as? [String: Any] {
-                                reportDict = obj
+                            if let data = jsonString.data(using: .utf8) {
+                                let payload = try JSONDecoder().decode(MetadataReportBridgePayload.self, from: data)
+                                reportDict = payload.asDictionary
                             }
                         } catch {
                             reportDict = nil
                         }
                     }
                     let htmlPath = String(rawResult[4]) ?? ""
-                    return (success, errorMsg.isEmpty ? nil : errorMsg, reportDict, String(rawResult[3]) ?? "", htmlPath)
+                    return (
+                        success,
+                        errorMsg.isEmpty ? nil : errorMsg,
+                        reportDict,
+                        String(rawResult[3]) ?? "",
+                        htmlPath
+                    )
                 }
                 return (false, "Unexpected result from Python", nil, "", "")
             } catch {
@@ -1632,7 +2000,12 @@ public final class PythonKitRunner {
     /// Generate HTML for an existing scrub/metadata JSON report
     func generateScrubHTML(from jsonPath: String) async -> String? {
         do {
-            let htmlPath: String = try worker.perform { [logger] in
+            // Same bridge-level watchdog rationale as the metadata paths above.
+            let htmlWatchdogTimeout = Self.watchdogTimeout(for: "GENERATE_SCRUB_HTML", default: 60.0)
+            let htmlPath: String = try worker.performWithWatchdog(
+                timeout: htmlWatchdogTimeout,
+                operation: "generate_scrub_html"
+            ) { [logger] in
                 guard let state = PyGILState_Ensure() else {
                     let missing = PythonSymbolState.missingList().joined(separator: ", ")
                     let detail = missing.isEmpty ? "Missing CPython symbols" : "Missing CPython symbols: \(missing)"

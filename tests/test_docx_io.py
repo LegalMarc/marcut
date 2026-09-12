@@ -6,6 +6,8 @@ Tests cover:
 - _safe_fromstring: XML parsing security
 """
 
+import json
+
 import pytest
 from marcut.docx_io import (
     MetadataCleaningSettings,
@@ -159,7 +161,7 @@ class TestSafeFromstring:
     def test_malformed_xml_raises(self):
         """Test that malformed XML raises an error."""
         xml = b"<root><unclosed>"
-        with pytest.raises(Exception):
+        with pytest.raises(Exception):  # noqa: B017 -- exact parser error type is intentionally unspecified
             _safe_fromstring(xml)
 
     def test_xxe_prevention(self):
@@ -193,12 +195,17 @@ class TestCliArgMappings:
         """Test that all MetadataCleaningSettings bool fields have CLI args."""
         from dataclasses import fields
         settings = MetadataCleaningSettings()
-        setting_fields = {f.name for f in fields(settings) if f.type == bool}
         mapped_fields = set(CLI_ARG_MAP.values())
-        
+
         # All mapped fields should be in settings
         for field in mapped_fields:
             assert hasattr(settings, field), f"CLI mapped field {field} not in settings"
+
+        # All bool fields on the dataclass should in turn be mapped to a CLI arg,
+        # so a newly-added field can't silently ship without one.
+        setting_fields = {f.name for f in fields(settings) if f.type is bool}
+        unmapped = setting_fields - mapped_fields
+        assert not unmapped, f"Settings bool fields missing a CLI_ARG_MAP entry: {sorted(unmapped)}"
 
     def test_cli_arg_format(self):
         """Test that all CLI args follow --no-clean-* format."""
@@ -219,3 +226,505 @@ class TestPresetNone:
         
         args = settings.to_cli_args()
         assert "--preset-none" in args
+
+
+class TestSettingsDiagnosticVisibility:
+    """A settings diagnostic must repeat every occurrence, not just the first.
+
+    Regression coverage for issue #94 fix round 1: Python's default warning
+    filter shows a given (message, category, module, lineno) only once per
+    process, and the macOS app runs Python in-process, reusing one
+    interpreter across an entire batch job with an identical bad payload
+    across documents -- so a ``warnings.warn``-only diagnostic would fire
+    for document 1 and go silent for documents 2..N. These tests use
+    ``caplog`` (module-logger records) rather than ``assertWarns``/
+    ``warnings.catch_warnings``, because both of those reset or invalidate
+    the warnings registry themselves and so would pass even without a fix.
+    """
+
+    def test_malformed_json_diagnostic_repeats_across_calls(self, caplog):
+        import logging as _logging
+
+        from marcut.docx_pkg.settings import _decode_metadata_settings_json
+
+        with caplog.at_level(_logging.WARNING, logger="marcut.docx_pkg.settings"):
+            first = _decode_metadata_settings_json("{not valid json")
+            second = _decode_metadata_settings_json("{not valid json")
+            third = _decode_metadata_settings_json("{not valid json")
+
+        assert first is None
+        assert second is None
+        assert third is None
+        matches = [
+            r for r in caplog.records
+            if "MARCUT_METADATA_SETTINGS_JSON is not valid JSON" in r.message
+        ]
+        assert len(matches) == 3, (
+            "expected the diagnostic on every call, not just the first; got "
+            f"{len(matches)} of 3"
+        )
+
+    def test_wrong_shape_json_diagnostic_repeats_across_calls(self, caplog):
+        import logging as _logging
+
+        from marcut.docx_pkg.settings import _decode_metadata_settings_json
+
+        bad_shape = json.dumps({"settings": "not-an-object"})
+        with caplog.at_level(_logging.WARNING, logger="marcut.docx_pkg.settings"):
+            first = _decode_metadata_settings_json(bad_shape)
+            second = _decode_metadata_settings_json(bad_shape)
+
+        assert first is None
+        assert second is None
+        matches = [
+            r for r in caplog.records
+            if "MARCUT_METADATA_SETTINGS_JSON has an unexpected shape" in r.message
+        ]
+        assert len(matches) == 2
+
+    def test_unrecognised_cli_arg_diagnostic_repeats_across_calls(self, caplog):
+        import logging as _logging
+
+        with caplog.at_level(_logging.WARNING, logger="marcut.docx_pkg.settings"):
+            MetadataCleaningSettings.from_cli_args(["--totally-bogus-flag"])
+            MetadataCleaningSettings.from_cli_args(["--totally-bogus-flag"])
+
+        matches = [
+            r for r in caplog.records
+            if "Unrecognised MARCUT_METADATA_ARGS argument" in r.message
+        ]
+        assert len(matches) == 2
+
+    def test_diagnostic_written_to_marcut_log_path_on_every_call(self, tmp_path, monkeypatch):
+        """The diagnostic must also reach MARCUT_LOG_PATH, which the shipped
+        in-app log viewer reads -- PythonKitBridge.swift never captures
+        Python's stderr, so warnings.warn alone is invisible to a packaged-app
+        user."""
+        from marcut.docx_pkg.settings import _decode_metadata_settings_json
+
+        log_path = tmp_path / "marcut-app.log"
+        monkeypatch.setenv("MARCUT_LOG_PATH", str(log_path))
+
+        _decode_metadata_settings_json("{not valid json")
+        _decode_metadata_settings_json("{not valid json")
+
+        contents = log_path.read_text(encoding="utf-8")
+        occurrences = contents.count("MARCUT_METADATA_SETTINGS_JSON is not valid JSON")
+        assert occurrences == 2, (
+            f"expected 2 app-log occurrences, found {occurrences} in: {contents!r}"
+        )
+
+
+class TestSettingsModuleBoundary:
+    """Lock the docx_io package-split module-boundary invariant.
+
+    docs/design/docx_io_package_split.md Section 2 requires that
+    ``marcut.docx_pkg.settings`` has no dependency on ``python-docx``,
+    ``lxml``, or ``zipfile`` and is importable without touching a real
+    document. Later slices of the split (#73-#76) must not regress this.
+    """
+
+    HEAVY_MODULES = ("docx", "lxml", "zipfile")
+
+    def test_settings_imports_without_docx_lxml_zipfile(self):
+        """Importing settings in a fresh interpreter loads none of the heavy modules.
+
+        Runs in a subprocess because the pytest process already has
+        ``docx``/``lxml`` loaded via ``marcut.docx_io``.
+        """
+        import json
+        import os
+        import subprocess
+        import sys
+        from pathlib import Path
+
+        import marcut
+
+        src_root = Path(marcut.__file__).resolve().parent.parent
+        env = dict(os.environ)
+        env["PYTHONPATH"] = os.pathsep.join(
+            p for p in (str(src_root), env.get("PYTHONPATH", "")) if p
+        )
+        script = (
+            "import sys, json\n"
+            "import marcut.docx_pkg.settings\n"
+            f"heavy = {self.HEAVY_MODULES!r}\n"
+            "loaded = sorted(m for m in sys.modules "
+            "if m.split('.')[0] in heavy)\n"
+            "print(json.dumps(loaded))\n"
+        )
+        result = subprocess.run(
+            [sys.executable, "-c", script],
+            capture_output=True,
+            text=True,
+            env=env,
+            check=True,
+        )
+        loaded = json.loads(result.stdout.strip())
+        assert loaded == [], (
+            f"marcut.docx_pkg.settings pulled in forbidden modules: {loaded}"
+        )
+
+    def test_docx_io_reexports_are_identical_objects(self):
+        """docx_io re-exports the settings objects, not copies."""
+        import marcut.docx_io as docx_io
+        import marcut.docx_pkg.settings as settings
+
+        assert docx_io.MetadataCleaningSettings is settings.MetadataCleaningSettings
+        assert docx_io.CLI_ARG_PAIRS is settings.CLI_ARG_PAIRS
+
+    def test_docx_io_reexports_safe_fromstring_identical_object(self):
+        """docx_io re-exports _safe_fromstring from docx_pkg.xml_utils, not a copy."""
+        import marcut.docx_io as docx_io
+        import marcut.docx_pkg.xml_utils as xml_utils
+
+        assert docx_io._safe_fromstring is xml_utils._safe_fromstring
+
+    def test_xml_utils_xxe_prevention_at_canonical_path(self):
+        """The XXE payload assertion also holds against the canonical module,
+        not just the docx_io shim, so later slices importing directly from
+        marcut.docx_pkg.xml_utils get the same guarantee."""
+        from marcut.docx_pkg.xml_utils import _safe_fromstring as safe_fromstring
+
+        xxe_payload = b"""
+        <!DOCTYPE foo [
+          <!ELEMENT foo ANY >
+          <!ENTITY xxe SYSTEM "file:///etc/passwd" >]><foo>&xxe;</foo>
+        """
+
+        try:
+            root = safe_fromstring(xxe_payload)
+            content = root.text or ""
+            assert "root:" not in content  # /etc/passwd would have "root:"
+        except Exception:
+            # Failing to parse is also acceptable for XXE prevention
+            pass
+
+
+class TestZipPostprocessModuleBoundary:
+    """Lock the docx_io package-split module-boundary invariant for Slice 3.
+
+    docs/design/docx_io_package_split.md Section 2 requires that
+    ``marcut.docx_pkg.zip_postprocess`` never imports ``docx.Document`` --
+    it is a raw bytes/``zipfile``/``lxml`` post-processing pass, distinct
+    from everything that runs on the live ``python-docx`` object tree.
+    """
+
+    def test_zip_postprocess_does_not_import_docx_document(self):
+        """Importing the module in a fresh interpreter never binds ``Document``.
+
+        Runs in a subprocess so the assertion reflects only this module's
+        own imports, not whatever the pytest process already loaded via
+        ``marcut.docx_io``.
+        """
+        import json
+        import os
+        import subprocess
+        import sys
+        from pathlib import Path
+
+        import marcut
+
+        src_root = Path(marcut.__file__).resolve().parent.parent
+        env = dict(os.environ)
+        env["PYTHONPATH"] = os.pathsep.join(
+            p for p in (str(src_root), env.get("PYTHONPATH", "")) if p
+        )
+        script = (
+            "import ast, inspect, json\n"
+            "import marcut.docx_pkg.zip_postprocess as mod\n"
+            "src = inspect.getsource(mod)\n"
+            "tree = ast.parse(src)\n"
+            "names = []\n"
+            "for node in ast.walk(tree):\n"
+            "    if isinstance(node, ast.ImportFrom) and node.module == 'docx':\n"
+            "        names.extend(a.name for a in node.names)\n"
+            "print(json.dumps(names))\n"
+        )
+        result = subprocess.run(
+            [sys.executable, "-c", script],
+            capture_output=True,
+            text=True,
+            env=env,
+            check=True,
+        )
+        imported_from_docx = json.loads(result.stdout.strip())
+        assert "Document" not in imported_from_docx, (
+            f"marcut.docx_pkg.zip_postprocess imports from docx: {imported_from_docx}"
+        )
+
+    def test_docx_io_delegates_to_canonical_rewrite_docx_zip(self):
+        """DocxMap._rewrite_docx_zip calls the canonical module function,
+        not a re-implemented copy -- the identity-chain analogue of the
+        settings/xml_utils re-export tests for a delegating method."""
+        import marcut.docx_io as docx_io
+        import marcut.docx_pkg.zip_postprocess as zip_postprocess
+
+        assert docx_io._rewrite_docx_zip_impl is zip_postprocess.rewrite_docx_zip
+
+    def test_rewrite_docx_zip_callable_unbound_with_self_none(self, tmp_path):
+        """DocxMap._rewrite_docx_zip must stay callable as
+        ``DocxMap._rewrite_docx_zip(None, path, settings)`` (self unused),
+        matching the pattern existing tests
+        (test_metadata_scrubbing.py, test_large_docx_performance.py) rely on."""
+        import zipfile
+
+        from marcut.docx_io import DocxMap
+
+        test_docx = str(tmp_path / "test.docx")
+        with zipfile.ZipFile(test_docx, "w") as zf:
+            zf.writestr(
+                "[Content_Types].xml",
+                '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"/>',
+            )
+            zf.writestr("word/document.xml", "<w:document/>")
+
+        settings = MetadataCleaningSettings.from_preset("none")
+        # Must not raise -- self is never touched inside the method body.
+        DocxMap._rewrite_docx_zip(None, test_docx, settings)
+
+
+class TestScanModuleBoundary:
+    """Lock the docx_io package-split module-boundary invariant for Slice 4.
+
+    docs/design/docx_io_package_split.md Section 4 (Slice 4) requires that
+    the document scanning/indexing layer live in ``marcut.docx_pkg.scan`` as
+    a ``DocumentIndex`` type composed by ``DocxMap`` in ``__init__``, with
+    ``.text``/``.index``/``.detached_parts`` re-exposed onto ``DocxMap`` for
+    backward compatibility -- the identity-chain analogue of the
+    settings/xml_utils/zip_postprocess re-export tests above.
+    """
+
+    def test_docx_io_reexports_document_index_identical_class(self):
+        """docx_io imports the canonical DocumentIndex class, not a copy."""
+        import marcut.docx_io as docx_io
+        import marcut.docx_pkg.scan as scan
+
+        assert docx_io.DocumentIndex is scan.DocumentIndex
+
+    def test_docxmap_composes_document_index_instance(self, tmp_path):
+        """DocxMap.__init__ constructs a real DocumentIndex and re-exposes
+        its .text/.index/.detached_parts as the *same* objects, not copies."""
+        import docx
+        import marcut.docx_pkg.scan as scan
+        from marcut.docx_io import DocxMap
+
+        src = tmp_path / "scan_identity.docx"
+        doc = docx.Document()
+        doc.add_paragraph("hello world")
+        doc.save(str(src))
+
+        docx_map = DocxMap.load(str(src))
+
+        assert isinstance(docx_map._index, scan.DocumentIndex)
+        assert docx_map.text is docx_map._index.text
+        assert docx_map.index is docx_map._index.index
+        assert docx_map.detached_parts is docx_map._index.detached_parts
+        assert "hello world" in docx_map.text
+
+    def test_iter_part_elements_delegates_to_document_index(self, tmp_path):
+        """DocxMap._iter_part_elements/_iter_part_elements_with_parts are
+        thin delegating methods onto the DocumentIndex instance, not a
+        re-implemented copy -- kept as part of DocxMap's tested surface
+        even though the hardening/revision-writing code (Slice 5) is
+        injected the DocumentIndex methods directly rather than routing
+        through these delegates."""
+        import docx
+        from marcut.docx_io import DocxMap
+
+        src = tmp_path / "scan_delegate.docx"
+        doc = docx.Document()
+        doc.add_paragraph("hello world")
+        doc.save(str(src))
+
+        docx_map = DocxMap.load(str(src))
+
+        via_docx_map = list(docx_map._iter_part_elements())
+        via_index = list(docx_map._index._iter_part_elements())
+        assert len(via_docx_map) == len(via_index) > 0
+        assert all(a is b for a, b in zip(via_docx_map, via_index))
+
+        via_docx_map_parts = list(docx_map._iter_part_elements_with_parts())
+        via_index_parts = list(docx_map._index._iter_part_elements_with_parts())
+        assert len(via_docx_map_parts) == len(via_index_parts) > 0
+        assert all(
+            a[0] is b[0] and a[1] is b[1]
+            for a, b in zip(via_docx_map_parts, via_index_parts)
+        )
+
+
+class TestHardeningRevisionModuleBoundary:
+    """Lock the docx_io package-split module-boundary invariant for Slice 5
+    (docs/design/docx_io_package_split.md Section 4, final slice) -- the
+    identity-chain analogue of the settings/xml_utils/zip_postprocess/scan
+    re-export tests above, for `hardening.py`'s `MetadataHardener`,
+    `revision_writer.py`'s `RevisionWriter`, and `document.py`'s `DocxMap`
+    coordinator.
+    """
+
+    def test_docx_io_reexports_docxmap_identical_class(self):
+        """docx_io imports the canonical DocxMap class, not a copy."""
+        import marcut.docx_io as docx_io
+        import marcut.docx_pkg.document as document
+
+        assert docx_io.DocxMap is document.DocxMap
+
+    def test_docx_io_reexports_metadata_hardener_identical_class(self):
+        import marcut.docx_io as docx_io
+        import marcut.docx_pkg.hardening as hardening
+
+        assert docx_io.MetadataHardener is hardening.MetadataHardener
+
+    def test_docx_io_reexports_revision_writer_identical_class(self):
+        import marcut.docx_io as docx_io
+        import marcut.docx_pkg.revision_writer as revision_writer
+
+        assert docx_io.RevisionWriter is revision_writer.RevisionWriter
+
+    def test_docxmap_composes_hardener_and_revision_writer_instances(self, tmp_path):
+        """DocxMap.__init__ constructs real MetadataHardener/RevisionWriter
+        instances, injected with the DocumentIndex's part-iteration
+        methods and sharing the same `.index`/`.warnings` objects -- not
+        copies."""
+        import docx
+        import marcut.docx_pkg.hardening as hardening
+        import marcut.docx_pkg.revision_writer as revision_writer
+        from marcut.docx_io import DocxMap
+
+        src = tmp_path / "hardening_revision_identity.docx"
+        doc = docx.Document()
+        doc.add_paragraph("hello world")
+        doc.save(str(src))
+
+        docx_map = DocxMap.load(str(src))
+
+        assert isinstance(docx_map._hardening, hardening.MetadataHardener)
+        assert isinstance(docx_map._revisions, revision_writer.RevisionWriter)
+
+        # Injected part-iteration callables resolve to the same DocumentIndex
+        # method, not a re-implemented copy.
+        via_hardener = list(docx_map._hardening._iter_part_elements())
+        via_index = list(docx_map._index._iter_part_elements())
+        assert len(via_hardener) == len(via_index) > 0
+        assert all(a is b for a, b in zip(via_hardener, via_index))
+
+        via_revisions = list(docx_map._revisions._iter_part_elements_with_parts())
+        via_index_parts = list(docx_map._index._iter_part_elements_with_parts())
+        assert len(via_revisions) == len(via_index_parts) > 0
+        assert all(
+            a[0] is b[0] and a[1] is b[1]
+            for a, b in zip(via_revisions, via_index_parts)
+        )
+
+        # Same list objects, not copies -- warnings appended on one are
+        # visible via the other, and the RevisionWriter's index is the
+        # DocxMap/DocumentIndex's own character-offset list.
+        assert docx_map._revisions.index is docx_map.index
+        assert docx_map._hardening.warnings is docx_map.warnings
+        assert docx_map._revisions.warnings is docx_map.warnings
+
+    def test_comment_visibility_map_delegates_to_hardener(self, tmp_path):
+        """DocxMap._comment_visibility_map is a thin delegating method onto
+        the MetadataHardener instance, not a re-implemented copy -- it is
+        called directly in tests
+        (test_docx_io_characterization.py::TestCommentVisibilityMap)."""
+        import docx
+        from marcut.docx_io import DocxMap
+
+        src = tmp_path / "comment_visibility_delegate.docx"
+        doc = docx.Document()
+        doc.add_paragraph("hello world")
+        doc.save(str(src))
+
+        docx_map = DocxMap.load(str(src))
+
+        assert docx_map._comment_visibility_map() == docx_map._hardening._comment_visibility_map()
+
+    def test_apply_replacements_delegates_to_revision_writer(self, tmp_path):
+        """DocxMap.apply_replacements calls the canonical RevisionWriter
+        method, not a re-implemented copy."""
+        import docx
+        from unittest import mock
+
+        from marcut.docx_io import DocxMap
+
+        src = tmp_path / "apply_replacements_delegate.docx"
+        doc = docx.Document()
+        doc.add_paragraph("hello world")
+        doc.save(str(src))
+
+        docx_map = DocxMap.load(str(src))
+        spans = [{"start": 0, "end": 5, "replacement": "[X]"}]
+
+        with mock.patch.object(
+            type(docx_map._revisions), "apply_replacements"
+        ) as apply_replacements:
+            docx_map.apply_replacements(spans, track_changes=False)
+
+        apply_replacements.assert_called_once_with(spans, False)
+
+    def test_harden_document_delegates_to_hardener(self, tmp_path):
+        """DocxMap.harden_document calls the canonical MetadataHardener
+        method, not a re-implemented copy."""
+        import docx
+        from unittest import mock
+
+        from marcut.docx_io import DocxMap, MetadataCleaningSettings
+
+        src = tmp_path / "harden_document_delegate.docx"
+        doc = docx.Document()
+        doc.add_paragraph("hello world")
+        doc.save(str(src))
+
+        docx_map = DocxMap.load(str(src))
+        settings = MetadataCleaningSettings()
+
+        with mock.patch.object(
+            type(docx_map._hardening), "harden_document"
+        ) as harden_document:
+            docx_map.harden_document(scrub_all_images=True, settings=settings)
+
+        harden_document.assert_called_once_with(True, settings)
+
+    def test_author_name_set_after_load_is_live_forwarded_to_revision_writer(
+        self, tmp_path
+    ):
+        """A post-construction assignment to ``DocxMap.author_name`` (as
+        ``pipeline.py`` does after ``load_accepting_revisions()``, see
+        ``run_redaction(redaction_author=...)``) must still control the
+        ``w:author`` stamped on emitted ``w:ins``/``w:del`` elements --
+        ``RevisionWriter`` was constructed with a copy of ``author_name``,
+        not a live reference, so ``DocxMap.author_name`` forwards live
+        rather than being shadowed by the copy."""
+        import zipfile
+
+        import docx
+        from lxml import etree
+
+        from marcut.docx_io import DocxMap
+
+        src = tmp_path / "author_name_live_forward.docx"
+        out = tmp_path / "author_name_live_forward_out.docx"
+        doc = docx.Document()
+        doc.add_paragraph("hello world")
+        doc.save(str(src))
+
+        docx_map = DocxMap.load(str(src))
+        docx_map.author_name = "CustomAuthor"
+        assert docx_map._revisions.author_name == "CustomAuthor"
+
+        spans = [{"start": 0, "end": 5, "replacement": "[X]"}]
+        docx_map.apply_replacements(spans, track_changes=True)
+        docx_map.save(str(out))
+
+        with zipfile.ZipFile(out) as zf:
+            document_xml = zf.read("word/document.xml")
+
+        root = etree.fromstring(document_xml)
+        ns = {"w": "http://schemas.openxmlformats.org/wordprocessingml/2006/main"}
+        authors = {
+            el.get("{%s}author" % ns["w"])
+            for el in root.iter()
+            if el.tag in ("{%s}ins" % ns["w"], "{%s}del" % ns["w"])
+        }
+        assert authors == {"CustomAuthor"}

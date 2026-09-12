@@ -38,7 +38,9 @@ If you only need a quick result, read the Start Here section. If you are automat
   - [Install and First Run](#install-and-first-run)
   - [Import Documents](#import-documents)
   - [Settings Explained](#settings-explained)
+  - [Redaction Settings Profiles](#redaction-settings-profiles)
   - [Running Redaction](#running-redaction)
+  - [Resuming Interrupted Batches](#resuming-interrupted-batches)
   - [Reviewing Results](#reviewing-results)
   - [Output Naming (GUI and headless)](#output-naming-gui-and-headless)
   - [Logs and Diagnostics](#logs-and-diagnostics)
@@ -108,7 +110,7 @@ If you are new to Marcut, start with the macOS app and Rules + AI (Enhanced) mod
 ### Quickstart (macOS app)
 
 1. Install the DMG and drag MarcutApp to `/Applications`.
-2. Launch the app and download a model when prompted (recommended: `llama3.1:8b`). Models are stored inside the app's Application Support container.
+2. Launch the app and download a model when prompted (recommended: `qwen2.5:14b`). Models are stored inside the app's Application Support container.
 3. Drag one or more `.docx` files into the window.
 4. Open Settings and choose a mode (Rules + AI is recommended).
 5. Click Redact Documents and choose an output folder.
@@ -134,12 +136,12 @@ pip install -e .
    - macOS app: the bundled AI service starts automatically; download the model in Settings if prompted.
    - CLI from source: install Ollama, then download a model:
 ```bash
-ollama pull llama3.1:8b
+ollama pull qwen2.5:14b
 ```
 
 3. Run a redaction:
 ```bash
-marcut redact --in input.docx --out runs/out.docx --report runs/out_report.json --mode enhanced --model llama3.1:8b
+marcut redact --in input.docx --out runs/out.docx --report runs/out_report.json --mode enhanced --model qwen2.5:14b
 ```
 
 4. Review the DOCX track changes and JSON report.
@@ -227,6 +229,8 @@ Text is extracted from:
 ### Redaction Tags and Track Changes
 
 - Redactions are applied as track changes so you can accept or reject each change. The default DOCX is a review artifact, not a destructively sanitized final-share file.
+- Use **Send Final Redacted Copy** when you are ready to share a finalized document. Marcut creates a separate copy, accepts the redaction Track Changes in that copy, and runs maximum-privacy metadata scrubbing before opening the share sheet.
+- Use **Send Review Copy** only when you intentionally want to share the Track Changes proposal and preserve review metadata for the recipient.
 - Redaction tags appear as inserted text in red (for example `[NAME_1]`).
 - Original content appears as deletions.
 - Possessives are preserved (`[NAME_1]'s`).
@@ -285,7 +289,7 @@ The labels below appear in the audit report and in redaction tags. Some labels a
 - macOS 14 or later.
 - Apple Silicon (arm64). Non-arm64 builds show an unsupported architecture screen.
 - No system Python or external Ollama install is required for the bundled app.
-- On first run, the app prompts you to download a model (recommended: `llama3.1:8b`).
+- On first run, the app prompts you to download a model (recommended: `qwen2.5:14b`).
 
 Model storage paths:
 - Primary: `~/Library/Application Support/MarcutApp/models/`
@@ -300,6 +304,8 @@ Model storage paths:
 
 ### Settings Explained
 
+Use the search field at the top of Settings to filter by setting name; matching rows and sections stay visible and everything else is hidden as you type.
+
 Processing Mode
 - Rules Only: deterministic PII detection (fast, no model).
 - Rules + AI: rules plus LLM extraction and validation (recommended).
@@ -307,7 +313,7 @@ Processing Mode
 - Advanced Mode: exposes the three override behaviors (Rules Override, Constrained LLM Overrides, LLM Overrides).
 
 AI Model (Rules + AI)
-- Choose from recommended models (for example `llama3.1:8b`, `mistral:7b`, `llama3.2:3b`).
+- Choose from recommended models (for example `qwen2.5:14b`, `qwen2.5:7b`, `phi4-mini:3.8b`).
 - Manage Models to download; Reveal Models to open the models directory.
 - Larger models are slower but can catch more context-dependent entities.
 
@@ -321,6 +327,7 @@ Excluded Terms
 - Terms or regex patterns in this file are excluded from redaction.
 - Matching is case-insensitive; leading determiners and simple plurals are ignored.
 - Exclusions apply to both deterministic rules and AI validation.
+- The editor includes a live preview: type a test phrase and see instantly whether it matches one of your exclusion entries, using the same matching logic the pipeline applies at redaction time, before you run it on a real document.
 
 Advanced AI Settings (Advanced mode)
 - LLM Confidence (0 to 100): higher = stricter about skipping (more redaction).
@@ -337,15 +344,24 @@ Debug
 
 Notifications
 - System notifications can be enabled for completion banners.
-- The app may request permission the first time notifications are used.
+- A native notification is also posted automatically when a model finishes downloading, so you can switch away from the app while a large model downloads.
+- The app requests notification permission the first time it actually needs to post one, not at launch.
+
+### Redaction Settings Profiles
+
+- Use Export Profile in Settings to save your current metadata-cleaning and redaction settings as a single JSON file, useful for sharing a standard configuration across a legal team.
+- Use Import Profile to load a previously exported file; importing fully replaces the current settings rather than merging with them.
+- Profiles include a schema version. Importing a file from an incompatible or newer schema version is rejected with a clear error, and no settings are changed.
 
 ### Running Redaction
 
 1. Click Redact Documents.
 2. Choose an output folder.
-3. The app checks the environment (Python runtime and model readiness).
-4. Progress stages appear for each document: Loading, Detecting Data, AI Analysis, Validating, Merging, Creating Output.
-5. You can cancel processing with Stop.
+3. The app runs pre-flight checks: Python runtime, model readiness, that the output folder is writable, and that there is enough free disk space. A failed check is reported upfront (for example a writability or "not enough free disk space" message) instead of failing partway through the run.
+4. Progress stages appear for each document: Loading, Detecting Data, AI Analysis, Validating, Merging, Creating Output. During AI Analysis the bar advances continuously as the model streams through each chunk, not only when a whole chunk finishes.
+5. For a batch of 3 or more documents, an estimated-time-remaining figure appears once at least 2 documents have completed. The estimate is weighted by each document's word count, so a queue that starts with small/fast documents doesn't produce a misleadingly short figure for larger documents still pending. With fewer completed documents there isn't enough data yet, so no estimate is shown.
+6. You can cancel processing with Stop. Stopping is responsive: an active Ollama request or hanging extraction is interrupted promptly rather than waiting for the current document to finish, and no partial output is written for a cancelled document.
+7. While any document is processing, Marcut keeps the Mac awake so sleep does not interrupt a long run. If the Mac does sleep and wake mid-run, the AI service is health-checked on wake: processing continues if it responds, or the in-flight document is failed cleanly (with a restart prompt) if it does not.
 
 Metadata-only option
 - Use Scrub Metadata to clean metadata without redacting text.
@@ -354,12 +370,22 @@ Metadata-only option
 
 Tip: process one document first to confirm the rules and output, then run batches.
 
+### Resuming Interrupted Batches
+
+- If the app quits or crashes while documents are still pending or processing, it remembers the queue.
+- On the next launch, if pending work was found, the app offers to resume: choose Resume to reload those documents in a pending state, or Discard to clear the record.
+- Resuming reloads the document list only; you still start processing yourself with Redact Documents. A document that was actively processing when the app quit goes back to pending, not to whatever partial state it was in.
+- A batch that finished normally leaves nothing to resume, so no prompt appears on the next launch.
+
 ### Reviewing Results
 
 Each completed document row includes:
 - Open Redacted Document.
 - View Audit Report.
 - Show in Finder.
+- Send Document (see Redaction Tags and Track Changes for the Send Final Redacted Copy vs Send Review Copy choice).
+
+If a batch has one or more failed documents, a Retry Failed button appears. It re-queues only the documents currently marked failed; completed documents are left untouched.
 
 Open the DOCX in Word to review track changes and accept or reject redactions before sharing the document outside your review workflow.
 
@@ -383,6 +409,8 @@ macOS app (headless)
 
 ### Logs and Diagnostics
 
+Use View Logs in Settings to read the most recent log file directly in the app, with a Reveal in Finder button if you need the actual file. This is the easiest way to check logs without navigating Finder manually.
+
 Logs live in:
 - `~/Library/Application Support/MarcutApp/logs/`
 - Sandboxed app builds resolve this inside the app container; use Open App Log to jump to the active path.
@@ -395,10 +423,10 @@ Other logs
 
 ```bash
 # Headless redaction
-MarcutApp --redact --in /path/to/file.docx --outdir /tmp/out --mode enhanced --model llama3.1:8b
+MarcutApp --redact --in /path/to/file.docx --outdir /tmp/out --mode enhanced --model qwen2.5:14b
 
 # Model download
-MarcutApp --download-model llama3.1:8b
+MarcutApp --download-model qwen2.5:14b
 
 # Diagnostics
 MarcutApp --diagnose
@@ -446,7 +474,7 @@ Required
 Mode and backend
 - `--mode <rules|enhanced|rules_override|constrained_overrides|llm_overrides>` (default: `enhanced`, `strict` is an alias for `rules`; `enhanced` maps to `rules_override`).
 - `--backend <ollama|llama_cpp|mock>` (default: `ollama`).
-- `--model <id-or-path>` (default: `llama3.1:8b`).
+- `--model <id-or-path>` (default: `qwen2.5:14b`).
 
 LLM tuning
 - `--chunk-tokens <int>` (default: 1000).
@@ -495,7 +523,7 @@ MARCUT_STATUS: Processing chunk 3 of 6
 
 ```bash
 # Enhanced mode with Ollama (recommended)
-marcut redact --in input.docx --out runs/out.docx --report runs/out_report.json --mode enhanced --model llama3.1:8b
+marcut redact --in input.docx --out runs/out.docx --report runs/out_report.json --mode enhanced --model qwen2.5:14b
 
 # Rules only (no model calls)
 marcut redact --in input.docx --out runs/out.docx --report runs/out_report.json --mode rules
@@ -582,6 +610,14 @@ Core runtime
 - `MARCUT_METADATA_ARGS`: space-separated metadata cleaning flags (advanced).
 - `MARCUT_SCRUB_REPORT_PATH`: override path for the scrub report JSON.
 - `MARCUT_DEBUG_PATH=1`: print Python `sys.path` at startup (advanced diagnostics).
+- `MARCUT_DEVELOPER_UNSAFE_ALLOW_REMOTE_OLLAMA=1`: source-developer-only override to allow a non-loopback Ollama host; never use with confidential documents (see Network Access Summary).
+- `MARCUT_PROCESSING_DEADLINE_MONOTONIC`: internal deadline marker (monotonic clock value) used to bound Ollama requests and interrupt hanging extraction; set automatically by the app, not intended for manual use.
+
+Reliability and size budgets (advanced; sensible defaults apply if unset)
+- `MARCUT_METADATA_CAPTURE_MAX_STRING_CHARS`, `MARCUT_REPORT_EXPORT_MAX_PART_BYTES`, `MARCUT_REPORT_EXPORT_MAX_BYTES`: bound how much raw metadata/custom-XML content is captured before it is summarized instead of retained in full. See Metadata Cleaning Controls in `docs/METADATA_HARDENING.md`.
+- `MARCUT_METADATA_REPORT_MAX_STRING_CHARS`, `MARCUT_METADATA_REPORT_MAX_LIST_ITEMS`, `MARCUT_METADATA_REPORT_MAX_DICT_ITEMS`: bound field sizes when the scrub report JSON is serialized, with truncation warnings recorded in the report.
+- `MARCUT_ENABLE_FORENSIC_EXPORTS` / `MARCUT_ENABLE_BINARY_EXPORTS`: opt in to retaining raw embedded binary parts (bounded by the export byte limits above) instead of a summary; off by default.
+- `MARCUT_CONSISTENCY_MAX_CANDIDATES`, `MARCUT_CONSISTENCY_MAX_FUZZY_ORG_CANDIDATES`, `MARCUT_CONSISTENCY_MAX_PATTERN_CHARS`: bound the consistency-pass rescan on documents with very large numbers of unique candidate entities. See `docs/PERFORMANCE_OPTIMIZATION.md`.
 
 App diagnostics
 - `MARCUT_USE_PYTHONKIT=false`: force CLI fallback instead of in-process PythonKit.
@@ -857,6 +893,10 @@ Override behaviors:
 - Constrained LLM Overrides: AI can drop only ORG/NAME/LOC rule spans when confidence meets `llm_skip_confidence` (default 0.99 in the app; CLI default 0.95).
 - LLM Overrides: AI can drop rule spans across labels; use with caution.
 
+Fail-closed on incomplete extraction:
+- If the AI extraction for any chunk never succeeds (after its retries), the run fails closed with error code `AI_CHUNK_EXTRACTION_INCOMPLETE`: no output DOCX is written and the report is a failure report naming the character range(s) that were never analyzed.
+- This is deliberate for a privacy tool: shipping a "redacted" document that skipped an unanalyzed range would be worse than failing the run. Retry with a smaller chunk size, a different model, or after confirming the AI service is reachable.
+
 LLM tuning controls:
 - `temperature`: sampling variability (lower is more deterministic).
 - `seed`: helps reproducibility.
@@ -1044,7 +1084,9 @@ Rules-only safety
 - `rules.py`: deterministic regex rules and rule filtering.
 - `model.py`: Ollama/llama.cpp extraction helpers and parsing.
 - `model_enhanced.py`: AI extraction + validation pipeline.
-- `docx_io.py`: DOCX I/O, track changes, metadata scrubbing, and hardening.
+- `docx_pkg/document.py`: `DocxMap`, the DOCX load/save coordinator (`docx_io.py` re-exports it).
+- `docx_pkg/revision_writer.py`: track-changes revision authoring.
+- `docx_pkg/hardening.py`: in-memory metadata scrubbing and hardening.
 - `docx_revisions.py`: acceptance of existing revisions.
 - `report.py`: JSON audit report writer.
 - `chunker.py`: text chunking utilities and small-doc threshold.
@@ -1084,6 +1126,7 @@ Sandboxed builds resolve these inside the app container; use Reveal buttons in S
 - Model downloads require network access.
 - Inference uses a local Ollama server bound to `127.0.0.1` only.
 - `OLLAMA_HOST` and `MARCUT_OLLAMA_HOST` are sanitized to loopback; only the port may vary.
+- Public app runs ignore legacy remote-host overrides. Source developers can opt into remote Ollama only with `MARCUT_DEVELOPER_UNSAFE_ALLOW_REMOTE_OLLAMA=1`; do not use that unsafe mode with confidential documents.
 
 ### Metadata Reduction and Hardening
 
@@ -1139,8 +1182,23 @@ If permission is denied, you can grant it later in macOS System Settings.
 - "AI processing timed out"
   - Use a smaller model, reduce `chunk-tokens`, or switch to Rules only.
 
+- "The AI could not fully scan this document, so it was not redacted" (`AI_CHUNK_EXTRACTION_INCOMPLETE`)
+  - Part of the document could not be analyzed by the AI, so Marcut fails the run closed rather than shipping a document with an unscanned range. No output DOCX is written. Try again, reduce `chunk-tokens`, or use a different model. See AI Extraction and Validation for why this fails closed.
+
 - "Cannot write to selected destination"
-  - Choose a different output folder with write permission.
+  - Choose a different output folder with write permission. This is checked before the run starts.
+
+- "Not enough free disk space..."
+  - Free up space or choose a location on a volume with more room. The message states roughly how much is needed versus available. Checked before a redaction run and before a model download.
+
+- "Another Ollama (or other) instance is running on port ..."
+  - A foreign process was already listening on the port Marcut expected for its embedded AI service. Marcut reports it and tries a different port. If it recurs, quit any separately launched Ollama instance and relaunch Marcut.
+
+- "Processing stalled - the embedded engine stopped responding"
+  - The embedded AI worker wedged and stopped sending progress. Marcut detects this via an internal heartbeat and fails the document instead of freezing. Restart Marcut and re-run.
+
+- "Processing didn't survive sleep..."
+  - The Mac slept and the AI service didn't respond after waking. Restart Marcut to resume processing.
 
 - "Python runtime unavailable" (macOS app)
   - Restart the app; reinstall if the embedded runtime failed to load.
@@ -1179,7 +1237,7 @@ If redactions are too aggressive:
 
 ### Performance Tips
 
-- Use smaller models for faster results (`llama3.2:3b` is faster than `llama3.1:8b`).
+- Use smaller models for faster results (`phi4-mini:3.8b` is faster than `qwen2.5:14b`).
 - Reduce `chunk-tokens` for large documents to avoid timeouts.
 - Use Rules only for the fastest deterministic scan.
 - Disable `IMAGES` to avoid removing images if you do not need that step.
@@ -1268,7 +1326,7 @@ A: Any editor that shows track changes can work, but Word is the most reliable.
 
 - macOS app version is shown in About MarcutApp.
 - CLI version is defined in `pyproject.toml` (use `pip show marcut`).
-- Project history lives in `CHANGELOG.md` and `docs/RELEASE_NOTES_v0.2.2.md`.
+- Project history lives in `docs/CHANGELOG.md`.
 
 ## Licensing and Third-Party Notices
 
@@ -1282,28 +1340,27 @@ License file base path:
 - `MarcutApp.app/Contents/Resources/python_site/<package>-<version>.dist-info/licenses/`
 - CPython license: `MarcutApp.app/Contents/Frameworks/Python.framework/Versions/3.11/LICENSE.txt`
 
-Included packages:
+Included packages (versions tracked in `docs/release/python-sbom.json`; regenerate that file and this list together if dependencies change):
 - **CPython 3.11.x** — PSF License (see CPython license path above).
 - **annotated-types 0.7.0** — MIT (licenses/LICENSE).
-- **certifi 2026.1.4** — MPL-2.0 (licenses/LICENSE).
-- **charset-normalizer 3.4.4** — MIT (licenses/LICENSE).
-- **dateparser 1.2.2** — BSD (licenses/LICENSE).
-- **idna 3.11** — see bundled license file (licenses/LICENSE.md).
-- **lxml 6.0.2** — BSD-3-Clause (licenses/LICENSE.txt).
-- **numpy 2.4.1** — see bundled license file (licenses/LICENSE.txt).
-- **pydantic 2.12.5** — see bundled license file (licenses/LICENSE).
-- **pydantic-core 2.41.5** — see bundled license file (licenses/LICENSE).
+- **certifi 2026.6.17** — MPL-2.0 (licenses/LICENSE).
+- **charset-normalizer 3.4.7** — MIT (licenses/LICENSE).
+- **dateparser 1.2.0** — BSD (licenses/LICENSE).
+- **idna 3.18** — see bundled license file (licenses/LICENSE.md).
+- **lxml 6.1.0** — BSD-3-Clause (licenses/LICENSE.txt).
+- **numpy 2.2.0** — see bundled license file (licenses/LICENSE.txt).
+- **pydantic 2.10.3** — see bundled license file (licenses/LICENSE).
+- **pydantic-core 2.27.1** — see bundled license file (licenses/LICENSE).
 - **python-dateutil 2.9.0.post0** — see bundled license file (licenses/LICENSE).
-- **python-docx 1.2.0** — MIT (licenses/LICENSE).
-- **pytz 2025.2** — MIT (licenses/LICENSE.txt).
-- **rapidfuzz 3.14.3** — see bundled license file (licenses/LICENSE).
-- **regex 2026.1.15** — see bundled license file (licenses/LICENSE.txt).
-- **requests 2.32.5** — Apache-2.0 (licenses/LICENSE).
+- **python-docx 1.1.2** — MIT (licenses/LICENSE).
+- **pytz 2026.2** — MIT (licenses/LICENSE.txt).
+- **rapidfuzz 3.14.5** — see bundled license file (licenses/LICENSE).
+- **regex 2024.11.6** — see bundled license file (licenses/LICENSE.txt).
+- **requests 2.33.0** — Apache-2.0 (licenses/LICENSE).
 - **six 1.17.0** — MIT (licenses/LICENSE).
 - **tqdm 4.67.1** — MPL-2.0/MIT (licenses/LICENCE).
-- **typing-extensions 4.15.0** — see bundled license file (licenses/LICENSE).
-- **typing-inspection 0.4.2** — see bundled license file (licenses/LICENSE).
-- **tzlocal 5.3.1** — MIT (licenses/LICENSE.txt).
-- **urllib3 2.6.3** — see bundled license file (licenses/LICENSE.txt).
+- **typing-extensions 4.16.0** — see bundled license file (licenses/LICENSE).
+- **tzlocal 5.4.4** — MIT (licenses/LICENSE.txt).
+- **urllib3 2.7.0** — see bundled license file (licenses/LICENSE.txt).
 
 If any package version changes, the authoritative license text is the one shipped in the app bundle.

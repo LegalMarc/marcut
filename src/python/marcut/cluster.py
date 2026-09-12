@@ -10,20 +10,29 @@ def normalize(entity: str) -> str:
         if x.endswith(" " + suf):
             x = x[:-(len(suf)+1)]
     x = "".join(ch for ch in x if ch.isalnum() or ch.isspace()).strip()
-    while "  " in x: x = x.replace("  "," ")
+    while "  " in x:
+        x = x.replace("  ", " ")
     return x
 
 class ClusterTable:
     def __init__(self):
-        self.next_name = 1; self.next_org = 1; self.next_brand = 1
+        self.next_name = 1
+        self.next_org = 1
+        self.next_brand = 1
         self.clusters: Dict[str, List[Dict[str,Any]]] = {"NAME":[], "ORG":[], "BRAND":[]}
 
     def _new_id(self, label: str) -> str:
         if label == "NAME":
-            k = f"NAME_{self.next_name}"; self.next_name += 1; return k
+            k = f"NAME_{self.next_name}"
+            self.next_name += 1
+            return k
         if label == "ORG":
-            k = f"ORG_{self.next_org}"; self.next_org += 1; return k
-        k = f"BRAND_{self.next_brand}"; self.next_brand += 1; return k
+            k = f"ORG_{self.next_org}"
+            self.next_org += 1
+            return k
+        k = f"BRAND_{self.next_brand}"
+        self.next_brand += 1
+        return k
 
     def link(self, label: str, surface: str) -> Tuple[str, float, bool]:
         n = normalize(surface)
@@ -31,7 +40,8 @@ class ClusterTable:
         for cl in self.clusters[label]:
             for alias in cl["aliases"]:
                 s = fuzz.token_set_ratio(n, alias) / 100.0
-                if s > best[1]: best = (cl, s)
+                if s > best[1]:
+                    best = (cl, s)
         if best[0] and (best[1] >= 0.82 or n in best[0]["aliases"]):
             best[0]["aliases"].add(n)
             return best[0]["id"], best[1], False

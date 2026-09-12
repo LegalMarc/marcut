@@ -8,6 +8,8 @@ Tests cover:
 
 import pytest
 import argparse
+import sys
+import marcut.cli as cli
 from marcut.cli import _parse_mode, build
 
 
@@ -103,13 +105,17 @@ class TestBuildParser:
         # Check defaults
         assert args.mode == "enhanced"  # default mode
         assert args.backend == "ollama"  # default backend
-        assert args.model == "llama3.1:8b"  # default model
+        assert args.model == "qwen2.5:14b"  # default model
         assert args.threads == 4
         assert args.chunk_tokens == 1000
         assert args.overlap == 150
         assert args.temp == 0.1
         assert args.seed == 42
         assert args.llm_skip_confidence == 0.95
+        assert args.llm_concurrency == 2
+        assert args.think is False
+        assert args.format_schema is None
+        assert args.rationale is None
         assert args.debug is False
         assert args.no_qa is False
         assert args.metadata_preset is None
@@ -233,6 +239,46 @@ class TestEdgeCases:
         ])
         assert args.llama_gguf == "/path/to/model.gguf"
 
+    def test_main_forwards_gguf_backend_settings(self, monkeypatch):
+        """CLI llama.cpp settings should reach unified execution."""
+        captured = {}
+
+        def fake_run_unified_redaction(**kwargs):
+            captured.update(kwargs)
+            return {
+                "success": True,
+                "exit_code": 0,
+                "duration": 0.1,
+                "entity_count": 0,
+                "phase_timings": {},
+                "llm_timing": {},
+            }
+
+        monkeypatch.setattr(cli, "run_unified_redaction", fake_run_unified_redaction)
+        monkeypatch.setattr(sys, "argv", [
+            "marcut",
+            "redact",
+            "--in", "/input.docx",
+            "--out", "/output.docx",
+            "--report", "/report.json",
+            "--mode", "enhanced",
+            "--backend", "llama_cpp",
+            "--llama-gguf", "/models/local.gguf",
+            "--threads", "8",
+            "--temp", "0.4",
+            "--seed", "123",
+        ])
+
+        with pytest.raises(SystemExit) as exc:
+            cli.main()
+
+        assert exc.value.code == 0
+        assert captured["backend"] == "llama_cpp"
+        assert captured["llama_gguf"] == "/models/local.gguf"
+        assert captured["threads"] == 8
+        assert captured["temperature"] == 0.4
+        assert captured["seed"] == 123
+
     def test_no_qa_flag(self):
         """Test --no-qa flag."""
         parser = build()
@@ -244,3 +290,72 @@ class TestEdgeCases:
             "--no-qa"
         ])
         assert args.no_qa is True
+
+    def test_rationale_flag_defaults_to_none_and_is_settable(self):
+        """--rationale (#88): omitted means "defer to the
+        MARCUT_GENERATE_RATIONALE env var", not an implicit False."""
+        parser = build()
+        args = parser.parse_args([
+            "redact",
+            "--in", "/input.docx",
+            "--out", "/output.docx",
+            "--report", "/report.json",
+        ])
+        assert args.rationale is None
+
+        args = parser.parse_args([
+            "redact",
+            "--in", "/input.docx",
+            "--out", "/output.docx",
+            "--report", "/report.json",
+            "--rationale",
+        ])
+        assert args.rationale is True
+
+    def test_main_forwards_rationale_flag(self, monkeypatch):
+        """--rationale (#88) must reach run_unified_redaction as
+        generate_rationale, and stay None (not False) when omitted so an
+        operator relying on MARCUT_GENERATE_RATIONALE isn't silently
+        overridden."""
+        captured = {}
+
+        def fake_run_unified_redaction(**kwargs):
+            captured.update(kwargs)
+            return {
+                "success": True,
+                "exit_code": 0,
+                "duration": 0.1,
+                "entity_count": 0,
+                "phase_timings": {},
+                "llm_timing": {},
+            }
+
+        monkeypatch.setattr(cli, "run_unified_redaction", fake_run_unified_redaction)
+        monkeypatch.setattr(cli, "ensure_ollama_ready", lambda **kwargs: None)
+        monkeypatch.setattr(sys, "argv", [
+            "marcut",
+            "redact",
+            "--in", "/input.docx",
+            "--out", "/output.docx",
+            "--report", "/report.json",
+            "--rationale",
+        ])
+
+        with pytest.raises(SystemExit) as exc:
+            cli.main()
+
+        assert exc.value.code == 0
+        assert captured["generate_rationale"] is True
+
+        monkeypatch.setattr(sys, "argv", [
+            "marcut",
+            "redact",
+            "--in", "/input.docx",
+            "--out", "/output.docx",
+            "--report", "/report.json",
+        ])
+        with pytest.raises(SystemExit) as exc:
+            cli.main()
+
+        assert exc.value.code == 0
+        assert captured["generate_rationale"] is None

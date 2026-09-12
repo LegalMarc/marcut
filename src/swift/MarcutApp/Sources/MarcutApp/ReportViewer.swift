@@ -1,12 +1,40 @@
+import AppKit
+import Foundation
+import Security
 import SwiftUI
 import WebKit
-import AppKit
-import Security
-import Foundation
 
 private enum ReportDisclosureAction {
     case print
     case share
+}
+
+/// Typed decode target for one entry of the on-disk report's `binary_exports`/
+/// `large_exports` arrays, written by `pipeline.py`'s "STRUCTURED BINARY EXPORT" block
+/// (`export_entry`) and declared as `Optional[List[Dict[str, Any]]]` on `ScrubReport`
+/// (`report_schema.py`). Only `path` is read by this file, and this reader treats report
+/// content as attacker-influenceable, so only `path` is decoded here: `JSONDecoder` fails
+/// the whole array when any single element is missing a required key, and requiring fields
+/// this file never uses would let one malformed/older entry blank out every other export in
+/// the array. `report_html.py`'s own reader of this same data treats `name`/`type`/`size` as
+/// optional for the same reason (`binary.get('name', '')`, etc.). `Decodable` already ignores
+/// unknown keys, so the shape is free to grow.
+struct BinaryExportEntry: Decodable {
+    let path: String
+}
+
+/// Container for the two optional export arrays a report may carry. `pipeline.py` only
+/// sets `report["binary_exports"]`/`report["large_exports"]` when the corresponding list is
+/// non-empty (`if binary_exports: report["binary_exports"] = binary_exports`), so a report
+/// with no exports of a given kind omits the key entirely rather than writing `[]`.
+struct BinaryExportManifest: Decodable {
+    let binaryExports: [BinaryExportEntry]?
+    let largeExports: [BinaryExportEntry]?
+
+    enum CodingKeys: String, CodingKey {
+        case binaryExports = "binary_exports"
+        case largeExports = "large_exports"
+    }
 }
 
 struct ReportViewer: View {
@@ -43,7 +71,7 @@ struct ReportViewer: View {
                 .buttonStyle(.bordered)
                 .controlSize(.regular)
                 .frame(width: 100, height: 32)
-                
+
                 Button {
                     confirmDisclosure(.share)
                 } label: {
@@ -51,8 +79,8 @@ struct ReportViewer: View {
                 }
                 .buttonStyle(.bordered)
                 .controlSize(.regular)
-                    .frame(width: 100, height: 32)
-                
+                .frame(width: 100, height: 32)
+
                 Button {
                     showBurnConfirm = true
                 } label: {
@@ -110,11 +138,17 @@ struct ReportViewer: View {
                 pendingDisclosureAction = nil
             }
         } message: {
-            Text("Audit and metadata reports may include original detected text, filenames, document metadata, and forensic artifacts. Share or print only to approved destinations.")
+            Text(
+                "Audit and metadata reports may include original detected text, filenames, document metadata, and forensic artifacts. Share or print only to approved destinations."
+            )
         }
         .alert("Burn Failed", isPresented: Binding(
             get: { burnErrorMessage != nil },
-            set: { if !$0 { burnErrorMessage = nil } }
+            set: {
+                if !$0 {
+                    burnErrorMessage = nil
+                }
+            }
         )) {
             Button("OK", role: .cancel) {}
         } message: {
@@ -122,7 +156,11 @@ struct ReportViewer: View {
         }
         .alert("File Not Found", isPresented: Binding(
             get: { openBinaryErrorMessage != nil },
-            set: { if !$0 { openBinaryErrorMessage = nil } }
+            set: {
+                if !$0 {
+                    openBinaryErrorMessage = nil
+                }
+            }
         )) {
             Button("OK", role: .cancel) {}
         } message: {
@@ -241,27 +279,45 @@ struct ReportViewer: View {
         return Array(Set(candidates)).filter { FileManager.default.fileExists(atPath: $0.path) }
     }
 
-    private func collectBinaryExportURLs(from jsonURL: URL) -> [URL] {
+    /// Pure, testable parse of a report JSON `Data` into the relative export paths named by
+    /// its `binary_exports`/`large_exports` arrays (both merged, in that order, unfiltered).
+    /// Returns `nil` on decode failure so the caller can log that distinctly from "no exports
+    /// present". Does no I/O and does not apply the directory-containment check -- that stays
+    /// the caller's responsibility, unchanged, in `collectBinaryExportURLs(from:)`.
+    ///
+    /// Internal (not private) so this is directly unit-testable via `@testable import
+    /// MarcutApp`, matching the `parseFailureReport`/`loadFailureReport` split in
+    /// `DocumentRedactionViewModel.swift` (issue #89).
+    static func parseBinaryExportRelativePaths(from data: Data) -> [String]? {
+        guard let manifest = try? JSONDecoder().decode(BinaryExportManifest.self, from: data) else {
+            return nil
+        }
+        let entries = (manifest.binaryExports ?? []) + (manifest.largeExports ?? [])
+        return entries.map(\.path)
+    }
+
+    /// Internal (not private) for the same testability reason as `parseBinaryExportRelativePaths`.
+    func collectBinaryExportURLs(from jsonURL: URL) -> [URL] {
         guard FileManager.default.fileExists(atPath: jsonURL.path) else { return [] }
         guard let data = try? Data(contentsOf: jsonURL),
-              let json = try? JSONSerialization.jsonObject(with: data, options: []),
-              let payload = json as? [String: Any] else {
+              let relativePaths = Self.parseBinaryExportRelativePaths(from: data)
+        else {
+            DebugLogger.shared.log(
+                "Failed to parse binary export manifest at \(jsonURL.path)",
+                component: "ReportViewer"
+            )
             return []
         }
         let reportDir = jsonURL.deletingLastPathComponent()
         var urls = Set<URL>()
-        let exportKeys = ["binary_exports", "large_exports"]
-        for key in exportKeys {
-            guard let entries = payload[key] as? [[String: Any]] else { continue }
-            for entry in entries {
-                guard let relPath = entry["path"] as? String, !relPath.isEmpty else { continue }
-                let candidate = reportDir.appendingPathComponent(relPath).standardizedFileURL
-                let rootPath = reportDir.standardizedFileURL.path
-                let candidatePath = candidate.path
-                let withinRoot = candidatePath == rootPath || candidatePath.hasPrefix(rootPath + "/")
-                if withinRoot {
-                    urls.insert(candidate)
-                }
+        for relPath in relativePaths {
+            guard !relPath.isEmpty else { continue }
+            let candidate = reportDir.appendingPathComponent(relPath).standardizedFileURL
+            let rootPath = reportDir.standardizedFileURL.path
+            let candidatePath = candidate.path
+            let withinRoot = candidatePath == rootPath || candidatePath.hasPrefix(rootPath + "/")
+            if withinRoot {
+                urls.insert(candidate)
             }
         }
         return Array(urls)
@@ -274,11 +330,13 @@ struct ReportViewer: View {
         let fm = FileManager.default
         var isDirectory: ObjCBool = false
         guard fm.fileExists(atPath: binariesDir.path, isDirectory: &isDirectory),
-              isDirectory.boolValue else {
+              isDirectory.boolValue
+        else {
             return
         }
         if let contents = try? fm.contentsOfDirectory(at: binariesDir, includingPropertiesForKeys: nil),
-           contents.isEmpty {
+           contents.isEmpty
+        {
             try? fm.removeItem(at: binariesDir)
         }
     }
@@ -310,7 +368,12 @@ struct ReportViewer: View {
         guard fm.fileExists(atPath: url.path, isDirectory: &isDirectory), isDirectory.boolValue else {
             return
         }
-        if let enumerator = fm.enumerator(at: url, includingPropertiesForKeys: [.isRegularFileKey], options: [], errorHandler: nil) {
+        if let enumerator = fm.enumerator(
+            at: url,
+            includingPropertiesForKeys: [.isRegularFileKey],
+            options: [],
+            errorHandler: nil
+        ) {
             for case let fileURL as URL in enumerator {
                 let isRegular = (try? fileURL.resourceValues(forKeys: [.isRegularFileKey]))?.isRegularFile ?? false
                 if isRegular {
@@ -326,8 +389,8 @@ struct ReportViewer: View {
         let status = SecRandomCopyBytes(kSecRandomDefault, buffer.count, &buffer)
         if status != errSecSuccess {
             var generator = SystemRandomNumberGenerator()
-            for i in 0..<buffer.count {
-                buffer[i] = UInt8.random(in: 0...255, using: &generator)
+            for i in 0 ..< buffer.count {
+                buffer[i] = UInt8.random(in: 0 ... 255, using: &generator)
             }
         }
         return Data(buffer)
@@ -365,7 +428,9 @@ struct ReportWindowKeyHandler: NSViewRepresentable {
         if context.coordinator.monitor == nil {
             context.coordinator.monitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
                 if event.keyCode == 53,
-                   NSApp.keyWindow?.representedURL?.standardizedFileURL == context.coordinator.windowURL.standardizedFileURL {
+                   NSApp.keyWindow?.representedURL?.standardizedFileURL == context.coordinator.windowURL
+                   .standardizedFileURL
+                {
                     NSApp.keyWindow?.performClose(nil)
                     return nil
                 }
@@ -375,7 +440,7 @@ struct ReportWindowKeyHandler: NSViewRepresentable {
         return view
     }
 
-    func updateNSView(_ nsView: NSView, context: Context) {
+    func updateNSView(_: NSView, context: Context) {
         context.coordinator.windowURL = windowURL
     }
 
@@ -410,7 +475,13 @@ struct ReportWebView: NSViewRepresentable {
     let onOpenBinary: (String) -> Void
 
     func makeCoordinator() -> Coordinator {
-        Coordinator(state: state, onPrintRequest: onPrintRequest, onShareRequest: onShareRequest, onBurnRequest: onBurnRequest, onOpenBinary: onOpenBinary)
+        Coordinator(
+            state: state,
+            onPrintRequest: onPrintRequest,
+            onShareRequest: onShareRequest,
+            onBurnRequest: onBurnRequest,
+            onOpenBinary: onOpenBinary
+        )
     }
 
     func makeNSView(context: Context) -> WKWebView {
@@ -476,7 +547,13 @@ struct ReportWebView: NSViewRepresentable {
         private let onOpenBinary: (String) -> Void
         var readAccessRootURL: URL?
 
-        init(state: ReportWebViewState, onPrintRequest: @escaping () -> Void, onShareRequest: @escaping () -> Void, onBurnRequest: @escaping () -> Void, onOpenBinary: @escaping (String) -> Void) {
+        init(
+            state: ReportWebViewState,
+            onPrintRequest: @escaping () -> Void,
+            onShareRequest: @escaping () -> Void,
+            onBurnRequest: @escaping () -> Void,
+            onOpenBinary: @escaping (String) -> Void
+        ) {
             self.state = state
             self.onPrintRequest = onPrintRequest
             self.onShareRequest = onShareRequest
@@ -484,10 +561,11 @@ struct ReportWebView: NSViewRepresentable {
             self.onOpenBinary = onOpenBinary
         }
 
-        func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
+        func userContentController(_: WKUserContentController, didReceive message: WKScriptMessage) {
             guard message.name == Coordinator.reportActionHandlerName else { return }
             if let body = message.body as? [String: Any],
-               let action = body["action"] as? String {
+               let action = body["action"] as? String
+            {
                 switch action {
                 case "print":
                     onPrintRequest()
@@ -514,9 +592,9 @@ struct ReportWebView: NSViewRepresentable {
 
         func webView(
             _ webView: WKWebView,
-            createWebViewWith configuration: WKWebViewConfiguration,
+            createWebViewWith _: WKWebViewConfiguration,
             for navigationAction: WKNavigationAction,
-            windowFeatures: WKWindowFeatures
+            windowFeatures _: WKWindowFeatures
         ) -> WKWebView? {
             if navigationAction.targetFrame == nil {
                 if let targetURL = navigationAction.request.url, targetURL.isFileURL {
@@ -529,19 +607,19 @@ struct ReportWebView: NSViewRepresentable {
             return nil
         }
 
-        func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
+        func webView(_ webView: WKWebView, didStartProvisionalNavigation _: WKNavigation!) {
             state.canGoBack = webView.canGoBack
         }
 
-        func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+        func webView(_ webView: WKWebView, didFinish _: WKNavigation!) {
             state.canGoBack = webView.canGoBack
         }
 
-        func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
+        func webView(_ webView: WKWebView, didFail _: WKNavigation!, withError _: Error) {
             state.canGoBack = webView.canGoBack
         }
 
-        func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
+        func webView(_ webView: WKWebView, didFailProvisionalNavigation _: WKNavigation!, withError _: Error) {
             state.canGoBack = webView.canGoBack
         }
     }
@@ -570,7 +648,7 @@ struct SharePickerButton: NSViewRepresentable {
         return button
     }
 
-    func updateNSView(_ nsView: NSButton, context: Context) {
+    func updateNSView(_: NSButton, context: Context) {
         context.coordinator.url = url
     }
 

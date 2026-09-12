@@ -103,7 +103,7 @@ def stream_pull(host, model, timeout, idle_timeout):
 def main():
     parser = argparse.ArgumentParser(description="Test Ollama model download via /api/pull")
     parser.add_argument("--host", help="Ollama host:port (overrides log detection)")
-    parser.add_argument("--model", default="llama3.1:8b", help="Model name to pull")
+    parser.add_argument("--model", default="qwen2.5:14b", help="Model name to pull")
     parser.add_argument("--timeout", type=int, default=1800, help="Overall timeout in seconds")
     parser.add_argument("--idle-timeout", type=int, default=120, help="Idle timeout in seconds")
     parser.add_argument("--force", action="store_true", help="Pull even if model is already present")

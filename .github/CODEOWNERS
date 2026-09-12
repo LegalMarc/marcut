@@ -1,0 +1,21 @@
+# Require owner review for all public-beta critical changes.
+* @LegalMarc
+
+# Security, release, and packaging surfaces.
+.github/ @LegalMarc
+build-scripts/ @LegalMarc
+scripts/ @LegalMarc
+packaging/ @LegalMarc
+assets/*.entitlements @LegalMarc
+*.entitlements @LegalMarc
+
+# Application and redaction engine code.
+src/python/marcut/ @LegalMarc
+src/swift/MarcutApp/ @LegalMarc
+
+# Release, audit, and security documentation.
+docs/release/ @LegalMarc
+docs/audits/ @LegalMarc
+docs/backlog/ @LegalMarc
+docs/SECURITY.md @LegalMarc
+docs/RELEASE_CHECKLIST.md @LegalMarc

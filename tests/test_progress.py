@@ -2,13 +2,55 @@
 Tests for the progress.py module - progress tracking and time estimation.
 """
 
-import pytest
+import json
+import os
+import re
 import time
+import typing
+
+import pydantic
+import pytest
+
 from marcut.progress import (
-    ProcessingPhase, PhaseInfo, PHASE_INFO,
+    ProcessingPhase, PHASE_INFO,
     TimeEstimator, ProgressUpdate, ProgressTracker,
-    create_progress_callback
+    create_progress_callback,
+    MassEvent, SWIFT_HANDLED_MASS_EVENT_TYPES, validate_mass_event,
+    serialize_mass_event,
 )
+
+REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+DOCUMENT_MODELS_SWIFT_PATH = os.path.join(
+    REPO_ROOT, "src/swift/MarcutApp/Sources/MarcutApp/DocumentModels.swift"
+)
+
+
+def _swift_handled_mass_event_types():
+    """Parse `ingestProgressPayload`'s `switch type { case "...": ... }` out
+    of DocumentModels.swift and return the `type` strings it handles.
+
+    Derives the consumer-side set directly from the Swift source -- the same
+    style tests/test_model_config.py uses for models.json -- rather than
+    restating it as a hand-maintained Python mirror. A hand-maintained
+    mirror only catches producer-side drift (a Python model type this
+    constant forgets to list); it cannot catch a `case` silently dropped
+    from the Swift switch itself, which is exactly the class of bug
+    issue #93 exists to fix.
+    """
+    with open(DOCUMENT_MODELS_SWIFT_PATH, "r", encoding="utf-8") as f:
+        source = f.read()
+
+    func_match = re.search(
+        r"func ingestProgressPayload\(.*?\n(.*?)\n    (?:private )?func ",
+        source,
+        re.DOTALL,
+    )
+    assert func_match, "ingestProgressPayload not found in DocumentModels.swift"
+
+    switch_match = re.search(r"switch type \{(.*?)\n        \}", func_match.group(1), re.DOTALL)
+    assert switch_match, "switch type { ... } not found in ingestProgressPayload"
+
+    return set(re.findall(r'case "([a-zA-Z_]+)":', switch_match.group(1)))
 
 
 class TestProcessingPhaseEnum:
@@ -42,7 +84,7 @@ class TestPhaseInfo:
     
     def test_phase_info_structure(self):
         """Test that PhaseInfo has correct structure."""
-        for phase, info in PHASE_INFO.items():
+        for _phase, info in PHASE_INFO.items():
             assert isinstance(info.name, str)
             assert isinstance(info.display_name, str)
             assert isinstance(info.base_duration, (int, float))
@@ -171,6 +213,36 @@ class TestProgressUpdate:
         
         assert update.message is None
 
+    def test_wrong_typed_field_raises(self):
+        """ProgressUpdate is a pydantic dataclass (bridge schema migration
+        step 4a, #92): a field that cannot be coerced to its declared type
+        must raise on construction instead of silently crossing the Swift
+        bridge as wrong data."""
+        with pytest.raises(pydantic.ValidationError):
+            ProgressUpdate(
+                phase=ProcessingPhase.PREFLIGHT,
+                phase_progress="not-a-number",
+                overall_progress=0.1,
+                phase_name="Loading Document",
+                estimated_remaining=30.0,
+                elapsed_time=5.0,
+            )
+
+    def test_phase_stays_enum_member(self):
+        """phase must stay a ProcessingPhase enum member, not be widened
+        to a plain string, per the #92 ticket's explicit constraint."""
+        update = ProgressUpdate(
+            phase=ProcessingPhase.VALIDATION,
+            phase_progress=0.2,
+            overall_progress=0.3,
+            phase_name="Validating Entities",
+            estimated_remaining=10.0,
+            elapsed_time=2.0,
+        )
+
+        assert update.phase is ProcessingPhase.VALIDATION
+        assert isinstance(update.phase, ProcessingPhase)
+
 
 class TestProgressTracker:
     """Test ProgressTracker class."""
@@ -188,23 +260,56 @@ class TestProgressTracker:
         assert hasattr(tracker, 'complexity')
         assert tracker.complexity > 0
     
-    def test_simple_callback_detection(self):
-        """Test that simple callbacks are detected correctly."""
-        # Simple callback (3 params)
-        def simple_cb(chunk, total, message):
-            pass
-        
-        tracker = ProgressTracker(simple_cb, "test", 10)
-        assert tracker.is_simple_callback == True
-    
-    def test_rich_callback_detection(self):
-        """Test that rich callbacks are detected correctly."""
-        # Rich callback (1 param)
+    def test_rich_path_taken_for_one_parameter_callback(self):
+        """A one-parameter callback -- the shape both the CLI and the GUI
+        actually register -- receives the ProgressUpdate object directly."""
+        received = []
+
         def rich_cb(update):
-            pass
-        
+            received.append(update)
+
         tracker = ProgressTracker(rich_cb, "test", 10)
-        assert tracker.is_simple_callback == False
+        tracker.update_phase(ProcessingPhase.RULE_DETECTION, 0.5, "Detecting...")
+
+        assert len(received) == 1
+        assert isinstance(received[0], ProgressUpdate)
+
+    def test_three_parameter_callback_also_receives_single_update(self):
+        """#92 removed the `inspect.signature`-based dispatch that used to
+        call a callback declaring exactly three parameters positionally as
+        `(chunk, total, message)`. The audit for #92 found no such callback
+        registered anywhere in the codebase, so every callback -- even one
+        that happens to declare three parameters -- must now receive the
+        single rich ProgressUpdate object instead.
+
+        The three parameters below all default to None so the call succeeds
+        under either calling convention, which is what lets this test tell
+        the two conventions apart instead of merely erroring out under one
+        of them: the pre-#92 code path would populate all three (chunk int,
+        total int, message str), while the current code path leaves the
+        second and third at their defaults and passes the ProgressUpdate as
+        the first argument.
+        """
+        received = []
+
+        def three_param_cb(a=None, b=None, c=None):
+            received.append((a, b, c))
+
+        tracker = ProgressTracker(three_param_cb, "test", 10)
+        tracker.update_phase(ProcessingPhase.RULE_DETECTION, 0.5, "Detecting...")
+
+        assert len(received) == 1
+        first, second, third = received[0]
+        assert isinstance(first, ProgressUpdate)
+        assert second is None
+        assert third is None
+
+    def test_is_simple_callback_attribute_removed(self):
+        """The `is_simple_callback` flag was removed along with the branch
+        it gated (#92) -- assert it stays gone rather than silently
+        reappearing."""
+        tracker = ProgressTracker(lambda update: None, "test", 10)
+        assert not hasattr(tracker, "is_simple_callback")
     
     def test_update_phase(self):
         """Test phase updates."""
@@ -310,3 +415,181 @@ class TestCreateProgressCallback:
         
         # Should not raise - error is caught internally
         callback(update)
+
+
+class TestMassEventModels:
+    """Tests for the closed set of `emit_mass_event` payload models
+    (bridge schema migration step 4b, issue #93). One malformed-payload
+    case per event type, plus the Swift-parity pin."""
+
+    def test_mass_total_valid(self):
+        validate_mass_event({"type": "mass_total", "value": 4200})
+
+    def test_mass_total_rejects_non_numeric_value(self):
+        with pytest.raises(pydantic.ValidationError):
+            validate_mass_event({"type": "mass_total", "value": "a lot"})
+
+    def test_chunk_start_valid(self):
+        validate_mass_event({
+            "type": "chunk_start", "size": 150, "estimated_time": 30.0,
+        })
+
+    def test_chunk_start_rejects_missing_estimated_time(self):
+        with pytest.raises(pydantic.ValidationError):
+            validate_mass_event({"type": "chunk_start", "size": 150})
+
+    def test_chunk_end_valid(self):
+        validate_mass_event({"type": "chunk_end", "size": 150})
+
+    def test_chunk_end_rejects_missing_size(self):
+        with pytest.raises(pydantic.ValidationError):
+            validate_mass_event({"type": "chunk_end"})
+
+    def test_keepalive_valid_without_chunk_info(self):
+        validate_mass_event({"type": "keepalive", "message": "AI processing..."})
+
+    def test_keepalive_valid_with_chunk_info(self):
+        validate_mass_event({
+            "type": "keepalive", "message": "still running", "chunk": 2, "total": 5,
+        })
+
+    def test_keepalive_rejects_missing_message(self):
+        with pytest.raises(pydantic.ValidationError):
+            validate_mass_event({"type": "keepalive", "chunk": 2, "total": 5})
+
+    def test_token_progress_valid(self):
+        validate_mass_event({
+            "type": "token_progress", "chunk_index": 0, "chars": 120, "eval_count": 30,
+        })
+
+    def test_token_progress_valid_without_eval_count(self):
+        """Ollama reports `eval_count` only on the stream's final
+        `done: true` line, so every intermediate emission carries
+        `eval_count: None` -- the common case, which must validate."""
+        event = validate_mass_event({
+            "type": "token_progress", "chunk_index": 0, "chars": 120, "eval_count": None,
+        })
+        assert event.eval_count is None
+
+    def test_token_progress_rejects_missing_chunk_index(self):
+        """`chunk_index` is always supplied at the emit site (it is the
+        loop's own index), so its absence is real producer-side drift --
+        unlike a missing/None `eval_count`, which is the normal shape of an
+        intermediate streaming event."""
+        with pytest.raises(pydantic.ValidationError):
+            validate_mass_event({"type": "token_progress", "chars": 120, "eval_count": 30})
+
+    def test_token_progress_rejects_non_numeric_eval_count(self):
+        with pytest.raises(pydantic.ValidationError):
+            validate_mass_event({
+                "type": "token_progress", "chunk_index": 0, "chars": 120,
+                "eval_count": "seven",
+            })
+
+    def test_unknown_type_rejected(self):
+        """No sixth event type exists -- an unrecognized `type` value must
+        raise, not silently pass through as some best-effort shape."""
+        with pytest.raises(pydantic.ValidationError):
+            validate_mass_event({"type": "not_a_real_event"})
+
+    def test_unexpected_extra_field_rejected(self):
+        """Every model is `extra="forbid"` -- a stray/renamed field is
+        exactly the kind of producer-side drift this validation exists to
+        catch, so it must raise rather than be dropped or ignored."""
+        with pytest.raises(pydantic.ValidationError):
+            validate_mass_event({"type": "chunk_end", "size": 150, "unexpected": True})
+
+    def test_emitted_type_strings_match_swift_handled_set(self):
+        """Pin the producer's closed set of `type` discriminator values
+        against the set `DocumentModels.swift`'s `ingestProgressPayload`
+        switch actually accepts -- parsed from the Swift source itself, not
+        a hand-maintained Python mirror of it -- so neither a new Python
+        model type nor a `case` dropped from the Swift switch can silently
+        drift the two sides apart again (issue #93).
+
+        `SWIFT_HANDLED_MASS_EVENT_TYPES` is asserted here too, as a third
+        term rather than as a substitute for the parse: the Swift source
+        stays the authority on what Swift accepts, and the constant -- which
+        has no runtime consumer and would otherwise go stale unnoticed --
+        is held to it."""
+        # Derived from the union itself, never restated. A hand-written set
+        # here would make the pin one-directional: it would still catch a
+        # `case` dropped from the Swift switch, but a sixth member added to
+        # `MassEvent` with no Swift `case` would leave this set unchanged and
+        # the assertion green -- which is the exact direction issue #93's
+        # original bug ran (Python emitted `token_progress`, Swift fell
+        # through to `default`).
+        model_types = {
+            member.model_fields["type"].default
+            for member in typing.get_args(typing.get_args(MassEvent)[0])
+        }
+        swift_types = _swift_handled_mass_event_types()
+        assert model_types == swift_types
+        assert SWIFT_HANDLED_MASS_EVENT_TYPES == swift_types
+
+
+class TestSerializeMassEvent:
+    """`serialize_mass_event` serializes the *validated* model, not the
+    raw input dict `emit_mass_event` was handed (issue #95). Pydantic's
+    coercion is lax, so a payload like `{"value": "4200"}` validates but,
+    serialized as the original dict, would carry the string across the
+    bridge where Swift expects a number.
+
+    One case per real emit site pins that the change is a no-op for every
+    payload shape those sites actually produce (`model_enhanced.py`'s
+    `emit_mass_event` call sites); the coercion case proves the guard
+    actually does something."""
+
+    def test_mass_total_byte_identical(self):
+        payload = {"type": "mass_total", "value": 4200}
+        assert serialize_mass_event(validate_mass_event(payload)) == json.dumps(payload)
+
+    def test_chunk_start_byte_identical(self):
+        payload = {"type": "chunk_start", "size": 500, "estimated_time": 30.0}
+        assert serialize_mass_event(validate_mass_event(payload)) == json.dumps(payload)
+
+    def test_chunk_end_byte_identical(self):
+        payload = {"type": "chunk_end", "size": 500}
+        assert serialize_mass_event(validate_mass_event(payload)) == json.dumps(payload)
+
+    def test_keepalive_without_chunk_info_byte_identical(self):
+        """The keepalive emit site only adds `chunk`/`total` keys once a
+        chunk is in flight -- confirm the omitted-key shape round-trips
+        without picking up explicit `null`s from the optional fields'
+        defaults."""
+        payload = {"type": "keepalive", "message": "AI processing..."}
+        assert serialize_mass_event(validate_mass_event(payload)) == json.dumps(payload)
+
+    def test_keepalive_with_chunk_info_byte_identical(self):
+        payload = {
+            "type": "keepalive", "message": "still running", "chunk": 2, "total": 5,
+        }
+        assert serialize_mass_event(validate_mass_event(payload)) == json.dumps(payload)
+
+    def test_token_progress_with_eval_count_byte_identical(self):
+        payload = {
+            "type": "token_progress", "chunk_index": 0, "chars": 120, "eval_count": 30,
+        }
+        assert serialize_mass_event(validate_mass_event(payload)) == json.dumps(payload)
+
+    def test_token_progress_without_eval_count_byte_identical(self):
+        """The emit site always passes `eval_count` explicitly (`None` on
+        every intermediate streamed line), unlike keepalive's omitted
+        optional fields -- confirm that explicit `null` is preserved rather
+        than dropped by `exclude_unset`."""
+        payload = {
+            "type": "token_progress", "chunk_index": 0, "chars": 120, "eval_count": None,
+        }
+        assert serialize_mass_event(validate_mass_event(payload)) == json.dumps(payload)
+
+    def test_coercible_wrong_typed_value_emits_coerced_value(self):
+        """The bug this ticket closes: a numeric string in a field pydantic
+        types as `int` validates (lax coercion) but, serialized from the
+        original dict, would still carry the string. Serializing the
+        validated model must emit the coerced int instead."""
+        payload = {"type": "mass_total", "value": "4200"}
+        raw = json.dumps(payload)
+        coerced = serialize_mass_event(validate_mass_event(payload))
+        assert coerced != raw
+        assert json.loads(coerced)["value"] == 4200
+        assert isinstance(json.loads(coerced)["value"], int)

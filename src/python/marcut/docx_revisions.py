@@ -201,7 +201,7 @@ def accept_revisions_in_docx_bytes(input_path: str, debug: bool = False) -> Tupl
     try:
         # Check lxml availability early
         try:
-            import lxml.etree
+            import lxml.etree  # noqa: F401 -- import itself is the availability probe
         except ImportError:
             return None, False
 

@@ -14,6 +14,7 @@ from marcut.unified_redactor import (
     validate_model_name,
     validate_parameters,
     setup_logging,
+    run_unified_redaction,
 )
 
 
@@ -32,7 +33,7 @@ class TestValidateModelName:
     def test_simple_ollama_model(self):
         """Test standard Ollama model names."""
         assert validate_model_name("llama3") is True
-        assert validate_model_name("llama3.1:8b") is True
+        assert validate_model_name("qwen2.5:14b") is True
         assert validate_model_name("phi4:mini-instruct") is True
         assert validate_model_name("gpt-4") is True
 
@@ -72,7 +73,6 @@ class TestValidateParameters:
         """Create a temporary DOCX file for testing."""
         # Create a minimal valid DOCX (just the minimal zip structure)
         import zipfile
-        from io import BytesIO
         
         fd, path = tempfile.mkstemp(suffix=".docx")
         os.close(fd)
@@ -89,6 +89,40 @@ class TestValidateParameters:
         # Cleanup
         if os.path.exists(path):
             os.remove(path)
+
+    def test_llama_cpp_backend_requires_gguf_path(self, temp_docx, tmp_path):
+        """llama.cpp backend should fail clearly without a GGUF path."""
+        with pytest.raises(ValueError, match="llama_cpp backend requires"):
+            run_unified_redaction(
+                input_path=temp_docx,
+                output_path=str(tmp_path / "out.docx"),
+                report_path=str(tmp_path / "report.json"),
+                mode="enhanced",
+                model="llama3.1:8b",
+                backend="llama_cpp",
+            )
+
+    def test_llama_cpp_backend_accepts_relative_path_without_gguf_suffix(
+        self, temp_docx, tmp_path
+    ):
+        """A relative model path with a separator but no `.gguf` suffix must still
+        pass the pre-flight guard (#87): the guard call site keeps the
+        `os.path.sep in model` arm on top of `is_gguf_model_path`, matching
+        `validate_model_name`'s broader path-permissive handling above it.
+        """
+        result = run_unified_redaction(
+            input_path=temp_docx,
+            output_path=str(tmp_path / "out.docx"),
+            report_path=str(tmp_path / "report.json"),
+            mode="enhanced",
+            model="models/qwen2.5-14b-q4",
+            backend="llama_cpp",
+        )
+        # The guard must not be what rejected this call; any failure past
+        # this point is unrelated (e.g. the temp DOCX fixture being a
+        # minimal/invalid document) and is caught internally as a non-raising
+        # failure result rather than propagating.
+        assert "llama_cpp backend requires" not in (result.get("error") or "")
 
     def test_missing_input_file(self):
         """Test that missing input file raises error."""
@@ -142,7 +176,7 @@ class TestValidateParameters:
                 temp_docx,
                 "/tmp/output.docx",
                 "/tmp/report.json",
-                model="llama3.1:8b",
+                model="qwen2.5:14b",
                 backend="mock"
             )
 
@@ -177,6 +211,58 @@ class TestValidateParameters:
             assert os.path.isdir(os.path.join(temp_dir, "reports"))
         finally:
             shutil.rmtree(temp_dir)
+
+
+class TestGenerateRationalePassthrough:
+    """#88: run_unified_redaction must forward generate_rationale to
+    pipeline.run_redaction unchanged, including the default None (so an
+    operator relying on MARCUT_GENERATE_RATIONALE isn't silently
+    overridden to False by a CLI/app layer that never mentioned rationale)."""
+
+    def _fake_run_redaction(self, captured):
+        def fake(*args, **kwargs):
+            captured.update(kwargs)
+            return (0, {})
+        return fake
+
+    def test_default_is_none_not_false(self, monkeypatch, tmp_path):
+        import marcut.unified_redactor as unified_redactor
+
+        captured = {}
+        monkeypatch.setattr(unified_redactor.pipeline, "run_redaction", self._fake_run_redaction(captured))
+        input_path = tmp_path / "in.docx"
+        input_path.write_bytes(b"input")
+        report_path = tmp_path / "report.json"
+        report_path.write_text('{"spans": []}', encoding="utf-8")
+
+        run_unified_redaction(
+            input_path=str(input_path),
+            output_path=str(tmp_path / "out.docx"),
+            report_path=str(report_path),
+            mode="rules",
+        )
+
+        assert captured["generate_rationale"] is None
+
+    def test_explicit_value_is_forwarded(self, monkeypatch, tmp_path):
+        import marcut.unified_redactor as unified_redactor
+
+        captured = {}
+        monkeypatch.setattr(unified_redactor.pipeline, "run_redaction", self._fake_run_redaction(captured))
+        input_path = tmp_path / "in.docx"
+        input_path.write_bytes(b"input")
+        report_path = tmp_path / "report.json"
+        report_path.write_text('{"spans": []}', encoding="utf-8")
+
+        run_unified_redaction(
+            input_path=str(input_path),
+            output_path=str(tmp_path / "out.docx"),
+            report_path=str(report_path),
+            mode="rules",
+            generate_rationale=True,
+        )
+
+        assert captured["generate_rationale"] is True
 
 
 class TestSetupLogging:

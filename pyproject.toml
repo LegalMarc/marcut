@@ -10,7 +10,7 @@ exclude = ["runs*", "packaging*", "enhanced_batch_output*", "demo-output*", "hyb
 
 [project]
 name = "marcut"
-version = "0.5.96"
+version = "0.5.97"
 description = "Local-first DOCX redaction"
 requires-python = ">=3.9"
 dependencies = [
@@ -27,6 +27,10 @@ dependencies = [
 
 [project.optional-dependencies]
 llama = ["llama-cpp-python>=0.2.0"]
+# Test-only tooling (never shipped in the app bundle -- see requirements-pinned.txt,
+# which tracks runtime deps only). hypothesis backs the property-based invariant tests
+# in tests/test_property_based.py (issue #50 / B8).
+dev = ["pytest>=7.0", "hypothesis>=6.100"]
 
 [project.scripts]
 marcut = "marcut.cli:main"
@@ -34,6 +38,8 @@ marcut = "marcut.cli:main"
 [tool.ruff]
 line-length = 88
 target-version = "py39"
+
+[tool.ruff.lint]
 select = ["E", "F", "B"]
 ignore = ["E501"]
 

@@ -10,14 +10,14 @@ to avoid entity fragmentation and reduce LLM call overhead.
 SMALL_DOC_THRESHOLD = 4000
 
 
-def make_chunks(text, max_len=2500, overlap=400):
+def make_chunks(text, max_len=2500, overlap=200):
     """
     Split text into overlapping chunks for processing.
     
     Args:
         text: The document text to chunk
-        max_len: Maximum characters per chunk (default 4000)
-        overlap: Characters of overlap between chunks (default 400)
+        max_len: Maximum characters per chunk (default 2500)
+        overlap: Characters of overlap between chunks (default 200)
     
     Returns:
         List of chunk dicts with 'start', 'end', and 'text' keys
@@ -25,6 +25,9 @@ def make_chunks(text, max_len=2500, overlap=400):
     Phase 1 optimization: Documents smaller than SMALL_DOC_THRESHOLD
     are returned as a single chunk to avoid splitting overhead.
     """
+    if max_len <= 0:
+        raise ValueError("max_len must be positive")
+
     # Phase 1: Skip chunking for small documents
     # A document under ~2000 words processes faster in a single LLM call
     # than being split/recombined with overlap redundancy
@@ -35,6 +38,11 @@ def make_chunks(text, max_len=2500, overlap=400):
     chunks = []
     i = 0
     n = len(text)
+    # An overlap >= max_len would make the next window start (j - overlap)
+    # land at or before the current position, so i would never advance and
+    # the loop would spin forever. Clamp so each step always makes progress.
+    if overlap >= max_len:
+        overlap = max(0, max_len - 1)
     while i < n:
         j = min(n, i + max_len)
         chunks.append({'start': i, 'end': j, 'text': text[i:j]})

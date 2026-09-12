@@ -14,7 +14,6 @@ These tests cover edge cases that can cause redaction failures, including:
 
 import pytest
 import os
-import io
 import tempfile
 import shutil
 import zipfile
@@ -28,7 +27,7 @@ SAMPLE_DIR = REPO_ROOT / ".marcut_artifacts/ignored-resources" / "sample-files"
 # Check if we're in an environment where marcut is available
 try:
     from marcut.model import ollama_extract, get_ollama_base_url, parse_llm_response
-    from marcut.pipeline import run_redaction, RedactionError
+    from marcut.pipeline import run_redaction
     from marcut.docx_io import DocxMap
     MARCUT_AVAILABLE = True
 except ImportError:
@@ -64,14 +63,34 @@ class TestOllamaStreamingFix:
     """Tests for the stream:false fix in Ollama requests."""
     
     @pytest.mark.skipif(not MARCUT_AVAILABLE, reason="marcut not installed")
-    def test_ollama_request_includes_stream_false(self):
-        """Verify that Ollama requests include stream:false to prevent JSON parsing errors."""
-        import inspect
-        from marcut.model import ollama_extract
-        
-        source = inspect.getsource(ollama_extract)
-        assert '"stream": False' in source or "'stream': False" in source, \
-            "ollama_extract should include 'stream': False to prevent streaming JSON responses"
+    def test_ollama_request_defaults_to_stream_false(self, monkeypatch):
+        """Verify that Ollama requests default to stream:false, to prevent
+        streaming/multi-JSON-response parsing errors on the non-streaming
+        code path. Streaming is available (docs/design/streaming_progress.md,
+        Option B) but must always be an explicit stream=True opt-in for a
+        single call site (the per-chunk extraction in model_enhanced.py) --
+        never the default, since most callers (validation/classification,
+        the CLI, direct ollama_extract() callers) still expect a single JSON
+        response."""
+        import marcut.model as model_module
+
+        captured = {}
+
+        class MockResponse:
+            def raise_for_status(self):
+                return None
+
+            def json(self):
+                return {"response": '{"entities": []}'}
+
+        def fake_post(*args, **kwargs):
+            captured.update(kwargs)
+            return MockResponse()
+
+        monkeypatch.setattr(model_module.requests, "post", fake_post)
+
+        assert ollama_extract("mock-model", "Document text", temperature=0.0) == []
+        assert captured["json"]["stream"] is False
     
     @pytest.mark.skipif(not MARCUT_AVAILABLE, reason="marcut not installed")
     def test_parse_llm_response_handles_valid_json(self):
@@ -192,7 +211,7 @@ class TestLLMTimeoutHandling:
             mock_post.side_effect = requests.exceptions.Timeout("Connection timed out")
             
             with pytest.raises(RuntimeError) as exc_info:
-                ollama_extract('llama3.1:8b', 'test text', 0.7, 42)
+                ollama_extract('qwen2.5:14b', 'test text', 0.7, 42)
             
             # Should wrap as "not reachable" error
             assert "not reachable" in str(exc_info.value).lower() or "timeout" in str(exc_info.value).lower()
@@ -206,7 +225,7 @@ class TestLLMTimeoutHandling:
             mock_post.side_effect = requests.exceptions.ReadTimeout("Read timed out")
             
             with pytest.raises(RuntimeError):
-                ollama_extract('llama3.1:8b', 'test text', 0.7, 42)
+                ollama_extract('qwen2.5:14b', 'test text', 0.7, 42)
     
     @pytest.mark.skipif(not MARCUT_AVAILABLE, reason="marcut not installed")
     def test_connect_timeout_handling(self):
@@ -217,7 +236,7 @@ class TestLLMTimeoutHandling:
             mock_post.side_effect = requests.exceptions.ConnectTimeout("Connection timed out")
             
             with pytest.raises(RuntimeError):
-                ollama_extract('llama3.1:8b', 'test text', 0.7, 42)
+                ollama_extract('qwen2.5:14b', 'test text', 0.7, 42)
 
 
 # =============================================================================
@@ -238,7 +257,7 @@ class TestOllamaUnavailable:
             )
             
             with pytest.raises(RuntimeError) as exc_info:
-                ollama_extract('llama3.1:8b', 'test text', 0.7, 42)
+                ollama_extract('qwen2.5:14b', 'test text', 0.7, 42)
             
             assert "not reachable" in str(exc_info.value).lower()
     
@@ -254,7 +273,7 @@ class TestOllamaUnavailable:
                 )
                 
                 with pytest.raises(RuntimeError):
-                    ollama_extract('llama3.1:8b', 'test text', 0.7, 42)
+                    ollama_extract('qwen2.5:14b', 'test text', 0.7, 42)
     
     @pytest.mark.skipif(not MARCUT_AVAILABLE, reason="marcut not installed")
     def test_http_500_error(self):
@@ -271,7 +290,7 @@ class TestOllamaUnavailable:
             mock_post.return_value = mock_response
             
             with pytest.raises(RuntimeError):
-                ollama_extract('llama3.1:8b', 'test text', 0.7, 42)
+                ollama_extract('qwen2.5:14b', 'test text', 0.7, 42)
     
     @pytest.mark.skipif(not MARCUT_AVAILABLE, reason="marcut not installed")
     def test_model_not_found(self):
@@ -429,7 +448,7 @@ class TestTrackChangesCorruption:
         try:
             dm = DocxMap.load(str(corrupt_path))
             assert "Test content" in dm.text
-        except Exception as e:
+        except Exception:
             # If it fails, that's also acceptable - we're testing error handling
             pass
 
@@ -560,7 +579,7 @@ class TestDocumentRedaction:
         dm = DocxMap.load(str(sample_docx_path))
         text = dm.text[:2000]
         
-        result = ollama_extract('llama3.1:8b', text, 0.7, 42)
+        result = ollama_extract('qwen2.5:14b', text, 0.7, 42)
         assert isinstance(result, list)
     
     @pytest.mark.skipif(not MARCUT_AVAILABLE, reason="marcut not installed")
@@ -575,7 +594,7 @@ class TestDocumentRedaction:
             output_path=str(output_path),
             report_path=str(report_path),
             mode="enhanced",
-            model_id="llama3.1:8b",
+            model_id="qwen2.5:14b",
             chunk_tokens=500,
             overlap=50,
             temperature=0.7,

@@ -1,0 +1,40 @@
+# Marcut
+
+> Local-first DOCX redaction for legal documents. Produces Microsoft Word
+> output with native track changes, plus a JSON audit report. Detection is
+> hybrid: a deterministic rules engine for structured PII, and a local LLM
+> for names and organisations. No document ever leaves the machine.
+
+Marcut ships as a native macOS app (Swift and SwiftUI) that embeds a Python
+runtime in-process via PythonKit and a BeeWare Python framework. The same
+Python core is usable directly as a `marcut` command-line tool.
+
+Start with docs/INDEX.md. It carries one line per document with a scope
+sentence and heading anchors, so you can jump to the exact section you need
+rather than reading everything.
+
+## Orientation
+
+- [Docs index](docs/INDEX.md): the projection over every document in this repo. Read first.
+- [Technical architecture](docs/TECHNICAL_ARCHITECTURE.md): how the rules engine, the LLM passes and the Swift app fit together.
+- [Domain glossary](docs/CONTEXT.md): what entity, span, cluster, rationale, scrub and hardening mean here.
+- [Agent guide](CLAUDE.md): module map, build and test commands, and the repo's hard rules.
+
+## Using it
+
+- [User guide](docs/USER_GUIDE.md): running a redaction and reading the output.
+- [Developer guide](docs/DEVELOPER_GUIDE.md): building from source, including the required framework setup.
+- [Contributing](docs/CONTRIBUTING.md): branch and commit conventions, and the test gate.
+
+## Design and history
+
+- [Backlog](docs/BACKLOG.md): what is shipped, what is technical debt, and which directions carry a design spike.
+- [Changelog](docs/CHANGELOG.md): dated record of every behavioural change.
+- [Design spikes](docs/design/): analysis written before implementation. Several flag correctness or privacy risks that matter before building.
+- [Metadata hardening](docs/METADATA_HARDENING.md): every scrubbing pass applied to a DOCX.
+
+## Optional
+
+- [Security policy](docs/SECURITY.md): supported versions and how to report a vulnerability.
+- [Release checklist](docs/RELEASE_CHECKLIST.md): the gate for cutting a release.
+- [Model benchmarks](docs/model-benchmarks/): local model comparisons against ground truth.

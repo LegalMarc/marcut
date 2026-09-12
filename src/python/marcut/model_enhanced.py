@@ -31,8 +31,11 @@ from typing import List, Dict, Any, Optional, Tuple, Set
 import requests
 import threading
 import concurrent.futures
-from dataclasses import dataclass, asdict
-import hashlib
+from dataclasses import dataclass
+from .cancellation import ProcessingDeadlineExceeded, check_processing_deadline, remaining_seconds
+from .model_config import uses_llama_cpp_backend
+from .progress import serialize_mass_event, validate_mass_event
+from .rationale import RationaleOrigin, rationale_mentions_text
 from .model import (
     parse_llm_response,
     _valid_candidate,
@@ -78,17 +81,44 @@ class Entity:
     source: str = "model"
     validated: bool = False
     validation_result: Optional[str] = None
+    # Set from ollama_validate_batch()'s result dict (issue #68) when
+    # MARCUT_GENERATE_RATIONALE is enabled -- a RationaleOrigin value, or
+    # None if this entity was never routed through rationale-aware
+    # validation at all (e.g. it skipped validation entirely). Never read
+    # for redaction decisions; only pipeline.py's audit-report assembly
+    # consumes it.
+    rationale_origin: Optional[str] = None
 
 
 class ValidationCache:
-    """Cache validation decisions to avoid redundant LLM calls."""
+    """Cache validation decisions to avoid redundant LLM calls.
+
+    Scope, stated plainly because the mitigation it serves is easy to
+    over-read: this cache is a plain dict on the instance and is **never
+    persisted**. `IntelligentRedactionPipeline` is constructed fresh per
+    `run_enhanced_model` call, so entries never outlive a single run and
+    `generate_rationale` is fixed for that run's lifetime -- meaning no
+    in-process cache hit can currently pair a fresh decision with a
+    rationale captured under a different setting.
+
+    ``SCHEMA_VERSION`` is folded into every cache key anyway, as the
+    forward guard for issue #68 mitigation #4: if this cache is ever made
+    persistent (across runs or processes), entries written before the
+    rationale field existed must not be reusable, and a version bump makes
+    that impossible by construction because the old key never matches. It
+    is deliberately a no-op today rather than a safeguard that is already
+    load-bearing (#68 round-5 finding: the previous wording claimed the
+    latter).
+    """
+
+    SCHEMA_VERSION = "v2"
 
     def __init__(self):
         self.cache = {}
 
     def get_key(self, text: str, label: str) -> str:
         """Generate cache key for entity."""
-        return f"{text.lower().strip()}:{label}"
+        return f"{self.SCHEMA_VERSION}:{text.lower().strip()}:{label}"
 
     def get(self, text: str, label: str) -> Optional[Dict]:
         """Get cached validation if exists."""
@@ -430,8 +460,23 @@ def needs_validation(entity: Entity, doc_context: DocumentContext) -> bool:
     return True
 
 
-def get_batch_validation_prompt(entities: List[Entity], full_text: str, doc_context: DocumentContext) -> str:
-    """Build validation prompt for a batch of entities."""
+def get_batch_validation_prompt(
+    entities: List[Entity],
+    full_text: str,
+    doc_context: DocumentContext,
+    generate_rationale: bool = False,
+) -> str:
+    """Build validation prompt for a batch of entities.
+
+    ``generate_rationale`` (issue #68, MARCUT_GENERATE_RATIONALE, off by
+    default) adds a "rationale" field to the requested JSON shape, asking
+    the model to state *why* it classified each item -- reusing this
+    already-budgeted call rather than adding a new one (Option B in
+    docs/design/redaction_rationale_reporting.md). The extra instruction
+    against restating another item's literal text is the prompt-level half
+    of mitigation #3; `ollama_validate_batch` below enforces it again in
+    Python as a backstop.
+    """
 
     doc_info = ""
     if doc_context.primary_entities.get('company'):
@@ -460,7 +505,39 @@ Item {idx + 1}:
 - Context: "...{surrounding}..."
 """
 
-    prompt = f"""You are validating potential redactions in a legal document.
+    if generate_rationale:
+        prompt = f"""You are validating potential redactions in a legal document.
+{doc_info}
+
+Review the following list of extracted items. For each, determine if it is a SPECIFIC confidential entity (REDACT) or a GENERIC reference/boilerplate (SKIP).
+
+Items to validate:{items_str}
+
+Respond with a JSON object containing a "results" array.
+Each result must have:
+- "id": The item number (1, 2, etc.)
+- "classification": "FULL_REDACT" (specific entity) or "SKIP" (generic)
+- "confidence": 0.0 to 1.0 (how sure are you?)
+- "rationale": one short sentence stating plainly why this item was classified that way
+
+Crucial Rules:
+1. "The Company", "The Board", "The Parties" -> SKIP (Generic)
+2. Specific Names ("John Smith", "Sample 123 Corp") -> FULL_REDACT
+3. If unsure, classify as FULL_REDACT.
+4. In "rationale", never restate the specific name/text of any OTHER item in this list or any other person/organization mentioned in the context -- refer to other parties only generically (e.g. "the counterparty", "another named individual"), never by their literal name.
+
+Example Response:
+{{
+  "results": [
+    {{ "id": 1, "classification": "FULL_REDACT", "confidence": 0.98, "rationale": "This is the name of a specific individual signing the agreement." }},
+    {{ "id": 2, "classification": "SKIP", "confidence": 0.99, "rationale": "This is a generic reference to a defined role, not a specific entity." }}
+  ]
+}}
+
+Return ONLY valid JSON.
+"""
+    else:
+        prompt = f"""You are validating potential redactions in a legal document.
 {doc_info}
 
 Review the following list of extracted items. For each, determine if it is a SPECIFIC confidential entity (REDACT) or a GENERIC reference/boilerplate (SKIP).
@@ -491,23 +568,67 @@ Return ONLY valid JSON.
     return prompt
 
 
+
+_RATIONALE_WARNING_LOCK = threading.Lock()
+
+
+def _schema_allowing_rationale(format_schema: Dict) -> Dict:
+    """Return `format_schema` with a `rationale` string property allowed on
+    each result item, so constrained decoding cannot make the field the
+    prompt asks for impossible to emit.
+
+    Conservative: only the recognised
+    ``properties.results.items.properties`` shape is rewritten, and the
+    input is never mutated. Returns ``None`` when the shape is not
+    recognised (e.g. ``$ref``-based items), so the caller can say so rather
+    than let every span degrade to `unavailable` while the report still
+    claims the extension was active (#68 round-6 finding).
+    """
+    try:
+        items = format_schema["properties"]["results"]["items"]
+        props = items["properties"]
+    except (KeyError, TypeError):
+        return None
+    if "rationale" in props:
+        return format_schema
+    import copy
+    patched = copy.deepcopy(format_schema)
+    patched_items = patched["properties"]["results"]["items"]
+    patched_items["properties"]["rationale"] = {"type": "string"}
+    return patched
+
+
 def ollama_validate_batch(
     model_id: str,
     entities: List[Entity],
     full_text: str,
     doc_context: DocumentContext,
     temperature: float = 0.1,
+    seed: Optional[int] = None,
     skip_confidence: float = 0.95,
     warnings: Optional[List[Dict[str, Any]]] = None,
     think_mode: bool = False,
     format_schema: Optional[Dict] = None,
+    generate_rationale: bool = False,
 ) -> List[Dict]:
-    """Validate a batch of entities. Returns a list of results corresponding to input entities."""
+    """Validate a batch of entities. Returns a list of results corresponding to input entities.
+
+    ``generate_rationale`` (MARCUT_GENERATE_RATIONALE, issue #68) asks the
+    model for a short rationale per item and, on success, returns it with
+    ``rationale_origin: "llm_validation"``. When the model omits the field,
+    the response fails to parse, or the returned text restates another
+    item's literal name (mitigation #3), the result falls back to today's
+    synthetic placeholder string labeled ``rationale_origin: "unavailable"``
+    -- never mislabeled as ``llm_validation``. When ``generate_rationale``
+    is False, behavior is byte-identical to before this feature existed
+    (mitigation #5): no rationale is requested, and no ``rationale_origin``
+    key is added.
+    """
 
     if not entities:
         return []
 
-    prompt = get_batch_validation_prompt(entities, full_text, doc_context)
+    prompt = get_batch_validation_prompt(entities, full_text, doc_context, generate_rationale=generate_rationale)
 
     # Build request
     url = f"{get_ollama_base_url()}/api/generate"
@@ -519,15 +640,76 @@ def ollama_validate_batch(
         "options": {
             "temperature": temperature,
             "top_p": 0.9,
-            "num_predict": 2048 # Increased for batch response
+            # Batch response budget. With `generate_rationale` the model
+            # also writes a sentence per item, so a batch that fits in 2048
+            # today can truncate; a truncated array fails `parse_llm_response`
+            # and every item in it falls to UNKNOWN -> FULL_REDACT at
+            # confidence 0, which would make an opt-in reporting flag change
+            # redaction decisions (#68 round-4 finding).
+            "num_predict": 2048 + (96 * len(entities) if generate_rationale else 0)
         }
     }
+    if seed is not None:
+        body["options"]["seed"] = seed
     if format_schema is not None:
-        body["format"] = format_schema
+        # Ollama constrains the reply to the schema. A schema written before
+        # this feature (or any schema with additionalProperties:false) makes
+        # `rationale` structurally impossible to emit, so every span would
+        # silently degrade to `unavailable` while the report still claims
+        # mode "validation_extended" -- the exact ambiguity mitigation #7
+        # exists to remove (#68 round-4 finding).
+        adjusted_schema = format_schema
+        if generate_rationale:
+            adjusted_schema = _schema_allowing_rationale(format_schema)
+            if adjusted_schema is None:
+                # Cannot guarantee the model is even able to emit the field
+                # the prompt asks for. Say so in the report's warnings
+                # instead of shipping a run whose every span is
+                # `unavailable` under a "validation_extended" banner.
+                # `code`, matching every other warning in this codebase --
+                # report.py renders `w.get('code', 'WARNING')`, so a `type`
+                # key would silently render as a generic "WARNING". Emitted
+                # once per run, not once per batch, so it cannot crowd real
+                # LLM_CHUNK_FAILED entries out of the report's 50-warning cap.
+                # Guarded: validation runs on up to `llm_concurrency`
+                # workers sharing one `warnings` list, so an unlocked
+                # check-then-append can still emit duplicates and eat slots
+                # in the report's 50-warning cap (#68 round-9 finding).
+                if warnings is not None:
+                    with _RATIONALE_WARNING_LOCK:
+                        already_warned = any(
+                            w.get("code") == "RATIONALE_SCHEMA_UNSUPPORTED"
+                            for w in warnings
+                        )
+                        if not already_warned:
+                            warnings.append({
+                                "code": "RATIONALE_SCHEMA_UNSUPPORTED",
+                                "message": (
+                                    "--format-schema shape not recognised, so "
+                                    "a 'rationale' property could not be "
+                                    "added; model-authored rationale may be "
+                                    "impossible for this run."
+                                ),
+                            })
+                adjusted_schema = format_schema
+        body["format"] = adjusted_schema
 
+    # Wall-clock budget must scale with the response the model is being
+    # asked for, not just the token cap: with rationale on, a 20-item batch
+    # generates roughly twice the output, and a timeout leaves
+    # `response_json` empty, which lands every item on UNKNOWN ->
+    # FULL_REDACT at confidence 0 exactly like a truncated response would
+    # (#68 round-5 finding -- fixing the token budget alone just moved the
+    # same failure from tokens to seconds).
+    # Scale with the ACTUAL token ask, not a flat multiplier: num_predict
+    # grows linearly with batch size, so a flat 2x still leaves a large
+    # batch timing out -- and a timeout empties `response_json`, landing
+    # every item on UNKNOWN -> FULL_REDACT exactly like truncation would
+    # (#68 round-7 finding).
+    _timeout_scale = max(1.0, body["options"]["num_predict"] / 2048)
     retry_plan = [
-        {"timeout": 30, "wait": 2},
-        {"timeout": 60, "wait": 2},
+        {"timeout": int(30 * _timeout_scale), "wait": 2},
+        {"timeout": int(60 * _timeout_scale), "wait": 2},
     ]
 
     response_json = {}
@@ -535,7 +717,8 @@ def ollama_validate_batch(
     # Execute Request
     for attempt in retry_plan:
         try:
-            resp = requests.post(url, json=body, timeout=attempt["timeout"])
+            check_processing_deadline()
+            resp = requests.post(url, json=body, timeout=remaining_seconds(attempt["timeout"]))
             if resp.status_code == 200:
                 try:
                     res = resp.json()
@@ -593,12 +776,56 @@ def ollama_validate_batch(
             needs_redaction = True
             final_classification = "FULL_REDACT" if classification != "SKIP" else "keep (low conf)"
 
-        final_results.append({
+        result = {
             "classification": final_classification,
             "needs_redaction": needs_redaction,
             "confidence": confidence,
-            "rationale": f"Batch Validation: {final_classification} ({confidence})"
-        })
+        }
+
+        if not generate_rationale:
+            # Unchanged from before this feature existed -- see mitigation
+            # #5 (disabling must be byte-identical to today's output).
+            result["rationale"] = f"Batch Validation: {final_classification} ({confidence})"
+        else:
+            synthetic_fallback = (
+                f"Batch validation classified this as {final_classification} "
+                f"(confidence {confidence:.2f}); no model-authored rationale was available."
+            )
+            model_rationale = res.get("rationale")
+            model_rationale = model_rationale.strip() if isinstance(model_rationale, str) else ""
+
+            # Same-batch leak check (mitigation #3): any OTHER item's literal
+            # text inside this item's rationale withholds it. A same-text
+            # duplicate is not "other" -- the prompt only forbids naming
+            # other items, so the model will naturally name this item's own
+            # text, and duplicates are routine in one batch because
+            # ValidationCache is only populated after the batch returns
+            # (every mention extracted from one chunk lands together).
+            own_text = (entity.text or "").strip().lower()
+            other_texts = [
+                e.text for j, e in enumerate(entities)
+                if j != idx and (e.text or "").strip().lower() != own_text
+            ]
+            if model_rationale and not rationale_mentions_text(
+                model_rationale, other_texts, own_text=entity.text
+            ):
+                result["rationale"] = model_rationale
+                result["rationale_origin"] = RationaleOrigin.LLM_VALIDATION.value
+            elif model_rationale:
+                # The model's rationale leaked another item's literal text
+                # (mitigation #3) -- withhold it rather than ship a leak,
+                # never silently reuse it and never mislabel it as
+                # llm_validation.
+                result["rationale"] = (
+                    "Rationale withheld: the model's explanation referenced "
+                    "another entity's literal text."
+                )
+                result["rationale_origin"] = RationaleOrigin.UNAVAILABLE.value
+            else:
+                result["rationale"] = synthetic_fallback
+                result["rationale_origin"] = RationaleOrigin.UNAVAILABLE.value
+
+        final_results.append(result)
 
     return final_results
 
@@ -614,13 +841,25 @@ def apply_llm_overrides_to_rule_spans(
     allowed_labels: Optional[Set[str]] = None,
     suppressed: Optional[List[Dict[str, Any]]] = None,
     debug: bool = False,
+    llama_gguf: str = "",
     **kwargs
 ) -> List[Dict[str, Any]]:
-    """Use LLM validation to drop rule spans marked as SKIP with high confidence."""
+    """Use LLM validation to drop rule spans marked as SKIP with high confidence.
+
+    `llama_gguf`, when set, overrides `model_id` for backend dispatch --
+    matching `_collect_enhanced_spans` (#87) so `--llama-gguf x.gguf` with
+    the default `--backend ollama` dispatches the same way in both places.
+    """
     if not rule_spans:
         return rule_spans
 
-    if not model_id or model_id == "mock" or backend == "mock":
+    # Key the "is there an LLM to call at all" guard on the same value the
+    # dispatch below uses (#87). Keying it on `model_id` alone would return
+    # early when `llama_gguf` is set with an empty or "mock" `model_id`,
+    # while `_collect_enhanced_spans` dispatched that same run to llama.cpp.
+    model_path = llama_gguf or model_id
+
+    if not model_path or model_path == "mock" or backend == "mock":
         return rule_spans
 
     if allowed_labels is not None and not allowed_labels:
@@ -676,8 +915,8 @@ def apply_llm_overrides_to_rule_spans(
 
     results: List[Dict[str, Any]] = []
     try:
-        if backend == "llama_cpp" or (model_id.endswith(".gguf") or model_id.startswith("/")):
-            pipeline = LlamaCppRedactionPipeline(model_id, temperature, seed)
+        if uses_llama_cpp_backend(backend, model_path):
+            pipeline = LlamaCppRedactionPipeline(model_path, temperature, seed)
             for _, entity in candidates:
                 results.append(pipeline.validate_entity(entity, text, doc_context))
         else:
@@ -687,6 +926,7 @@ def apply_llm_overrides_to_rule_spans(
                 text,
                 doc_context,
                 temperature,
+                seed=seed,
                 skip_confidence=skip_confidence,
                 think_mode=kwargs.get("think_mode", False),
                 format_schema=kwargs.get("format_schema", None),
@@ -697,7 +937,7 @@ def apply_llm_overrides_to_rule_spans(
         return rule_spans
 
     drop_indices: Set[int] = set()
-    if backend == "llama_cpp" or (model_id.endswith(".gguf") or model_id.startswith("/")):
+    if uses_llama_cpp_backend(backend, model_path):
         for (idx, _), res in zip(candidates, results):
             classification = res.get("classification", "")
             try:
@@ -741,6 +981,7 @@ def ollama_validate(
     full_text: str,
     doc_context: DocumentContext,
     temperature: float = 0.1,
+    seed: Optional[int] = None,
     think_mode: bool = False,
     format_schema: Optional[Dict] = None,
 ) -> Dict:
@@ -761,6 +1002,8 @@ def ollama_validate(
             "num_predict": 500
         }
     }
+    if seed is not None:
+        body["options"]["seed"] = seed
     if format_schema is not None:
         body["format"] = format_schema
 
@@ -773,7 +1016,8 @@ def ollama_validate(
 
     for attempt_idx, attempt in enumerate(retry_plan, 1):
         try:
-            resp = requests.post(url, json=body, timeout=attempt["timeout"])
+            check_processing_deadline()
+            resp = requests.post(url, json=body, timeout=remaining_seconds(attempt["timeout"]))
             status = resp.status_code
             if 500 <= status <= 599:
                 raise requests.exceptions.HTTPError(f"{status} Server Error", response=resp)
@@ -798,7 +1042,7 @@ def ollama_validate(
                 last_error = e
                 print(f"Validation attempt {attempt_idx} failed: HTTP {status}")
             else:
-                raise RuntimeError(f"Ollama validation request failed: {e}")
+                raise RuntimeError(f"Ollama validation request failed: {e}") from e
 
         if attempt_idx < len(retry_plan):
             time.sleep(attempt["wait"])
@@ -807,12 +1051,118 @@ def ollama_validate(
     raise RuntimeError(f"Ollama validation failed after {len(retry_plan)} attempts: {last_error}")
 
 
+def _drop_invalid_entity_offsets(
+    text: str,
+    entities: List["Entity"],
+    warnings: List[Dict[str, Any]],
+) -> List["Entity"]:
+    """Enforce the invariant text[start:end] == entity.text, dropping violations.
+
+    Chunk-relative spans are rebased to document coordinates as soon as each
+    chunk's entities are extracted, so this is defense-in-depth rather than
+    the primary correctness mechanism -- but it guarantees a corrupted span
+    never reaches the rest of the pipeline; violations are dropped and
+    logged instead of silently emitted (coordinates with issue A5's broader
+    bounds/consistency guard at span-application time).
+    """
+    valid: List[Entity] = []
+    for entity in entities:
+        in_bounds = 0 <= entity.start < entity.end <= len(text)
+        if in_bounds and text[entity.start:entity.end] == entity.text:
+            valid.append(entity)
+            continue
+        warnings.append({
+            "code": "LLM_ENTITY_OFFSET_MISMATCH",
+            "message": "Dropped an extracted entity whose offsets did not match its text.",
+            "details": f"label={entity.label} start={entity.start} end={entity.end} text={entity.text!r}",
+        })
+    return valid
+
+
+def _resolve_overlapping_entity(current: "Entity", candidate: "Entity") -> "Entity":
+    """Choose which of two overlapping same-label entities to keep.
+
+    Prefers, in order: a positive redaction decision (fail closed -- if
+    either detection says redact, keep the one that redacts), the longer/
+    more complete span, then higher confidence. Ties keep `current`.
+    """
+    current_key = (bool(current.needs_redaction), current.end - current.start, current.confidence)
+    candidate_key = (bool(candidate.needs_redaction), candidate.end - candidate.start, candidate.confidence)
+    return candidate if candidate_key > current_key else current
+
+
+def _dedupe_chunk_overlap_entities(entities: List["Entity"]) -> List["Entity"]:
+    """Collapse same-label entities that only differ because of chunk overlap.
+
+    `chunker.make_chunks` deliberately overlaps adjacent chunks so a mention
+    near a chunk boundary is never silently dropped. As a side effect, a
+    mention that survives intact in more than one chunk is extracted once
+    per chunk that sees it in full, and a mention straddling the boundary
+    can additionally surface as a truncated fragment alongside the full
+    mention recovered from the neighboring chunk. Both show up as
+    overlapping same-label spans at (nearly) the same location; keep a
+    single, best-scoring entity per overlapping cluster instead of emitting
+    every detection. Separate, non-overlapping repeats of the same text
+    elsewhere in the document are untouched -- only spans that actually
+    overlap are merged.
+    """
+    by_label: Dict[str, List[Entity]] = {}
+    for entity in entities:
+        by_label.setdefault(entity.label, []).append(entity)
+
+    deduped: List[Entity] = []
+    for group in by_label.values():
+        group.sort(key=lambda e: (e.start, e.end))
+        current: Optional[Entity] = None
+        reach = 0
+        for entity in group:
+            if current is None:
+                current = entity
+                reach = entity.end
+            elif entity.start < reach:
+                current = _resolve_overlapping_entity(current, entity)
+                reach = max(reach, entity.end)
+            else:
+                deduped.append(current)
+                current = entity
+                reach = entity.end
+        if current is not None:
+            deduped.append(current)
+
+    return deduped
+
+
+class LLMChunkExtractionFailed(RuntimeError):
+    """Raised when the LLM extractor could not analyze one or more chunks.
+
+    Marcut is a privacy tool: if part of the document text was never scanned
+    by the LLM, the run must fail closed rather than silently ship a
+    redacted DOCX that looks complete while some text ranges were never
+    analyzed. ``failures`` lists one entry per chunk that never produced a
+    successful extraction, each with the document-coordinate character range
+    (``start``/``end``) that was left unanalyzed.
+    """
+
+    def __init__(self, failures: List[Dict[str, Any]], total_chunks: int):
+        self.failures = list(failures)
+        self.total_chunks = total_chunks
+        ranges = "; ".join(
+            f"chunk {f['chunk_index'] + 1}/{total_chunks} chars {f['start']}-{f['end']}: {f['error']}"
+            for f in self.failures
+        )
+        super().__init__(
+            f"AI extraction failed for {len(self.failures)} of {total_chunks} chunk(s) "
+            f"after retries; document was not fully analyzed ({ranges})"
+        )
+
+
 class IntelligentRedactionPipeline:
     """Main pipeline for intelligent entity extraction and validation."""
 
-    def __init__(self, model_id: str = "qwen2.5:14b", temperature: float = 0.1, skip_confidence: float = 0.95, llm_concurrency: int = 2, think_mode: bool = False, format_schema: Optional[Dict] = None):
+    def __init__(self, model_id: str = "qwen2.5:14b", temperature: float = 0.1, seed: Optional[int] = None, skip_confidence: float = 0.95, llm_concurrency: int = 2, think_mode: bool = False, format_schema: Optional[Dict] = None, generate_rationale: bool = False):
         self.model_id = model_id
         self.temperature = temperature
+        self.seed = seed
         self.skip_confidence = skip_confidence
         try:
             requested_concurrency = int(llm_concurrency)
@@ -821,6 +1171,9 @@ class IntelligentRedactionPipeline:
         self.llm_concurrency = max(1, min(5, requested_concurrency))
         self.think_mode = think_mode
         self.format_schema = format_schema
+        # Opt-in, off by default (MARCUT_GENERATE_RATIONALE, issue #68) --
+        # see ollama_validate_batch's docstring for what this changes.
+        self.generate_rationale = bool(generate_rationale)
         self.validation_cache = ValidationCache()
         self.doc_context = DocumentContext()
 
@@ -839,11 +1192,49 @@ class IntelligentRedactionPipeline:
         prompt_context = build_prompt_context(self.doc_context)
 
         def emit_mass_event(payload, progress=None, status_message=None):
+            # Validate before the best-effort guard below, and before
+            # anything is serialized -- a malformed payload is a
+            # programming error (a producer-side typo or shape drift, e.g.
+            # #93) and must raise here, not be silently swallowed by the
+            # bare `except Exception: pass` that guards the rest of this
+            # function. This path fires many times per document, so
+            # `validate_mass_event` stays cheap (a single TypeAdapter call,
+            # no per-call model construction beyond validation itself).
+            #
+            # Raising here only surfaces at *some* call sites. Two of the
+            # five swallow or downgrade it upstream, so a malformed payload
+            # there costs the events rather than failing the run:
+            #   - `token_progress`: emitted from the on_token_progress
+            #     callback, which model.py's streaming loop invokes inside
+            #     `try: ... except Exception: pass`, so the event is dropped
+            #     with no trace (this is precisely how an over-strict
+            #     `eval_count: int` destroyed intra-chunk progress unnoticed
+            #     -- see test_token_progress_validation_failure_is_swallowed
+            #     _by_stream_callback in tests/test_model_enhanced.py).
+            #   - `keepalive`: emitted from the keepalive thread, whose
+            #     `except Exception` downgrades it to an
+            #     LLM_KEEPALIVE_FAILED warning.
+            # Only `mass_total`/`chunk_start`/`chunk_end` propagate to the
+            # caller. Tests must therefore assert on emitted events, never
+            # rely on a green run to prove a payload validated.
+            validated_event = validate_mass_event(payload)
             try:
-                message = json.dumps(payload)
+                # Serialize the validated model, not the input `payload`
+                # dict, so a value pydantic coerced on the way in crosses
+                # the bridge in its coerced form (#95) -- see
+                # serialize_mass_event's docstring.
+                message = serialize_mass_event(validated_event)
                 display = status_message or message
+                # Tracker dispatch is best-effort and guarded on its own --
+                # ProgressUpdate is a pydantic dataclass (bridge schema
+                # migration step 4a) and can raise ValidationError, which
+                # must not swallow the stdout mass-event print below (the
+                # Swift bridge's progress channel).
                 if tracker:
-                    tracker.update_phase(ProcessingPhase.LLM_EXTRACTION, progress or 0.0, display)
+                    try:
+                        tracker.update_phase(ProcessingPhase.LLM_EXTRACTION, progress or 0.0, display)
+                    except Exception:
+                        pass
                 elif progress_callback:
                     try:
                         progress_callback(0, 0, display)
@@ -857,10 +1248,15 @@ class IntelligentRedactionPipeline:
                     print(message, flush=True)
                 except UnicodeEncodeError:
                     print(message.encode('ascii', errors='replace').decode('ascii'), flush=True)
-            except Exception as e:
+            except Exception:
                 pass
 
         all_entities = []
+        # One entry per chunk whose LLM extraction never succeeded after
+        # retries -- if this is non-empty once every chunk has been
+        # attempted, the run fails closed (see LLMChunkExtractionFailed)
+        # instead of silently completing with unanalyzed text ranges.
+        chunk_failures: List[Dict[str, Any]] = []
 
         tracker = None
         accepts_progress_update = False
@@ -901,6 +1297,7 @@ class IntelligentRedactionPipeline:
         validation_lock = threading.Lock()
         current_chunk = 0
         total_chunks = len(chunks)
+        cancel_event = threading.Event()
 
         executor = concurrent.futures.ThreadPoolExecutor(max_workers=self.llm_concurrency)
         futures = []
@@ -922,16 +1319,21 @@ class IntelligentRedactionPipeline:
 
             def do_validate(entities_to_proc):
                 try:
+                    if cancel_event.is_set():
+                        raise ProcessingDeadlineExceeded("Processing deadline exceeded")
+                    check_processing_deadline()
                     results = ollama_validate_batch(
                         self.model_id,
                         entities_to_proc,
                         text,
                         self.doc_context,
                         self.temperature,
+                        seed=self.seed,
                         skip_confidence=self.skip_confidence,
                         warnings=warnings,
                         think_mode=self.think_mode,
                         format_schema=self.format_schema,
+                        generate_rationale=self.generate_rationale,
                     )
 
                     # Apply results via lock
@@ -940,6 +1342,9 @@ class IntelligentRedactionPipeline:
                             entity.validated = True
                             entity.validation_result = result.get("classification")
                             entity.needs_redaction = result.get("needs_redaction", True) # Default True
+                            if self.generate_rationale:
+                                entity.rationale = result.get("rationale")
+                                entity.rationale_origin = result.get("rationale_origin")
 
                             # Cache result for future
                             self.validation_cache.set(entity.text, entity.label, result)
@@ -1014,20 +1419,71 @@ class IntelligentRedactionPipeline:
             chunk_text = chunk.get("text", "")
             chunk_start = chunk.get("start", 0)
 
+            # Intra-chunk streaming progress (docs/design/streaming_progress.md,
+            # Option B): as Ollama streams NDJSON response lines for this
+            # chunk's extraction call, surface a finer-grained update than
+            # "chunk started" / "chunk finished" via the existing
+            # emit_mass_event() channel -- no new progress protocol. Rate-limited
+            # so a fast model doesn't flood the PythonKit bridge with an update
+            # per streamed line; every real invocation also refreshes the
+            # Swift-side heartbeat timestamp (see DocumentRedactionViewModel's
+            # progress consumer), which is what closes the #49 false-failure
+            # gap for a single long-running chunk.
+            last_token_emit_time = 0.0
+            last_token_emit_chars = 0
+
+            def on_chunk_token_progress(chars_so_far, eval_count_so_far):
+                nonlocal last_token_emit_time, last_token_emit_chars
+                if cancel_event.is_set():
+                    # T6 invariant: never emit progress after cancellation.
+                    return
+                now = time.monotonic()
+                if (now - last_token_emit_time) < 0.25 and (chars_so_far - last_token_emit_chars) < 40:
+                    return
+                last_token_emit_time = now
+                last_token_emit_chars = chars_so_far
+                with chunk_lock:
+                    completed = current_chunk
+                chunk_progress = (completed / total_chunks) if total_chunks else 0.0
+                emit_mass_event(
+                    {
+                        "type": "token_progress",
+                        "chunk_index": chunk_idx,
+                        "chars": chars_so_far,
+                        "eval_count": eval_count_so_far,
+                    },
+                    chunk_progress,
+                    status_message=(
+                        f"Streaming chunk {chunk_idx + 1}/{total_chunks} "
+                        f"({chars_so_far} chars generated)"
+                    ),
+                )
+
             # 1. Extraction (per chunk) with retry
             simple_spans = []
             extract_error = None
             for attempt_idx, wait_s in enumerate((0, 2), start=1):
                 try:
+                    if cancel_event.is_set():
+                        raise ProcessingDeadlineExceeded("Processing deadline exceeded")
+                    check_processing_deadline()
                     simple_spans = ollama_extract(
                         self.model_id,
                         chunk_text,
                         self.temperature,
-                        seed=42,
-                        context=prompt_context
+                        seed=self.seed,
+                        context=prompt_context,
+                        stream=True,
+                        cancel_event=cancel_event,
+                        on_token_progress=on_chunk_token_progress,
                     )
+                    if cancel_event.is_set():
+                        raise ProcessingDeadlineExceeded("Processing deadline exceeded")
+                    check_processing_deadline()
                     extract_error = None
                     break
+                except ProcessingDeadlineExceeded:
+                    raise
                 except Exception as e:
                     extract_error = e
                     print(f"Extraction attempt {attempt_idx} failed for chunk {chunk_idx}: {e}")
@@ -1035,6 +1491,9 @@ class IntelligentRedactionPipeline:
                         time.sleep(wait_s)
 
             with result_lock:
+                if cancel_event.is_set():
+                    raise ProcessingDeadlineExceeded("Processing deadline exceeded")
+                check_processing_deadline()
                 with chunk_lock:
                     current_chunk += 1
 
@@ -1043,10 +1502,23 @@ class IntelligentRedactionPipeline:
                     tracker.update_phase(ProcessingPhase.LLM_EXTRACTION, chunk_progress, f"Processed chunk {current_chunk}/{total_chunks}")
 
                 if extract_error is not None:
+                    chunk_end = chunk.get("end", chunk_start + len(chunk_text))
                     warnings.append({
                         "code": "LLM_CHUNK_FAILED",
                         "message": f"AI extraction failed for chunk {chunk_idx + 1} after retries.",
-                        "details": str(extract_error)
+                        "details": str(extract_error),
+                        "start": chunk_start,
+                        "end": chunk_end,
+                    })
+                    # Recorded separately from `warnings` (which mixes in
+                    # unrelated warning codes) so the unanalyzed-range check
+                    # below is unambiguous regardless of what else has been
+                    # appended to the shared warnings list.
+                    chunk_failures.append({
+                        "chunk_index": chunk_idx,
+                        "start": chunk_start,
+                        "end": chunk_end,
+                        "error": str(extract_error),
                     })
                     emit_mass_event({
                         "type": "chunk_end",
@@ -1103,6 +1575,9 @@ class IntelligentRedactionPipeline:
                         entity.validated = True
                         entity.needs_redaction = cached.get("needs_redaction", True)
                         entity.validation_result = cached.get("classification")
+                        if self.generate_rationale:
+                            entity.rationale = cached.get("rationale")
+                            entity.rationale_origin = cached.get("rationale_origin")
                     elif needs_validation(entity, self.doc_context):
                         to_validate_buffer.append(entity)
 
@@ -1117,6 +1592,7 @@ class IntelligentRedactionPipeline:
 
         try:
             for chunk_idx, chunk in enumerate(chunks):
+                check_processing_deadline()
                 # Emit chunk start immediately
                 emit_mass_event({
                     "type": "chunk_start",
@@ -1126,18 +1602,42 @@ class IntelligentRedactionPipeline:
 
                 futures.append(executor.submit(process_single_chunk, chunk_idx, chunk))
 
-            # Wait for all extraction chunks to complete
-            concurrent.futures.wait(futures)
+            # Wait for all extraction chunks to complete, polling so deadlines interrupt promptly.
+            pending = set(futures)
+            while pending:
+                check_processing_deadline()
+                done, pending = concurrent.futures.wait(
+                    pending,
+                    timeout=min(1.0, remaining_seconds(1.0)),
+                    return_when=concurrent.futures.FIRST_COMPLETED,
+                )
+                for future in done:
+                    future.result()
 
             # Final flush of validaton buffer
+            check_processing_deadline()
             val_futures = flush_validation(force=True, execute_async=True)
             validation_futures.extend(val_futures)
 
-            # Wait for all validation requests to complete
-            concurrent.futures.wait(validation_futures)
+            # Wait for all validation requests to complete, polling so deadlines interrupt promptly.
+            pending_validation = set(validation_futures)
+            while pending_validation:
+                check_processing_deadline()
+                done, pending_validation = concurrent.futures.wait(
+                    pending_validation,
+                    timeout=min(1.0, remaining_seconds(1.0)),
+                    return_when=concurrent.futures.FIRST_COMPLETED,
+                )
+                for future in done:
+                    future.result()
+        except (KeyboardInterrupt, ProcessingDeadlineExceeded):
+            cancel_event.set()
+            for future in futures + validation_futures:
+                future.cancel()
+            raise
 
         finally:
-            executor.shutdown(wait=True)
+            executor.shutdown(wait=False, cancel_futures=True)
             if stop_progress:
                 stop_progress.set()
             if progress_thread:
@@ -1145,6 +1645,25 @@ class IntelligentRedactionPipeline:
 
         if tracker:
             tracker.update_phase(ProcessingPhase.LLM_EXTRACTION, 1.0, "AI extraction complete")
+
+        # Privacy-first fail-closed default: if the LLM extractor never
+        # produced a successful result for one or more chunks (after
+        # retries), do not silently return whatever partial entities were
+        # found elsewhere -- that would ship a redacted document that looks
+        # complete while some text ranges were never analyzed. Raise so the
+        # caller (pipeline.run_redaction) fails the whole run with a report
+        # that discloses exactly which character ranges were skipped. A
+        # deadline/cancellation abort is unaffected: it already raises
+        # ProcessingDeadlineExceeded above and never reaches this point.
+        if chunk_failures:
+            raise LLMChunkExtractionFailed(chunk_failures, total_chunks)
+
+        # Chunks overlap by design (see chunker.make_chunks), so a mention
+        # near a chunk boundary can be extracted more than once. Enforce the
+        # offset invariant and collapse same-label overlap-window duplicates
+        # before converting to the output format.
+        all_entities = _drop_invalid_entity_offsets(text, all_entities, warnings)
+        all_entities = _dedupe_chunk_overlap_entities(all_entities)
 
         # Convert to output format
         output_spans = []
@@ -1164,6 +1683,30 @@ class IntelligentRedactionPipeline:
             }
             if entity.validation_result:
                 span["validation_result"] = entity.validation_result
+
+            if self.generate_rationale:
+                if entity.rationale_origin == RationaleOrigin.LLM_VALIDATION.value and entity.rationale:
+                    span["rationale"] = {
+                        "text": entity.rationale,
+                        "origin": RationaleOrigin.LLM_VALIDATION.value,
+                        "model": self.model_id,
+                    }
+                elif entity.rationale_origin == RationaleOrigin.UNAVAILABLE.value and entity.rationale:
+                    span["rationale"] = {
+                        "text": entity.rationale,
+                        "origin": RationaleOrigin.UNAVAILABLE.value,
+                    }
+                else:
+                    # Never validated at all (e.g. needs_validation() skipped
+                    # it) -- Option B only covers the validated subset, so
+                    # this is an honest "unavailable", not a fabricated
+                    # explanation of a decision the LLM never made. See
+                    # docs/design/redaction_rationale_reporting.md's
+                    # Option B coverage-gap discussion.
+                    span["rationale"] = {
+                        "text": "No rationale was generated for this entity.",
+                        "origin": RationaleOrigin.UNAVAILABLE.value,
+                    }
 
             output_spans.append(span)
 
@@ -1186,6 +1729,7 @@ def run_enhanced_model(
     suppressed: Optional[List[Dict[str, Any]]] = None,
     think_mode: bool = False,
     format_schema: Optional[Dict] = None,
+    generate_rationale: bool = False,
     **kwargs
 ) -> List[Dict]:
     """Main entry point for enhanced model extraction."""
@@ -1196,10 +1740,12 @@ def run_enhanced_model(
         pipeline = IntelligentRedactionPipeline(
             model_id,
             temperature,
+            seed=seed,
             skip_confidence=skip_confidence,
             llm_concurrency=llm_concurrency,
             think_mode=think_mode,
-            format_schema=format_schema
+            format_schema=format_schema,
+            generate_rationale=generate_rationale,
         )
         return pipeline.process_document(
             text,
@@ -1211,8 +1757,10 @@ def run_enhanced_model(
     elif backend == "llama_cpp":
         if not model_path:
             raise ValueError("model_path required for llama_cpp backend")
-        pipeline = LlamaCppRedactionPipeline(model_path, temperature, seed)
-        return pipeline.process_document(text, chunks, progress_callback=progress_callback)
+        pipeline = LlamaCppRedactionPipeline(model_path, temperature, seed, threads=kwargs.get("threads", 4))
+        return pipeline.process_document(
+            text, chunks, progress_callback=progress_callback, warnings=warnings
+        )
     else:
         raise ValueError(f"Unsupported backend: {backend}. Use 'ollama' or 'llama_cpp'")
 
@@ -1225,10 +1773,11 @@ _llama_model_path = None
 class LlamaCppRedactionPipeline:
     """LLama.cpp-based redaction pipeline using direct GGUF model loading."""
 
-    def __init__(self, model_path: str, temperature: float = 0.1, seed: Optional[int] = None):
+    def __init__(self, model_path: str, temperature: float = 0.1, seed: Optional[int] = None, threads: int = 4):
         self.model_path = model_path
         self.temperature = temperature
         self.seed = seed or 42
+        self.threads = max(1, int(threads or 4))
         self._llama_model = None
 
     def _get_model(self):
@@ -1237,8 +1786,8 @@ class LlamaCppRedactionPipeline:
 
         try:
             from llama_cpp import Llama
-        except ImportError:
-            raise RuntimeError("llama-cpp-python not installed. Run: pip install llama-cpp-python")
+        except ImportError as e:
+            raise RuntimeError("llama-cpp-python not installed. Run: pip install llama-cpp-python") from e
 
         # Load model if not cached or if path changed
         if _llama_model is None or _llama_model_path != self.model_path:
@@ -1250,13 +1799,14 @@ class LlamaCppRedactionPipeline:
                 _llama_model = Llama(
                     model_path=self.model_path,
                     n_ctx=8192,  # Context window
+                    n_threads=self.threads,
                     n_gpu_layers=-1,  # Offload all layers to GPU if available
                     seed=self.seed,
                     verbose=False
                 )
                 _llama_model_path = self.model_path
             except Exception as e:
-                raise RuntimeError(f"Error loading model: {e}")
+                raise RuntimeError(f"Error loading model: {e}") from e
 
         return _llama_model
 
@@ -1274,64 +1824,80 @@ class LlamaCppRedactionPipeline:
             )
             return response['choices'][0]['text'].strip()
         except Exception as e:
-            raise RuntimeError(f"Error during inference: {e}")
+            raise RuntimeError(f"Error during inference: {e}") from e
 
     def extract_entities(self, text: str, doc_context: DocumentContext) -> List[Entity]:
-        """Extract entities using local Llama.cpp model."""
-        try:
-            prompt_context = build_prompt_context(doc_context)
-            prompt = build_extraction_prompt(text, prompt_context)
+        """Extract entities using local Llama.cpp model.
 
-            # Generate response locally
-            # Note: We trust the prompt builder to provide the correct JSON structure instruction
-            response_text = self._generate_response(prompt)
+        Does not catch its own exceptions: inference/parsing failures must
+        propagate to the caller (`process_document`'s retry+chunk_failures
+        loop) rather than being swallowed into an empty result, which would
+        silently report a chunk as "scanned, found nothing" when it was
+        never successfully analyzed.
+        """
+        prompt_context = build_prompt_context(doc_context)
+        prompt = build_extraction_prompt(text, prompt_context)
 
-            # Parse JSON response
-            parsed = parse_llm_response(response_text)
+        # Generate response locally
+        # Note: We trust the prompt builder to provide the correct JSON structure instruction
+        response_text = self._generate_response(prompt)
 
-            # Convert parsed dict items to Entity objects
-            entities = []
-            for item in parsed.get("entities", []):
-                entity_text = item.get("text", "")
-                if not entity_text:
-                    continue
+        # Parse JSON response
+        parsed = parse_llm_response(response_text)
 
-                raw_label = item.get("label") or item.get("type") or ""
-                label = _map_label(raw_label)
-                if not label and raw_label:
-                    label = raw_label.strip().upper()
-                if label not in ["NAME", "ORG", "LOC", "DATE", "MONEY", "NUMBER", "EMAIL", "PHONE", "SSN"]:
-                    continue
+        # Convert parsed dict items to Entity objects
+        entities = []
+        for item in parsed.get("entities", []):
+            entity_text = item.get("text", "")
+            if not entity_text:
+                continue
 
-                # Validate candidate (prevent span explosion on garbage)
-                if not _valid_candidate(entity_text, label):
-                    continue
+            raw_label = item.get("label") or item.get("type") or ""
+            label = _map_label(raw_label)
+            if not label and raw_label:
+                label = raw_label.strip().upper()
+            if label not in ["NAME", "ORG", "LOC", "DATE", "MONEY", "NUMBER", "EMAIL", "PHONE", "SSN"]:
+                continue
 
-                # Find all occurrences of the entity text
-                start_search = 0
-                while True:
-                    start = text.find(entity_text, start_search)
-                    if start == -1:
-                        break
+            # Validate candidate (prevent span explosion on garbage)
+            if not _valid_candidate(entity_text, label):
+                continue
 
-                    entity = Entity(
-                        text=entity_text,
-                        label=label,
-                        start=start,
-                        end=start + len(entity_text),
-                        confidence=item.get("confidence", 0.85),
-                        needs_redaction=item.get("needs_redaction", True),
-                        rationale=item.get("rationale"),
-                        source=self.model_id
-                    )
-                    entities.append(entity)
-                    start_search = start + 1
+            # Find all occurrences of the entity text
+            start_search = 0
+            while True:
+                start = text.find(entity_text, start_search)
+                if start == -1:
+                    break
 
-            return entities
+                entity = Entity(
+                    text=entity_text,
+                    label=label,
+                    start=start,
+                    end=start + len(entity_text),
+                    confidence=item.get("confidence", 0.85),
+                    needs_redaction=item.get("needs_redaction", True),
+                    rationale=item.get("rationale"),
+                    # Basename only: the full path would put the operator's
+                    # home directory and username into an artifact that
+                    # travels with the document (#85). `self.model_path`
+                    # itself stays untouched -- it's still used to load the
+                    # model file (see `_get_model`).
+                    #
+                    # The "llama_cpp:" prefix is not decoration: `rationale.py`
+                    # classifies a span as deterministic by pattern-matching
+                    # `source` against `_RULE_LIKE_PREFIXES = ("rule",
+                    # "consistency_pass")`, so a bare basename would make a
+                    # model file named e.g. "rule-tuned-q4.gguf" report its
+                    # LLM spans as rule matches -- a false provenance claim in
+                    # an audit artifact. Basenaming moves this value into that
+                    # namespace, so it has to be namespaced out of it.
+                    source=f"llama_cpp:{os.path.basename(self.model_path)}" if self.model_path else self.model_path
+                )
+                entities.append(entity)
+                start_search = start + 1
 
-        except Exception as e:
-            print(f"Error in Llama.cpp entity extraction: {e}")
-            return []
+        return entities
 
     def validate_entity(self, entity: Entity, full_text: str, doc_context: DocumentContext) -> Dict:
         """Validate a single entity using local Llama.cpp model."""
@@ -1363,14 +1929,29 @@ class LlamaCppRedactionPipeline:
                 "rationale": f"Validation failed: {str(e)}"
             }
 
-    def process_document(self, text: str, chunks: List[Dict], progress_callback=None) -> List[Dict]:
-        """Process document using the enhanced pipeline with Ollama."""
+    def process_document(
+        self,
+        text: str,
+        chunks: List[Dict],
+        progress_callback=None,
+        warnings: Optional[List[Dict[str, Any]]] = None,
+    ) -> List[Dict]:
+        """Process document using the enhanced pipeline with local llama.cpp inference."""
+        if warnings is None:
+            warnings = []
+
         # Create document context
         doc_context = DocumentContext()
         doc_context.analyze_document(text)
 
         all_entities = []
         total_chunks = len(chunks)
+        # One entry per chunk whose extraction never succeeded after retries --
+        # if non-empty once every chunk has been attempted, the run fails
+        # closed (see LLMChunkExtractionFailed) instead of silently completing
+        # with text ranges that were never analyzed. Mirrors
+        # IntelligentRedactionPipeline.process_document's Ollama-path handling.
+        chunk_failures: List[Dict[str, Any]] = []
 
         # Extract entities from each chunk
         for i, chunk in enumerate(chunks):
@@ -1379,9 +1960,43 @@ class LlamaCppRedactionPipeline:
 
             chunk_text = chunk["text"]
             chunk_start = chunk["start"]
+            chunk_end = chunk.get("end", chunk_start + len(chunk_text))
 
-            # Extract entities from this chunk
-            entities = self.extract_entities(chunk_text, doc_context)
+            # Extract entities from this chunk, with the same retry cadence
+            # as the Ollama path (immediate retry, then one more after a 2s
+            # backoff) before giving up on the chunk.
+            entities: List[Entity] = []
+            extract_error: Optional[Exception] = None
+            for attempt_idx, wait_s in enumerate((0, 2), start=1):
+                try:
+                    check_processing_deadline()
+                    entities = self.extract_entities(chunk_text, doc_context)
+                    check_processing_deadline()
+                    extract_error = None
+                    break
+                except ProcessingDeadlineExceeded:
+                    raise
+                except Exception as e:
+                    extract_error = e
+                    print(f"Extraction attempt {attempt_idx} failed for chunk {i}: {e}")
+                    if wait_s:
+                        time.sleep(wait_s)
+
+            if extract_error is not None:
+                warnings.append({
+                    "code": "LLM_CHUNK_FAILED",
+                    "message": f"AI extraction failed for chunk {i + 1} after retries.",
+                    "details": str(extract_error),
+                    "start": chunk_start,
+                    "end": chunk_end,
+                })
+                chunk_failures.append({
+                    "chunk_index": i,
+                    "start": chunk_start,
+                    "end": chunk_end,
+                    "error": str(extract_error),
+                })
+                continue
 
             # Adjust entity positions to document coordinates
             for entity in entities:
@@ -1391,6 +2006,14 @@ class LlamaCppRedactionPipeline:
                 entity.text = text[entity.start:entity.end]
 
             all_entities.extend(entities)
+
+        # Privacy-first fail-closed default: see LLMChunkExtractionFailed and
+        # IntelligentRedactionPipeline.process_document for the Ollama-path
+        # rationale -- the llama.cpp backend must fail the same way rather
+        # than silently returning partial results as if the document were
+        # fully scanned.
+        if chunk_failures:
+            raise LLMChunkExtractionFailed(chunk_failures, total_chunks)
 
         # Convert entities to span format
         spans = []

@@ -29,6 +29,18 @@ _PHONE_CONTEXT_RE = re.compile(
 # Fixed: removed anchor ^ to allow matching in window
 _CURRENCY_TRAIL_RE = re.compile(r"\s*\(?[A-Z]{3}(?:\b|/)")
 
+# Context keyword immediately preceding an undashed 9-digit run, required before we'll
+# reclassify a bare ACCOUNT-shaped digit run as an SSN (e.g. "SSN: 123456789"). Anchored
+# to the end of the lookbehind window so an unrelated earlier mention of "SSN" in the same
+# sentence does not cause a false positive -- only a keyword *immediately* before the digits
+# (allowing a colon/#/"number"/"is"/"was" in between) counts.
+_SSN_CONTEXT_ADJACENT_RE = re.compile(
+    r"(?i)(?:SSN|SS#|S\.S\.N\.?|Social\s+Security(?:\s+Number)?)\s*"
+    r"(?:(?:#|No\.?|Number)\s*)?"
+    r"(?:(?:is|was)\s*)?"
+    r":?\s*$"
+)
+
 
 def _normalize_rule_scan_text(text: str) -> str:
     if not text:
@@ -60,6 +72,20 @@ def _looks_like_phone_context(text: str, start: int, end: int) -> bool:
     if _PHONE_CONTEXT_RE.search(window_after):
         return True
     return False
+
+def _looks_like_ssn_context(text: str, start: int) -> bool:
+    """
+    Return True if an "SSN"/"Social Security" label sits immediately before the
+    digit run at `start` (only a colon/#/"number"/"is"/"was" may separate them).
+    Deliberately strict (vs. a loose nearby-window search) so an undashed 9-digit
+    number is only reclassified as an SSN when the label directly identifies it --
+    bare 9-digit runs are otherwise high-false-positive (order numbers, account
+    numbers, etc.) per issue #41.
+    """
+    if not text:
+        return False
+    window_before = text[max(0, start - 40):start]
+    return bool(_SSN_CONTEXT_ADJACENT_RE.search(window_before))
 
 def _get_exclusion_data():
     """Lazily import exclusion data from model module."""
@@ -157,7 +183,7 @@ def _is_excluded_combo(text: str) -> bool:
         }
     generic_connectors.add("&")
 
-    tokens = re.findall(r"[A-Za-z0-9']+|&", text)
+    tokens = re.findall(r"[A-Za-z0-9'/-]+|&", text)
     if not tokens:
         return False
 
@@ -206,31 +232,41 @@ _US_JURISDICTIONS = (
     r"Alabama|Alaska|Arizona|Arkansas|California|Colorado|Connecticut|Delaware|"
     r"Florida|Georgia|Hawaii|Idaho|Illinois|Indiana|Iowa|Kansas|Kentucky|Louisiana|"
     r"Maine|Maryland|Massachusetts|Michigan|Minnesota|Mississippi|Missouri|Montana|"
-    r"Nebraska|Nevada|New\\s+Hampshire|New\\s+Jersey|New\\s+Mexico|New\\s+York|"
-    r"North\\s+Carolina|North\\s+Dakota|Ohio|Oklahoma|Oregon|Pennsylvania|"
-    r"Rhode\\s+Island|South\\s+Carolina|South\\s+Dakota|Tennessee|Texas|Utah|"
-    r"Vermont|Virginia|Washington|West\\s+Virginia|Wisconsin|Wyoming|"
-    r"District\\s+of\\s+Columbia|D\\.C\\."
+    r"Nebraska|Nevada|New[^\S\n]+Hampshire|New[^\S\n]+Jersey|New[^\S\n]+Mexico|New[^\S\n]+York|"
+    r"North[^\S\n]+Carolina|North[^\S\n]+Dakota|Ohio|Oklahoma|Oregon|Pennsylvania|"
+    r"Rhode[^\S\n]+Island|South[^\S\n]+Carolina|South[^\S\n]+Dakota|Tennessee|Texas|Utah|"
+    r"Vermont|Virginia|Washington|West[^\S\n]+Virginia|Wisconsin|Wyoming|"
+    r"District[^\S\n]+of[^\S\n]+Columbia|D\.C\."
 )
+# NOTE: separators below use [^\S\n] (whitespace excluding newline), not \s, so this
+# match can never bridge a paragraph/table-cell boundary -- see COMPANY_SUFFIX above.
+# Previously these were written as literal "\\s" inside raw strings, which regex
+# compiles to "a literal backslash followed by 's'" -- i.e. this pattern never matched
+# anything at all, silently disabling jurisdiction-tail trimming entirely.
 _JURISDICTION_TAIL_RE = re.compile(
     rf"(?ix)"
-    rf"(?:,\\s*)?"
-    rf"(?:a|an)\\s+"
-    rf"(?:{_US_JURISDICTIONS})\\s+"
+    rf"(?:,[^\S\n]*)?"
+    rf"(?:a|an)[^\S\n]+"
+    rf"(?:{_US_JURISDICTIONS})[^\S\n]+"
     rf"(?:"
-        rf"limited\\s+liability\\s+company|"
-        rf"limited\\s+liability\\s+partnership|"
-        rf"limited\\s+partnership|"
-        rf"general\\s+partnership|"
-        rf"corporation|inc\\.?|company|"
-        rf"llc|l\\.l\\.c\\.|l\\.c\\.|lc|"
-        rf"llp|l\\.l\\.p\\.|"
-        rf"lp|l\\.p\\.|"
-        rf"plc|p\\.l\\.c\\.|"
-        rf"statutory\\s+trust|business\\s+trust"
+        rf"limited[^\S\n]+liability[^\S\n]+company|"
+        rf"limited[^\S\n]+liability[^\S\n]+partnership|"
+        rf"limited[^\S\n]+partnership|"
+        rf"general[^\S\n]+partnership|"
+        rf"corporation|inc\.?|company|"
+        rf"llc|l\.l\.c\.|l\.c\.|lc|"
+        rf"llp|l\.l\.p\.|"
+        rf"lp|l\.p\.|"
+        rf"plc|p\.l\.c\.|"
+        rf"statutory[^\S\n]+trust|business[^\S\n]+trust"
     rf")"
-    rf"\\s*$"
+    rf"[^\S\n]*$"
 )
+
+# Matches a bare jurisdiction name (single- or multi-word, e.g. "Delaware" or
+# "New York") and nothing else -- used to recognize a COMPANY_SUFFIX candidate
+# whose entire name portion is just a state name (see _is_generic_org_span).
+_US_JURISDICTION_FULL_RE = re.compile(rf"(?i)(?:{_US_JURISDICTIONS})")
 
 # Entity suffixes containing periods that should NOT trigger sentence boundary detection
 _ENTITY_SUFFIX_PERIODS = re.compile(
@@ -393,7 +429,7 @@ DOCID = re.compile(
 _DEFINED_TERM_NAME = re.compile(
     r"""
     (?P<full>[A-Z][A-Za-z'\-\.]+(?:\s+[A-Z][A-Za-z'\-\.]+){1,2})   # Full name (2-3 words)
-    \s*\(\s*["“”](?P<short>[A-Z][A-Za-z'\-\.]+)["”]\s*\)          # Short defined term in quotes
+    \s*\(\s*["“”'‘’](?P<short>[A-Z][A-Za-z'\-\.]+)["“”'‘’]\s*\)          # Short defined term in quotes
     """,
     re.VERBOSE,
 )
@@ -465,7 +501,8 @@ COMPANY_SUFFIX = re.compile(
             r"|"
             r"(?i:and|of|the|for|a|an|&|de|la)"  # Connector (case-insensitive)
         r")"
-        r",?\s+"                    # Required space (with optional comma) after each token
+        r",?[^\S\n]+"                # Required same-line space (with optional comma) after each token;
+                                     # excludes \n so a match can't bridge a paragraph/table-cell boundary
     r"){1,10}?"                     # Scan 1 to 10 tokens forward, preferring nearest suffix
     r"(?:"
     r"(?i:Incorporated|Corporation|Company|Limited)|"
@@ -518,7 +555,9 @@ _LEADING_ORG_CONNECTOR_RE = re.compile(
     r"(?i)^\s*(?:,?\s*)?(?:and|or|by|between|with|from|to)\s+"
 )
 _ORG_SUFFIX_TRAIL_AFTER_RE = re.compile(
-    r"^[\s,]+(?:"
+    # Leading separator is same-line whitespace only (plus comma); excludes \n so a
+    # preliminary ORG match can't be extended across a paragraph/table-cell boundary.
+    r"^(?:[^\S\n]|,)+(?:"
     r"inc\.?|corp\.?|co\.?|ltd\.?|llc|l\.l\.c\.|llp|l\.l\.p\.|lp|l\.p\.|"
     r"pllc|plc|p\.l\.c\.|gmbh|s\.a\.s\.|s\.a\.|s\.r\.l\.|b\.v\.|n\.v\.?"
     r")\.?(?=$|[\s,;:\)\]\}])",
@@ -718,12 +757,14 @@ _RULE_FILTER_CACHE: Dict[str, Optional[Set[str]]] = {"raw": None, "labels": None
 
 def luhn_ok(s: str) -> bool:
     digits = [int(c) for c in re.sub(r"\D", "", s)]
-    if len(digits) < 13 or len(digits) > 19: return False
+    if len(digits) < 13 or len(digits) > 19:
+        return False
     checksum, parity = 0, len(digits) % 2
     for i, d in enumerate(digits):
         if i % 2 == parity:
             d *= 2
-            if d > 9: d -= 9
+            if d > 9:
+                d -= 9
         checksum += d
     return checksum % 10 == 0
 
@@ -830,6 +871,18 @@ def _is_generic_org_span(text: str) -> bool:
     # If ALL of them are either connectors or excluded words, it's generic
     name_portion = parts[:-1]  # Everything except the suffix
 
+    # A name portion that is ENTIRELY a jurisdiction name (e.g. "Delaware", or
+    # multi-word ones like "New York"/"North Carolina") is jurisdiction-clause
+    # noise, not a distinctive org name component -- COMPANY_SUFFIX's ordered
+    # suffix alternation can match a bare legal-form word (e.g. "Limited")
+    # immediately after a state name before ever trying the longer "Limited
+    # Liability Company" phrase, producing a standalone "Delaware limited" /
+    # "New York limited" style candidate. The per-word checks below only ever
+    # look at one token at a time, so a multi-word state would have its first
+    # token (e.g. "New") misread as distinctive; check the whole phrase first.
+    if _US_JURISDICTION_FULL_RE.fullmatch(" ".join(name_portion)):
+        return True
+
     if _has_org_suffix(cleaned_text):
         distinctive = False
         for word in name_portion:
@@ -898,16 +951,33 @@ def run_rules(text: str) -> List[Dict[str,Any]]:
                 continue
 
             if label == "PHONE":
-                if sub.isdigit() and _rule_enabled("ACCOUNT", selected):
-                    if _looks_like_account_context(scan_text, s, e):
-                        continue
+                # Account-context suppression applies to any PHONE-shaped match (digit-only
+                # or separator-formatted, e.g. "Account Number: 123-456-7890") -- previously
+                # this was gated on sub.isdigit(), so a dash/space-formatted account number
+                # that happens to match the phone pattern's separator grammar was never
+                # checked against account context and always won the PHONE label (issue #41).
+                if _rule_enabled("ACCOUNT", selected) and _looks_like_account_context(scan_text, s, e):
+                    continue
                 if sub.isdigit() and not _looks_like_phone_context(scan_text, s, e):
                     if _rule_enabled("NUMBER", selected):
                         label_out = "NUMBER"
                         conf_out = 0.70
                     else:
                         continue
-            
+
+            # Reclassify a bare 9-digit ACCOUNT-shaped match as SSN when an "SSN"/"Social
+            # Security" label sits directly in front of it (e.g. "SSN: 123456789"). Dashed
+            # SSNs (123-45-6789) are already matched unconditionally by the SSN rule above;
+            # this only covers the undashed variant, which is high-false-positive without a
+            # context requirement (see issue #41).
+            if label == "ACCOUNT" and _rule_enabled("SSN", selected):
+                stripped = sub.rstrip(" \t–—−-")
+                if len(stripped) == 9 and stripped.isdigit() and _looks_like_ssn_context(scan_text, s):
+                    e = s + len(stripped)
+                    sub = stripped
+                    label_out = "SSN"
+                    conf_out = 0.93
+
             # Special logic for ORG matches to avoid over-redaction of defined terms
             if label == "ORG":
                 extended_e = _extend_org_suffix_tail(text, e)
@@ -965,15 +1035,11 @@ def run_rules(text: str) -> List[Dict[str,Any]]:
                             break  # Stop at first non-excluded segment
                     
                     if trim_count > 0:
-                        # Calculate actual prefix length in original text
-                        # Find position of the segment we want to keep
-                        trimmed_text = ", ".join(segments[trim_count:])
                         # Find where this trimmed portion starts in the original sub
                         trim_start = sub.find(segments[trim_count])
                         if trim_start > 0:
                             s = s + trim_start
-                            e = s + len(trimmed_text)
-                            sub = trimmed_text
+                            sub = sub[trim_start:]
                         
                         # Re-check if the trimmed result is now generic
                         if _is_generic_org_span(sub) or _is_excluded(sub):
@@ -985,43 +1051,46 @@ def run_rules(text: str) -> List[Dict[str,Any]]:
                 })
     
     # Defined-term person fallback: Full Name (“Last”) -> emit both full and short NAME spans
-    for m in _DEFINED_TERM_NAME.finditer(scan_text):
-        full = m.group("full")
-        short = m.group("short")
-        if not full or not short:
-            continue
-        full_tokens = full.split()
-        if not full_tokens:
-            continue
-        full_last = full_tokens[-1].strip(".'-")
-        short_clean = short.strip(".'-")
-        if full_last.lower() != short_clean.lower():
-            continue
+    if _rule_enabled("NAME", selected):
+        for m in _DEFINED_TERM_NAME.finditer(scan_text):
+            full = m.group("full")
+            short = m.group("short")
+            if not full or not short:
+                continue
+            full_tokens = full.split()
+            if not full_tokens:
+                continue
+            full_last = full_tokens[-1].strip(".'-")
+            short_clean = short.strip(".'-")
+            if full_last.lower() != short_clean.lower():
+                continue
 
-        fs, fe = m.span("full")
-        ss, se = m.span("short")
-        try:
-            full_text = text[fs:fe]
-            short_text = text[ss:se]
-        except Exception:
-            continue
+            fs, fe = m.span("full")
+            ss, se = m.span("short")
+            try:
+                full_text = text[fs:fe]
+                short_text = text[ss:se]
+            except Exception:
+                continue
 
-        out.append({
-            "start": fs,
-            "end": fe,
-            "label": "NAME",
-            "confidence": 0.90,
-            "source": "rule_defined_term",
-            "text": full_text,
-        })
-        out.append({
-            "start": ss,
-            "end": se,
-            "label": "NAME",
-            "confidence": 0.88,
-            "source": "rule_defined_term",
-            "text": short_text,
-        })
+            if not _is_excluded(full_text):
+                out.append({
+                    "start": fs,
+                    "end": fe,
+                    "label": "NAME",
+                    "confidence": 0.90,
+                    "source": "rule_defined_term",
+                    "text": full_text,
+                })
+            if not _is_excluded(short_text):
+                out.append({
+                    "start": ss,
+                    "end": se,
+                    "label": "NAME",
+                    "confidence": 0.88,
+                    "source": "rule_defined_term",
+                    "text": short_text,
+                })
 
     if _rule_enabled(SIGNATURE_RULE_LABEL, selected):
         # Special handling for signature block name extraction
@@ -1046,10 +1115,16 @@ def run_rules(text: str) -> List[Dict[str,Any]]:
                     # Find the position of this name in the line
                     name_pos = line_text.find(potential_name, current_pos)
                     if name_pos != -1:
+                        current_pos = name_pos + len(potential_name)
+                        if _is_excluded(potential_name):
+                            continue
+
                         # Calculate absolute position in document
                         absolute_start = line_start + name_pos
                         absolute_end = absolute_start + len(potential_name)
                         original_name = text[absolute_start:absolute_end]
+                        if _is_excluded(original_name):
+                            continue
                         
                         out.append({
                             "start": absolute_start,
@@ -1059,7 +1134,5 @@ def run_rules(text: str) -> List[Dict[str,Any]]:
                             "source": "rule_signature",
                             "text": original_name
                         })
-                        
-                        current_pos = name_pos + len(potential_name)
     
     return out

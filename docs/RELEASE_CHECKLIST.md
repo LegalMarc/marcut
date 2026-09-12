@@ -4,10 +4,7 @@ This checklist ensures a consistent, high-quality release process for Marcut.
 
 ## 1. Pre-Release Checks
 - [ ] **Clean Build**: Run `./build_tui.py` and choose **Build Workflows → Full Release Build (Clean & Archive)**.
-- [ ] **Tests Pass**: Verify all unit tests pass (`python3 -m pytest -q` and `swift test --package-path src/swift/MarcutApp`).
-- [ ] **Dependency Audit**: Run `python3 scripts/check_dependency_vulnerabilities.py requirements-pinned.txt`.
-- [ ] **SBOM Current**: Run `python3 scripts/generate_python_sbom.py --check`.
-- [ ] **Markdown Links**: Run `python3 scripts/check_markdown_links.py`.
+- [ ] **Release Preflight**: Run `bash scripts/release_preflight.sh` (point `RELEASE_PREFLIGHT_BUNDLE_ROOT` at the built `MarcutApp.app` for release validation). This gates the Python/Swift test suites, SBOM generate+check, dependency vulnerability audit, markdown link check, version-sync check, and secrets check — it must exit 0 before proceeding.
 - [ ] **Integrity Guards**: Confirm build logs include:
     - [ ] `python_site source verified against repo`
     - [ ] `python_site marcut package verified`

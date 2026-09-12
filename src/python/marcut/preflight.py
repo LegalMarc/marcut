@@ -9,6 +9,7 @@ import subprocess
 import requests
 from typing import Tuple, Optional
 from .network_utils import normalize_ollama_base_url, ollama_cli_host_arg
+from .model_naming import models_match as _matches_model
 
 
 def _ollama_base_url() -> str:
@@ -17,30 +18,6 @@ def _ollama_base_url() -> str:
 
 def _cli_host_arg() -> str:
     return ollama_cli_host_arg(_ollama_base_url())
-
-
-def _normalize_model_name(name: str) -> tuple[str, str, Optional[str]]:
-    cleaned = (name or "").strip()
-    # Strip registry host prefix if present (e.g., registry.ollama.ai/library/...)
-    if "/" in cleaned:
-        prefix = cleaned.split("/", 1)[0]
-        if "." in prefix:
-            cleaned = cleaned.split("/", 1)[1]
-    if cleaned.startswith("library/"):
-        cleaned = cleaned[len("library/"):]
-    if ":" in cleaned:
-        base, tag = cleaned.split(":", 1)
-    else:
-        base, tag = cleaned, None
-    return cleaned, base, tag
-
-
-def _matches_model(requested: str, candidate: str) -> bool:
-    _, req_base, req_tag = _normalize_model_name(requested)
-    _, cand_base, cand_tag = _normalize_model_name(candidate)
-    if req_tag:
-        return req_base == cand_base and req_tag == cand_tag
-    return req_base == cand_base
 
 
 def _is_executable(path: str) -> bool:

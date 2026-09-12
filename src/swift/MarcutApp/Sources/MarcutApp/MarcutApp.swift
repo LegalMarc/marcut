@@ -1,14 +1,14 @@
-import SwiftUI
 import AppKit
-import OSLog
 import Foundation
+import OSLog
 import PythonKit
+import SwiftUI
 
 func redactedLaunchArguments(_ args: [String]) -> [String] {
-    let pathValuedFlags: Set<String> = [
+    let pathValuedFlags: Set = [
         "--in", "--out", "--outdir", "--report", "--metadata-report",
         "--metadata-settings-json", "--metadata-args", "--llama-gguf",
-        "--format-schema", "--log"
+        "--format-schema", "--log",
     ]
     var redacted: [String] = []
     var redactNext = false
@@ -40,7 +40,7 @@ func redactedLaunchArguments(_ args: [String]) -> [String] {
     return redacted
 }
 
-// App Delegate for proper menu handling
+/// App Delegate for proper menu handling
 class AppDelegate: NSObject, NSApplicationDelegate {
     // Global Python runtime - initialized once at app launch
     static var pythonRunner: PythonKitRunner?
@@ -49,7 +49,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private let pythonInitStateQueue = DispatchQueue(label: "com.marclaw.marcutapp.pythonInitState")
 
     @MainActor
-    func applicationDidFinishLaunching(_ notification: Notification) {
+    func applicationDidFinishLaunching(_: Notification) {
         if DebugPreferences.isEnabled() {
             // Enable SwiftUI debugging for AttributeGraph cycles
             enableSwiftUIDebugging()
@@ -71,7 +71,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         registerActivationObservers()
         FileAccessCoordinator.shared.clearMetadataReportCache()
 
-        if args.contains("--cli") || args.contains("--test") || args.contains("--diagnose") || args.contains("--help") || args.contains("--redact") || args.contains("--diag-launcher") {
+        if args.contains("--cli") || args.contains("--test") || args.contains("--diagnose") || args
+            .contains("--help") || args.contains("--redact") || args.contains("--diag-launcher")
+        {
             // Run in CLI mode
             logToFile("Running in CLI mode")
             NSApp.setActivationPolicy(.accessory)
@@ -105,23 +107,24 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
             // Establish permissions proactively at startup to prevent repeated dialogs
             // DEFERRED: We now lazy-load permissions on first use to avoid startup prompts
-            /*Task {
-                await FileAccessCoordinator.shared.establishPermissionsAtStartup()
-            }*/
+            /* Task {
+                 await FileAccessCoordinator.shared.establishPermissionsAtStartup()
+             } */
         }
     }
 
-    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
-        return !ProcessingState.isProcessing
+    func applicationShouldTerminateAfterLastWindowClosed(_: NSApplication) -> Bool {
+        !ProcessingState.isProcessing
     }
 
-    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+    func applicationShouldTerminate(_: NSApplication) -> NSApplication.TerminateReply {
         guard FileAccessCoordinator.shared.hasUnsavedReportFiles() else {
             return .terminateNow
         }
 
         let defaults = UserDefaults.standard
-        let behavior = UnsavedReportQuitBehavior(rawValue: defaults.integer(forKey: "MarcutApp.UnsavedReportQuitBehavior")) ?? .warn
+        let behavior = UnsavedReportQuitBehavior(rawValue: defaults
+            .integer(forKey: DefaultsKey.unsavedReportQuitBehavior.key)) ?? .warn
         switch behavior {
         case .alwaysQuit:
             return .terminateNow
@@ -137,7 +140,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             alert.addButton(withTitle: "Always Quit")
             let response = alert.runModal()
             if response == .alertThirdButtonReturn {
-                defaults.set(UnsavedReportQuitBehavior.alwaysQuit.rawValue, forKey: "MarcutApp.UnsavedReportQuitBehavior")
+                defaults.set(
+                    UnsavedReportQuitBehavior.alwaysQuit.rawValue,
+                    forKey: DefaultsKey.unsavedReportQuitBehavior.key
+                )
                 return .terminateNow
             }
             if response == .alertSecondButtonReturn {
@@ -148,7 +154,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @MainActor
-    func applicationWillTerminate(_ notification: Notification) {
+    func applicationWillTerminate(_: Notification) {
         // Clean up any running Ollama processes
         // This will be handled by PythonBridgeService deinit
         activationObservers.forEach { NotificationCenter.default.removeObserver($0) }
@@ -180,7 +186,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                 DebugLogger.shared.log(msg, component: "PythonRuntime")
                 print("PythonRuntime: \(msg)")
             })
-            
+
             // Update shared state on main thread
             DispatchQueue.main.async {
                 AppDelegate.pythonRunner = runner
@@ -239,13 +245,13 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         let timestamp = formatter.string(from: Date())
         let pid = getpid()
         let banner = """
-==========================================================
-🪪  MarcutApp launch
-🕒  \(timestamp)
-🔧  PID: \(pid)
-🚩  Args: \(args.joined(separator: " "))
-==========================================================
-"""
+        ==========================================================
+        🪪  MarcutApp launch
+        🕒  \(timestamp)
+        🔧  PID: \(pid)
+        🚩  Args: \(args.joined(separator: " "))
+        ==========================================================
+        """
         print(banner)
         DebugLogger.shared.log(banner, component: "AppDelegate")
     }
@@ -300,8 +306,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         let initStart = Date()
         while AppDelegate.pythonRunner == nil {
             if Date().timeIntervalSince(initStart) > 30 {
-                 print("❌ Python integration timed out")
-                 return false
+                print("❌ Python integration timed out")
+                return false
             }
             try? await Task.sleep(nanoseconds: 100_000_000) // 100ms
         }
@@ -345,6 +351,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             process.executableURL = URL(fileURLWithPath: scriptPath)
             process.arguments = ["redact", "--help"]
             var env = ProcessInfo.processInfo.environment
+            env.removeValue(forKey: "MARCUT_ALLOW_REMOTE_OLLAMA")
+            env.removeValue(forKey: "MARCUT_DEVELOPER_UNSAFE_ALLOW_REMOTE_OLLAMA")
             env["PYTHONUNBUFFERED"] = "1"
             process.environment = env
 
@@ -361,13 +369,20 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
             let outData = stdoutPipe.fileHandleForReading.readDataToEndOfFile()
             let errData = stderrPipe.fileHandleForReading.readDataToEndOfFile()
-            if let outStr = String(data: outData, encoding: .utf8), !outStr.isEmpty { print(outStr) }
-            if let errStr = String(data: errData, encoding: .utf8), !errStr.isEmpty { fputs(errStr, stderr) }
+            if let outStr = String(data: outData, encoding: .utf8), !outStr.isEmpty {
+                print(outStr)
+            }
+            if let errStr = String(data: errData, encoding: .utf8), !errStr.isEmpty {
+                fputs(errStr, stderr)
+            }
             let ok = (process.terminationStatus == 0)
-            print(ok ? "✅ CLI launcher verified" : "❌ CLI launcher returned non-zero exit code \(process.terminationStatus)")
+            print(ok ? "✅ CLI launcher verified" :
+                "❌ CLI launcher returned non-zero exit code \(process.terminationStatus)")
             return ok
         } else if args.contains("--redact") {
-            // Headless redact: --redact --in <file> [--out <file>] [--report <file>] [--outdir <dir>] [--mode rules|enhanced|rules_override|constrained_overrides|llm_overrides] [--model name] [--llm-skip-confidence <float>]
+            // Headless redact: --redact --in <file> [--out <file>] [--report <file>] [--outdir <dir>] [--mode
+            // rules|enhanced|rules_override|constrained_overrides|llm_overrides] [--model name] [--llm-skip-confidence
+            // <float>]
             guard let inIdx = args.firstIndex(of: "--in"), inIdx + 1 < args.count else {
                 print("❌ Missing --in argument")
                 printCLIHelp()
@@ -376,31 +391,44 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             let inPath = args[inIdx + 1]
             // Optional exact output/report paths
             let outPathOpt: String? = {
-                if let idx = args.firstIndex(of: "--out"), idx + 1 < args.count { return args[idx + 1] }
+                if let idx = args.firstIndex(of: "--out"), idx + 1 < args.count {
+                    return args[idx + 1]
+                }
                 return nil
             }()
             let reportPathOpt: String? = {
-                if let idx = args.firstIndex(of: "--report"), idx + 1 < args.count { return args[idx + 1] }
+                if let idx = args.firstIndex(of: "--report"), idx + 1 < args.count {
+                    return args[idx + 1]
+                }
                 return nil
             }()
             // Optional outdir (fallback if exact paths not provided)
             let outDirPath: String? = {
-                if let idx = args.firstIndex(of: "--outdir"), idx + 1 < args.count { return args[idx + 1] }
+                if let idx = args.firstIndex(of: "--outdir"), idx + 1 < args.count {
+                    return args[idx + 1]
+                }
                 return nil
             }()
             let mode: String = {
-                if let mIdx = args.firstIndex(of: "--mode"), mIdx + 1 < args.count { return args[mIdx + 1] }
+                if let mIdx = args.firstIndex(of: "--mode"), mIdx + 1 < args.count {
+                    return args[mIdx + 1]
+                }
                 return "enhanced"
             }()
             let modelName: String = {
-                if let mIdx = args.firstIndex(of: "--model"), mIdx + 1 < args.count { return args[mIdx + 1] }
-                return "llama3.1:8b"
+                if let mIdx = args.firstIndex(of: "--model"), mIdx + 1 < args.count {
+                    return args[mIdx + 1]
+                }
+                return ModelCatalog.shared.defaultModelId
             }()
             let llmSkipConfidence: Double = {
+                let fallback = ModelCatalog.shared.entry(for: modelName)?.skipConfidence
+                    ?? ModelCatalog.shared.entry(for: ModelCatalog.shared.defaultModelId)?.skipConfidence
+                    ?? 0.95
                 if let cIdx = args.firstIndex(of: "--llm-skip-confidence"), cIdx + 1 < args.count {
-                    return Double(args[cIdx + 1]) ?? 0.95
+                    return Double(args[cIdx + 1]) ?? fallback
                 }
-                return 0.95
+                return fallback
             }()
 
             // Generate output file paths
@@ -411,7 +439,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             if let outExact = outPathOpt, let repExact = reportPathOpt {
                 outputPath = outExact
                 reportPath = repExact
-            } else if let outDirPath = outDirPath {
+            } else if let outDirPath {
                 let outDir = URL(fileURLWithPath: outDirPath, isDirectory: true)
                 let outputFileName = inputURL.deletingPathExtension().lastPathComponent + "_redacted.docx"
                 let reportFileName = inputURL.deletingPathExtension().lastPathComponent + "_report.json"
@@ -483,7 +511,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             return ok
         } else if args.contains("--download-model") {
             if let modelIndex = args.firstIndex(of: "--download-model"),
-               modelIndex + 1 < args.count {
+               modelIndex + 1 < args.count
+            {
                 let model = args[modelIndex + 1]
                 print("\n📥 Downloading model: \(model)")
                 await downloadModelWithPythonKit(model: model)
@@ -529,7 +558,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             print("\n4️⃣ Skipping model download (MARCUT_DIAG_SKIP_MODEL_DOWNLOAD=1)")
         } else {
             print("\n4️⃣ Testing model download...")
-            let success = await bridge.downloadModel("llama3.1:8b") { progress in
+            let success = await bridge.downloadModel(ModelCatalog.shared.defaultModelId) { progress in
                 print("   Progress: \(Int(progress))%")
             }
             print("   Download result: \(success ? "✅ Success" : "❌ Failed")")
@@ -556,7 +585,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @MainActor
-    func runTests(bridge: PythonBridgeService) async {
+    func runTests(bridge _: PythonBridgeService) async {
         // Add comprehensive tests here
         print("Running test suite...")
     }
@@ -589,8 +618,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
         Examples:
           MarcutApp --diagnose
-          MarcutApp --redact --in /path/to/file.docx --outdir /tmp/out --mode enhanced --model llama3.1:8b
-          MarcutApp --download-model llama3.1:8b
+          MarcutApp --redact --in /path/to/file.docx --outdir /tmp/out --mode enhanced --model qwen2.5:14b
+          MarcutApp --download-model qwen2.5:14b
         """)
     }
 }
@@ -598,7 +627,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 struct MarcutAppScene: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
     @StateObject private var viewModel = DocumentRedactionViewModel()
-    @AppStorage("AppTheme") private var appThemeRaw = AppTheme.system.rawValue
+    @AppStorage(DefaultsKey.appTheme.key) private var appThemeRaw = AppTheme.system.rawValue
 
     private var appTheme: AppTheme {
         AppTheme(rawValue: appThemeRaw) ?? .system
@@ -610,11 +639,11 @@ struct MarcutAppScene: App {
 
     var body: some Scene {
         #if arch(arm64)
-        marcutAppScene
+            marcutAppScene
         #else
-        WindowGroup("Unsupported Architecture") {
-            UnsupportedArchitectureView()
-        }
+            WindowGroup("Unsupported Architecture") {
+                UnsupportedArchitectureView()
+            }
         #endif
     }
 
@@ -658,7 +687,6 @@ struct MarcutAppScene: App {
 
             // Tools menu removed
 
-
             // Help menu
             CommandGroup(replacing: .help) {
                 Button("MarcutApp Help") {
@@ -691,7 +719,6 @@ struct MarcutAppScene: App {
     private func applyAppTheme() {
         NSApp.appearance = appTheme.appearance
     }
-
 }
 
 enum LifecycleUtils {
@@ -817,10 +844,10 @@ struct HelpView: View {
         self.initialAnchor = initialAnchor
         self.resourceName = resourceName
     }
-    
+
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            if htmlContent.isEmpty && markdownContent.isEmpty {
+            if htmlContent.isEmpty, markdownContent.isEmpty {
                 ProgressView("Loading help...")
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else if !htmlContent.isEmpty {
@@ -828,7 +855,7 @@ struct HelpView: View {
             } else {
                 MarkdownTextView(markdownContent: markdownContent, scrollToAnchor: $pendingAnchor)
             }
-            
+
             HStack {
                 Spacer()
                 Button("Close") {
@@ -852,7 +879,7 @@ struct HelpView: View {
             }
         }
     }
-    
+
     private func loadHelpContent() {
         if let html = loadBundledResource(extension: "html") {
             htmlContent = html
@@ -881,7 +908,8 @@ struct HelpView: View {
         var bundles: [Bundle] = [Bundle.main]
         if let resourceBundleURL = Bundle.main.resourceURL?
             .appendingPathComponent("MarcutApp_MarcutApp.bundle"),
-           let resourceBundle = Bundle(url: resourceBundleURL) {
+            let resourceBundle = Bundle(url: resourceBundleURL)
+        {
             bundles.append(resourceBundle)
         }
 
@@ -889,11 +917,13 @@ struct HelpView: View {
         for bundle in bundles {
             for name in names {
                 if let url = bundle.url(forResource: name, withExtension: ext),
-                   let content = try? String(contentsOf: url, encoding: .utf8) {
+                   let content = try? String(contentsOf: url, encoding: .utf8)
+                {
                     return content
                 }
                 if let url = bundle.url(forResource: name, withExtension: ext, subdirectory: "Resources"),
-                   let content = try? String(contentsOf: url, encoding: .utf8) {
+                   let content = try? String(contentsOf: url, encoding: .utf8)
+                {
                     return content
                 }
             }
@@ -903,7 +933,8 @@ struct HelpView: View {
         for possibleURL in fallbackPaths {
             guard let url = possibleURL else { continue }
             if FileManager.default.fileExists(atPath: url.path),
-               let content = try? String(contentsOf: url, encoding: .utf8) {
+               let content = try? String(contentsOf: url, encoding: .utf8)
+            {
                 return content
             }
         }
@@ -913,7 +944,7 @@ struct HelpView: View {
 
     private func resourceNameCandidates(for ext: String) -> [String] {
         var names = [resourceName]
-        if resourceName == "help" && ext.lowercased() == "md" {
+        if resourceName == "help", ext.lowercased() == "md" {
             names.append("Help")
         }
         return names
@@ -938,10 +969,7 @@ struct HelpView: View {
         }
         return paths
     }
-
 }
-
-
 
 extension Notification.Name {
     static let pythonRunnerReady = Notification.Name("com.marclaw.marcutapp.pythonRunnerReady")

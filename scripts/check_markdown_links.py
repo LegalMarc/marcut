@@ -12,6 +12,16 @@ from urllib.parse import unquote, urlparse
 
 
 LINK_RE = re.compile(r"(?<!!)\[[^\]]+\]\(([^)]+)\)")
+FENCED_CODE_RE = re.compile(r"```.*?```", re.DOTALL)
+INLINE_CODE_RE = re.compile(r"`[^`\n]+`")
+
+
+def strip_code_spans(text: str) -> str:
+    """Blank out fenced code blocks and inline code spans before link-matching, so
+    link-shaped text quoted inside code (e.g. a regex literal like
+    ``["x"](?P<name>...)``) is never mistaken for a real markdown link."""
+    text = FENCED_CODE_RE.sub(lambda m: "\n" * m.group(0).count("\n"), text)
+    return INLINE_CODE_RE.sub(lambda m: " " * len(m.group(0)), text)
 
 
 def iter_markdown_files(paths: list[Path]) -> list[Path]:
@@ -58,7 +68,8 @@ def main() -> int:
     failures: list[str] = []
     for markdown_file in markdown_files:
         text = markdown_file.read_text(encoding="utf-8")
-        for match in LINK_RE.finditer(text):
+        scan_text = strip_code_spans(text)
+        for match in LINK_RE.finditer(scan_text):
             target = match.group(1)
             if not local_target_exists(markdown_file, target):
                 rel_file = os.path.relpath(markdown_file, root)

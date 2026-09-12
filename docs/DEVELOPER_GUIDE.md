@@ -36,11 +36,28 @@ MarcutApp must always be:
 #### 1. Swift Integration Layer
 ```swift
 // PythonKitRunner - Core Python execution interface
-final class PythonKitRunner {
+public final class PythonKitRunner {
     // Direct Python execution via PythonKit
-    func runEnhancedOllama(inputPath: String, outputPath: String, reportPath: String, model: String, debug: Bool) -> Bool
+    func runEnhancedOllama(
+        inputPath: String,
+        outputPath: String,
+        reportPath: String,
+        model: String,
+        debug: Bool,
+        mode: String,
+        llmSkipConfidence: Double = 0.95,
+        llmConcurrency: Int = 2,
+        chunkTokens: Int = 500,
+        overlap: Int = 120,
+        temperature: Double = 0.1,
+        seed: Int = 42,
+        processingStepTimeout: TimeInterval? = nil,
+        cancellationChecker: @escaping () -> Bool,
+        heartbeat: ((PythonRunnerProgressUpdate) -> Void)? = nil
+    ) -> PythonRunOutcome
 }
 ```
+(See `src/swift/MarcutApp/Sources/MarcutApp/PythonKitBridge.swift`. The function returns a `PythonRunOutcome`, not a `Bool` - it now also carries a `cancellationChecker` for cooperative cancellation and an optional `heartbeat` callback for progress updates, and `mode` selects between rules-only and the various rules+AI pipelines described in `docs/USER_GUIDE.md`.)
 
 #### 2. Python Runtime Layer
 ```python
@@ -165,6 +182,65 @@ python3 -m pytest tests/test_report_common.py -v
 - Overrides are stored under Application Support (`~/Library/Application Support/MarcutApp/Overrides/`) and mirrored via `MARCUT_EXCLUDED_WORDS_PATH` / `MARCUT_SYSTEM_PROMPT_PATH`. If App Group entitlements are enabled (custom builds), the overrides can live in the group container instead. Both the in-process PythonKit runner and CLI inherit these env vars so the same list/prompt applies everywhere.
 - Python code watches the override files: if the timestamp changes, the regex cache and prompt string reload automatically without restarting the app.
 
+### Cancellation & Processing Deadlines
+`src/python/marcut/cancellation.py` provides a small cooperative-cancellation helper used to bound long-running Ollama HTTP calls and interrupt hanging extraction work:
+
+```python
+class ProcessingDeadlineExceeded(TimeoutError):
+    """Raised when a configured processing deadline has elapsed."""
+
+def processing_deadline() -> Optional[float]:
+    """Reads MARCUT_PROCESSING_DEADLINE_MONOTONIC (a time.monotonic() timestamp)."""
+
+def remaining_seconds(default: float, *, minimum: float = 0.25) -> float:
+    """Returns min(default, time left until the deadline), raising
+    ProcessingDeadlineExceeded if the deadline has already passed."""
+
+def check_processing_deadline() -> None:
+    """Raises ProcessingDeadlineExceeded if the deadline has elapsed; no-op otherwise."""
+```
+
+- The deadline is communicated via the `MARCUT_PROCESSING_DEADLINE_MONOTONIC` environment variable, expressed in `time.monotonic()` units (not wall-clock time), so it survives across the Swift/Python boundary without clock-skew issues.
+- `remaining_seconds()` is used to size individual Ollama HTTP request timeouts so a single slow request cannot outlive the overall processing budget; `check_processing_deadline()` is called at safe checkpoints in the extraction loop so a stuck or slow model doesn't hang the app indefinitely.
+- When no deadline is set (the env var is empty/unset), `processing_deadline()` returns `None` and the helpers behave as if there is no budget - existing callers without a caller-supplied deadline are unaffected.
+
+### Streaming Progress (Intra-Chunk)
+The progress bar advances at three layered granularities (whole-phase jumps, whole-chunk jumps, and token-level updates streamed from Ollama's streaming API during a single chunk's generation). The design, its interaction with the cancellation/deadline system, and the word-count-weighted batch ETA are documented in the design spike `docs/design/streaming_progress.md` (Option B shipped under issue #54). Read that doc rather than re-deriving the flow before touching the heartbeat/progress plumbing in `model.py`, `PythonKitBridge.swift`, or `DocumentRedactionViewModel`; it also covers the downstream heartbeat-timeout validation for issue #49.
+
+### Model Catalog (`models.json`)
+The list of supported/recommended Ollama models and their default parameters (temperature, validation skip-confidence, display metadata, etc.) lives in a single `models.json` file that is shipped in **three mirrored locations** which must stay byte-identical:
+- `assets/models.json` - canonical source checked into the repo
+- `src/python/marcut/models.json` - bundled resource for the Python package
+- `src/swift/MarcutApp/Sources/MarcutApp/Resources/models.json` - bundled resource for the Swift app
+
+Each side loads its own copy independently:
+- **Python**: `src/python/marcut/model_config.py` loads and validates the catalog (`ModelConfig` dataclass, `list_models()`, `get_model()`, `default_model_id()`, `default_temperature()`, `default_skip_confidence()`). It raises `ModelCatalogError` if the file is missing, malformed, or the `defaultModel` doesn't match a listed model id.
+- **Swift**: `ModelCatalog.swift` (`ModelCatalogEntry`, `ModelCatalogFile`, `ModelCatalog`) loads the same schema and exposes `entry(for:)` plus accent-color resolution for the UI. `BundleResourceLocator.swift` (`resolveDefaultResourceURL`) is what finds the bundled resource file at runtime, handling both the production app bundle and Swift Package/dev layouts.
+- If you change the `models.json` schema, update the loader on **both** sides (`model_config.py` and `ModelCatalog.swift`) and keep all three copies in sync the same way `excluded-words.txt` is kept in sync - there is no automated sync step, so a diff of the three files should always be empty.
+
+### Release Preflight
+`scripts/release_preflight.sh` is the single script that gates release-readiness. It wraps the automatable subset of `docs/RELEASE_CHECKLIST.md`'s "Pre-Release Checks" into one command that fails fast on the first broken step:
+1. Python test suite (`pytest`)
+2. Swift test suite (`swift test`)
+3. SBOM generate + check (`scripts/generate_python_sbom.py`)
+4. Dependency vulnerability audit (`scripts/check_dependency_vulnerabilities.py`)
+5. Markdown link check (`scripts/check_markdown_links.py`)
+6. Version-sync check (`build-scripts/config.json` vs. the last tagged release)
+7. Secrets check (`build-scripts/config.json` must not be tracked by git)
+
+Run it with `bash scripts/release_preflight.sh`. By default the SBOM step is derived from the staged repo checkout; set `RELEASE_PREFLIGHT_BUNDLE_ROOT=/path/to/MarcutApp.app` to instead derive the SBOM from an actual built `.app` (passed through as `--bundle-root`), matching the release checklist's guidance to validate against the real bundle before shipping.
+
+#### SBOM from a built bundle
+`scripts/generate_python_sbom.py` accepts an optional `--bundle-root /path/to/MarcutApp.app`. When provided, the script reads the Python framework's `Info.plist`, the embedded `ollama` binary, and `Contents/Resources/python_site` from inside the built app bundle instead of the staged checkout paths, so the SBOM reflects exactly what got shipped (including any bundle-time transformations). Without `--bundle-root`, it falls back to the repo's staged `python_site` directory - useful for fast iteration, but not a substitute for a bundle-derived SBOM before a release.
+
+### New Swift Support Files
+A few small, focused Swift files back the newer app-level features described in `docs/USER_GUIDE.md`:
+- **`DefaultsKey.swift`** - Centralizes `UserDefaults` key names (including the notification-preference flag) so call sites don't hand-roll string keys.
+- **`BatchETACalculator.swift`** - `BatchETASample` + `BatchETACalculator.estimate(samples:remainingSizes:)` computes the batch "estimated time remaining" shown in the UI once enough documents have completed to produce a reliable estimate.
+- **`PendingBatchJobStore.swift`** - `PendingBatchJobRecord` (Codable) plus `save`/`load`/`clear` persist the in-flight batch (document paths + settings) to `UserDefaults` so a mid-batch app quit can offer to resume on next launch.
+- **`ExcludedWordMatcher.swift`** - A Swift port of `marcut.rules._is_excluded`'s matching logic (`CompiledEntry`, `MatchResult`, `compileEntries`/`compileAllEntries`, `match`) used to power the live excluded-word match preview in the Settings editor without round-tripping into Python.
+- **`RedactionProfile`** (defined in `DocumentModels.swift`) - Codable bundle of `MetadataCleaningSettings` + redaction settings, with `RedactionProfile.decoded(from:)` for the Settings "Export Profile.../Import Profile..." JSON save/load feature.
+
 ### Error Handling & Logging
 ```swift
 // Comprehensive timeout system with phase markers
@@ -206,6 +282,83 @@ If App Group entitlements are enabled (custom builds), these paths can be mirror
 - Metadata scrubbing coverage now includes a redaction-path scrub report check via `MARCUT_SCRUB_REPORT_PATH`.
 - The metadata matrix script (`scripts/run_metadata_matrix.py`) auto-generates a minimal DOCX if `sample-files/Sample 123 Consent.docx` is missing; keep real sample files locally for higher-fidelity validation.
 - The build TUI “Run Tests” menu delegates to `run_tests.py`, so the same behaviors apply there.
+
+### PII Detection Accuracy (Precision/Recall) Eval
+Detection-quality regressions are caught by an automated per-entity-type precision/recall
+harness, in addition to the existing manual LLM benchmark tooling:
+
+- **`tests/test_pii_eval_harness.py`** — builds a small synthetic, labeled DOCX corpus at
+  test time (`tests/pii_eval/corpus.py` + `tests/pii_eval/labels.json`; nothing binary is
+  committed) covering EMAIL, PHONE, SSN, CARD, MONEY, DATE, ORG, LOC, and NAME across the
+  document body, a table cell, the header, and the footer. It runs the corpus through the
+  **rules-only** pipeline (`mode="rules"`, no Ollama needed) and asserts per-type
+  precision/recall against regression floors, printing a per-type table. This is the test
+  that runs in CI (see the "smoke" job in `.github/workflows/ci.yml` and the full-suite
+  `pytest -q` job in `.github/workflows/macos-build-verify.yml`).
+- **`tests/pii_eval/run_eval.py`** — standalone runner for the *same* corpus, usable
+  locally to eval the full two-pass LLM pipeline against a real Ollama model (not run in
+  CI: it needs Ollama installed locally and isn't deterministic run-to-run):
+  ```bash
+  ollama serve &
+  ollama pull qwen2.5:14b
+  PYTHONPATH=src/python python3 -m tests.pii_eval.run_eval --mode llm --model qwen2.5:14b
+  ```
+  Run `--mode rules` (the default) to reproduce the CI gate locally without Ollama.
+- **`tests/pii_eval/scoring.py`** — the shared scorer both the CI test and the standalone
+  runner use. It matches gold entities against predicted audit-report spans by `(label, text)`
+  using bidirectional substring containment (not exact offsets or exact string equality, which
+  are too fragile for a synthetically-generated corpus), greedily so N identical expected
+  entities require N distinct predicted spans, and emits per-label plus OVERALL
+  precision/recall/F1 (`score_entities()` / `format_score_table()`).
+- **`tests/benchmark/model_benchmark.py`** — pre-existing, broader model speed-vs-accuracy
+  comparison tool (Ollama or GGUF, aggregate precision/recall/F1 against a hand-labeled
+  real document); still the right tool for comparing models/prompts against a realistic
+  document rather than the synthetic per-type corpus above.
+
+### Malformed-DOCX Corpus & Property-Based Tests
+Robustness against broken input and offset/merge invariants is covered by a generated corpus
+of corrupt DOCX files plus Hypothesis-driven property tests. Nothing binary is committed — the
+CI hygiene job forbids any tracked `.docx`/`.doc`/`.pdf`/`.dmg`, so both suites build their
+inputs at test time.
+
+- **`tests/malformed_docx_corpus.py`** — generator (no test cases of its own). Builds a small
+  valid DOCX in memory with python-docx, then applies ZIP/XML-level corruption to produce a
+  fixed set of variants: `truncated_zip`, `bad_content_types`, `mismatched_relationship_target`,
+  and `undeclared_xml_entity`. `generate_corpus()` returns `{variant_name: bytes}`.
+- **`tests/test_malformed_docx_corpus.py`** — feeds every variant through both
+  `DocxMap.load_accepting_revisions` and the real `run_redaction()` entry point and asserts the
+  pipeline fails *cleanly*: a classified `RedactionError` surfaced as a non-zero `(code, timings)`
+  return with a `"status": "error"` / `"error_code": "DOC_LOAD_FAILED"` report, no partial/
+  misleading output DOCX, no leftover staging temp files, no uncaught exception, and bounded
+  wall-clock time (never hangs).
+- **`tests/test_property_based.py`** — Hypothesis-based invariants over random text, random span
+  placements, and random chunk sizes/overlaps: every `_merge_overlaps()` output span still
+  satisfies `text[start:end] == span["text"]`, merged spans never overlap, and `make_chunks()`
+  round-trips offsets and fully covers the input with no gaps. It `pytest.importorskip`s
+  hypothesis, so it self-skips when the dev extra isn't installed.
+
+Run them with:
+```bash
+# Hypothesis is a dev-only dependency (never shipped in the bundle); install the dev extra:
+pip install -e ".[dev]"
+PYTHONPATH=src/python python3 -m pytest tests/test_malformed_docx_corpus.py tests/test_property_based.py
+```
+The Hypothesis profile is selected via the `HYPOTHESIS_PROFILE` env var (see `tests/conftest.py`):
+the default `ci` profile is derandomized (fixed seed, 100 examples) so property runs are
+reproducible/flake-free; set `HYPOTHESIS_PROFILE=dev` for a faster, non-derandomized run (25
+examples) while iterating.
+
+### Continuous Integration Gates
+Two workflows gate PRs; keep new tests wired into the right one:
+- **`.github/workflows/ci.yml`** — a `hygiene` job (forbids committed `.docx`/`.doc`/`.pdf`/`.dmg`
+  and `sample-files/` contents, checks `pyproject.toml` ↔ `build-scripts/config.example.json`
+  version sync, and runs a Ruff error-tier lint gate `E9,F63,F7,F82` over `src/python tests`),
+  plus a `smoke` job that runs the rules-only Python tests **including
+  `tests/test_pii_eval_harness.py`** and a compile-only Swift build.
+- **`.github/workflows/macos-build-verify.yml`** — installs the dev extra (`pip install -e ".[dev]"`,
+  which pulls in hypothesis so the property tests actually run), then runs the dependency
+  vulnerability scan, SBOM check, markdown-link check, and the full `pytest -q` suite plus Swift
+  tests.
 
 ### CLI Testing
 ```bash
@@ -301,7 +454,7 @@ To avoid macOS quarantine issues with runtime-extracted binaries, the Ollama run
 ### Model Management
 ```bash
 # Model download (uses embedded Ollama)
-./MarcutApp --cli --download-model llama3.1:8b
+./MarcutApp --cli --download-model qwen2.5:14b
 
 # Model storage (Application Support)
 ~/Library/Application Support/MarcutApp/models/

@@ -18,7 +18,6 @@ from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Tuple, Optional
 import zipfile
-import xml.etree.ElementTree as ET
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -243,7 +242,6 @@ class TestOutputValidator:
             return validation
 
         validation["app_found"] = True
-        app_path_str = str(app_path)
 
         # Check executable
         executable = app_path / "Contents/MacOS/MarcutApp"
@@ -523,7 +521,7 @@ class TestOutputValidator:
         app_startup_validation = None
 
         if include_app_bundle:
-            print(f"\n🍎 Validating macOS App Bundle...")
+            print("\n🍎 Validating macOS App Bundle...")
             app_bundle_validation = self.validate_app_bundle()
 
             if app_bundle_validation["app_found"]:
@@ -542,7 +540,7 @@ class TestOutputValidator:
 
                 # Test app startup if bundle is valid
                 if app_bundle_validation["valid"]:
-                    print(f"\n🚀 Testing App Startup...")
+                    print("\n🚀 Testing App Startup...")
                     app_startup_validation = self.validate_app_startup()
 
                     startup_status = "✅" if app_startup_validation["startup_success"] else "❌"
@@ -553,7 +551,7 @@ class TestOutputValidator:
                         for error in app_startup_validation["errors_found"]:
                             print(f"      • {error}")
             else:
-                print(f"   ⚠️  App bundle not found - skipping app validation")
+                print("   ⚠️  App bundle not found - skipping app validation")
 
         # Generate summary
         total_pairs = len(results)
@@ -581,9 +579,9 @@ class TestOutputValidator:
 
         summary["overall_success"] = file_success and app_success
 
-        print(f"\n" + "=" * 60)
-        print(f"📊 COMPREHENSIVE VALIDATION SUMMARY")
-        print(f"=" * 60)
+        print("\n" + "=" * 60)
+        print("📊 COMPREHENSIVE VALIDATION SUMMARY")
+        print("=" * 60)
         print(f"📁 Test file pairs: {valid_pairs}/{total_pairs} valid")
         if include_app_bundle:
             if app_bundle_validation:
@@ -592,13 +590,13 @@ class TestOutputValidator:
                 print(f"🍎 App bundle: {bundle_status} valid")
                 print(f"🚀 App startup: {startup_status} successful")
             else:
-                print(f"🍎 App bundle: ⚠️  not found")
+                print("🍎 App bundle: ⚠️  not found")
 
         overall_status = "✅ PASSED" if summary["overall_success"] else "❌ FAILED"
         print(f"🎯 Overall: {overall_status}")
 
         if self.issues:
-            print(f"\n⚠️  Additional issues:")
+            print("\n⚠️  Additional issues:")
             for issue in self.issues:
                 print(f"   • {issue}")
 
@@ -688,12 +686,12 @@ def main():
         if app_issues:
             error_messages.append("App bundle validation failed")
 
-        print(f"\n⚠️  Validation issues found:")
+        print("\n⚠️  Validation issues found:")
         for msg in error_messages:
             print(f"   • {msg}")
         return 1
 
-    print(f"\n✅ All validations passed!")
+    print("\n✅ All validations passed!")
     return 0
 
 

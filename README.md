@@ -4,11 +4,17 @@
 
 Marcut is a native macOS application for legal and professional document redaction. It combines a deterministic rules engine with optional local AI (Ollama) to identify and redact sensitive information (PII) from Microsoft Word (.docx) documents, producing "Track Changes" redlines plus JSON audit and scrub reports.
 
-![License](https://img.shields.io/github/license/marclaw/marcut)
+![License](https://img.shields.io/github/license/LegalMarc/marcut)
 ![Python](https://img.shields.io/badge/python-3.11%2B-blue.svg)
 ![Build](https://img.shields.io/badge/build-passing-brightgreen.svg)
 
-![Architecture Overview](docs/Architecture%20Diagram.jpg)
+> **Platform:** Marcut is a **macOS-only** application (Apple Silicon and Intel, Universal2). The `marcut` Python CLI can run on other platforms with a local Ollama install, but is developed and tested on macOS.
+
+See [Technical Architecture](docs/TECHNICAL_ARCHITECTURE.md) for a system design overview.
+
+<p align="center">
+  <img src="assets/screenshots/marcut-idle.png" alt="Marcut main window: drag-and-drop area, Browse and Settings buttons, and the redaction/scrub action bar" width="720">
+</p>
 
 ## 🚀 Key Features
 
@@ -17,9 +23,22 @@ Marcut is a native macOS application for legal and professional document redacti
 *   **Dual-Engine Power:**
     *   **Rules Engine:** Instant, regex-based detection for structured data (SSN, Phone, Email, etc.).
     *   **AI Engine:** Context-aware entity recognition (Names, Organizations) using local Ollama models.
-*   **Professional Output:** Generates standard DOCX review artifacts with redacting edits marked as "Track Changes"; review and accept changes before external sharing.
+*   **Professional Output:** Generates standard DOCX review artifacts with redacting edits marked as "Track Changes"; use **Send Final Redacted Copy** to accept Marcut redaction changes and scrub metadata in a separate share copy, or intentionally send a review copy after confirming Track Changes and metadata may remain recoverable.
 *   **Audit Ready:** Produces JSON redaction reports and metadata scrub reports for verification; reports may include raw detected text and document metadata.
+*   **Fail-Safe by Design:** Pre-flight checks (writable destination, free disk space), clear plain-English errors, live per-document progress, and fail-closed handling if the AI can't fully analyze a document (no silently incomplete redactions).
 *   **App Store Ready:** Fully sandboxed and code-signed architecture.
+
+## 📸 Screenshots
+
+| Live AI progress | Redaction settings |
+|:---:|:---:|
+| <img src="assets/screenshots/marcut-processing.png" alt="Marcut mid-redaction: AI Analysis progress bar, heartbeat status, and estimated time remaining, with a Stop Processing control" width="380"> | <img src="assets/screenshots/marcut-settings.png" alt="Marcut Redaction Settings: processing mode (Rules Only vs Rules + AI), system notifications, output location, and quit-warning behavior" width="380"> |
+
+Redaction streams progress per chunk as the AI model works, with a live heartbeat and time estimate — and finishes with a clear per-document status:
+
+<p align="center">
+  <img src="assets/screenshots/marcut-finished.png" alt="Marcut after a completed redaction: Finished Processing status with per-document actions (view report, reveal in Finder, share)" width="720">
+</p>
 
 ## 📖 Documentation
 
@@ -59,13 +78,17 @@ To build Marcut from source (macOS required):
 
 For detailed build instructions, see the [Developer Guide](docs/DEVELOPER_GUIDE.md).
 
+## 📦 Distribution
+
+Marcut ships as a Developer ID signed and notarized DMG via [GitHub Releases](https://github.com/LegalMarc/marcut/releases). Homebrew cask and PyPI distribution are not yet available.
+
 ## 🤝 Contributing
 
-We welcome contributions! Please see [CONTRIBUTING.md](docs/CONTRIBUTING.md) for guidelines on code style, testing, and the pull request process.
+We welcome contributions! Please see [CONTRIBUTING.md](docs/CONTRIBUTING.md) for guidelines on code style, testing, and the pull request process, and our [Code of Conduct](CODE_OF_CONDUCT.md).
 
 ## 📄 License
 
-This project is licensed under the MIT License - see the LICENSE.txt file for details.
+This project is licensed under the MIT License - see the LICENSE file for details. Bundled third-party components remain under their own licenses - see [THIRD_PARTY_LICENSES.md](THIRD_PARTY_LICENSES.md).
 
 ---
 *Built with SwiftUI, PythonKit, BeeWare, and local Ollama.*

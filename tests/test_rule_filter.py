@@ -1,4 +1,3 @@
-import os
 
 import pytest
 
@@ -41,3 +40,17 @@ def test_signature_rule_toggle(monkeypatch):
     monkeypatch.setenv("MARCUT_RULE_FILTER", "EMAIL")
     spans_disabled = run_rules(text)
     assert all(span["label"] != "NAME" for span in spans_disabled)
+
+
+def test_defined_term_person_rule_toggle(monkeypatch):
+    text = "John Doe (“Doe”) signed the contract."
+    # When NAME is enabled
+    monkeypatch.setenv("MARCUT_RULE_FILTER", "NAME")
+    spans_enabled = run_rules(text)
+    assert any(span["label"] == "NAME" for span in spans_enabled)
+
+    # When NAME is not in filter
+    monkeypatch.setenv("MARCUT_RULE_FILTER", "PHONE,EMAIL")
+    spans_disabled = run_rules(text)
+    assert all(span["label"] != "NAME" for span in spans_disabled)
+
