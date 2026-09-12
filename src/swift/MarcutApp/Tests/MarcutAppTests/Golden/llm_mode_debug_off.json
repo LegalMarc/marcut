@@ -63,7 +63,7 @@
     },
     {
       "args" : [
-        "<HOME>/dev/Marcut-2/sample-files/Consent.docx",
+        "<REPO>/sample-files/Consent.docx",
         "<TMP>/Consent (redacted <TS>).docx",
         "<TMP>/Consent (redacted <TS>)_report.json",
         "qwen2.5:14b",
