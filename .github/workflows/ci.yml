@@ -63,22 +63,28 @@ jobs:
 
       # Self-hosted runner: use its own pre-installed python3.11 rather than
       # actions/setup-python, which isn't cached here and is slow/unreliable to
-      # provision on demand.
+      # provision on demand. python@3.11 is a keg-only Homebrew formula (no
+      # unversioned `python3`/`pip`/`pytest` in its bin dir), so a bare PATH
+      # prepend wouldn't make later steps' plain `python3` calls resolve to it
+      # -- create a venv instead, which does provide those generic names, and
+      # put its bin dir on PATH for the rest of the job.
       - name: Set up Python
-        run: python3.11 --version
+        run: |
+          python3.11 -m venv .venv-ci
+          echo "$PWD/.venv-ci/bin" >> "$GITHUB_PATH"
 
       - name: Install Python dependencies
         run: |
-          python3.11 -m pip install -U pip
-          python3.11 -m pip install -e .
-          python3.11 -m pip install pytest
-          python3.11 scripts/check_dependency_vulnerabilities.py requirements-pinned.txt
-          python3.11 scripts/generate_python_sbom.py --check
-          python3.11 scripts/check_markdown_links.py
+          python3 -m pip install -U pip
+          pip install -e .
+          pip install pytest
+          python3 scripts/check_dependency_vulnerabilities.py requirements-pinned.txt
+          python3 scripts/generate_python_sbom.py --check
+          python3 scripts/check_markdown_links.py
 
       - name: Python smoke tests (rules-only)
         run: |
-          python3.11 -m pytest -q tests/test_rules.py tests/test_rule_filter.py tests/test_pii_eval_harness.py
+          pytest -q tests/test_rules.py tests/test_rule_filter.py tests/test_pii_eval_harness.py
 
       - name: Swift build (compile-only)
         run: |
