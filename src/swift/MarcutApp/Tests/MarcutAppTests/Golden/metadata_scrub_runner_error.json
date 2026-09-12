@@ -19,7 +19,7 @@
     },
     {
       "args" : [
-        "<HOME>/dev/Marcut-2/sample-files/Consent.docx",
+        "<REPO>/sample-files/Consent.docx",
         "<TMP>/Consent (metadata-scrubbed <TS>).docx"
       ],
       "envAtCall" : {

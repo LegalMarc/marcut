@@ -35,7 +35,7 @@ This deep bug sweep identified **10 concrete defects** across 4 functional areas
 ## Detailed Findings
 
 ### 1. [HIGH] Metadata Hardening Bypassed in `_rewrite_docx_zip`
-* **File:** [`src/python/marcut/docx_io.py:932-973`](file:///Users/mhm/dev/Marcut-2/src/python/marcut/docx_io.py#L932-L973)
+* **File:** [`src/python/marcut/docx_io.py:932-973`](../../src/python/marcut/docx_io.py#L932-L973)
 * **Root Cause:**
   Inside `_rewrite_docx_zip`, each `word/*.xml` part undergoes sequential scrubbing passes. However, lines 941–942 inside the `clean_language_settings` block write the entry and issue an early `continue`:
   ```python
@@ -62,7 +62,7 @@ This deep bug sweep identified **10 concrete defects** across 4 functional areas
 ---
 
 ### 2. [HIGH] Corporate Titles Redacted as Person Names in Signature Blocks
-* **File:** [`src/python/marcut/rules.py:1096-1134`](file:///Users/mhm/dev/Marcut-2/src/python/marcut/rules.py#L1096-L1134)
+* **File:** [`src/python/marcut/rules.py:1096-1134`](../../src/python/marcut/rules.py#L1096-L1134)
 * **Root Cause:**
   When parsing signature lines (`SIGNATURE_LINE` loop), any line matching `Name: ...` is tested with `INDIVIDUAL_NAME.match(potential_name)`. When matched, a `NAME` span is appended with high confidence (`0.95`). However, unlike the rest of `rules.py` (lines 1020, 1049, 1070), this block **never calls `_is_excluded()`**:
   ```python
@@ -88,14 +88,14 @@ This deep bug sweep identified **10 concrete defects** across 4 functional areas
   # Returns: [{'label': 'NAME', 'confidence': 0.95, 'text': 'Authorized Representative'}]
   ```
 * **Impact:**
-  Common legal signature block titles like `"Authorized Representative"`, `"Managing Director"`, and `"General Counsel"` (all explicitly listed in [`assets/excluded-words.txt`](file:///Users/mhm/dev/Marcut-2/assets/excluded-words.txt)) are classified as person names with 0.95 confidence and redacted.
+  Common legal signature block titles like `"Authorized Representative"`, `"Managing Director"`, and `"General Counsel"` (all explicitly listed in [`assets/excluded-words.txt`](../../assets/excluded-words.txt)) are classified as person names with 0.95 confidence and redacted.
 * **Fix:**
   Add `if _is_excluded(potential_name) or _is_excluded(original_name): continue` before emitting the span.
 
 ---
 
 ### 3. [MEDIUM-HIGH] Defined-Term Name Extraction Bypasses Filter and Exclusions
-* **File:** [`src/python/marcut/rules.py:428-435`](file:///Users/mhm/dev/Marcut-2/src/python/marcut/rules.py#L428-L435), [`src/python/marcut/rules.py:1058-1095`](file:///Users/mhm/dev/Marcut-2/src/python/marcut/rules.py#L1058-L1095)
+* **File:** [`src/python/marcut/rules.py:428-435`](../../src/python/marcut/rules.py#L428-L435), [`src/python/marcut/rules.py:1058-1095`](../../src/python/marcut/rules.py#L1058-L1095)
 * **Root Cause:**
   1. `_DEFINED_TERM_NAME` execution is located after the main `RULES` loop but fails to check `_rule_enabled("NAME", selected)`.
   2. It fails to check `_is_excluded(full_text)` or `_is_excluded(short_text)`.
@@ -120,7 +120,7 @@ This deep bug sweep identified **10 concrete defects** across 4 functional areas
 ---
 
 ### 4. [MEDIUM] Organization Excluded Prefix Trimming Desynchronizes Slices
-* **File:** [`src/python/marcut/rules.py:1040-1046`](file:///Users/mhm/dev/Marcut-2/src/python/marcut/rules.py#L1040-L1046)
+* **File:** [`src/python/marcut/rules.py:1040-1046`](../../src/python/marcut/rules.py#L1040-L1046)
 * **Root Cause:**
   When trimming excluded prefixes (e.g. `"FOR VALUE RECEIVED,"`) from an `ORG` candidate, the code splits on commas, filters segments, and rebuilds the string:
   ```python
@@ -133,14 +133,14 @@ This deep bug sweep identified **10 concrete defects** across 4 functional areas
   ```
   If the original text contains extra spaces, tabs, or newlines after commas (e.g., `"FOR VALUE RECEIVED, Acme Holdings,   LLC"`), `len(trimmed_text)` does not equal the character count in `text`.
 * **Impact:**
-  `text[s:e]` becomes misaligned (e.g., cutting off the end of `"LLC"`). Downstream in [`pipeline.py:1368`](file:///Users/mhm/dev/Marcut-2/src/python/marcut/pipeline.py#L1368), `_drop_invalid_spans` detects `text[start:end] != expected_text` and silently drops the redaction with `invalid_span_text_mismatch`, leaving the entity unredacted.
+  `text[s:e]` becomes misaligned (e.g., cutting off the end of `"LLC"`). Downstream in [`pipeline.py:1368`](../../src/python/marcut/pipeline.py#L1368), `_drop_invalid_spans` detects `text[start:end] != expected_text` and silently drops the redaction with `invalid_span_text_mismatch`, leaving the entity unredacted.
 * **Fix:**
   Since only leading prefix segments are stripped, `s` advances by `trim_start`, `sub = sub[trim_start:]`, and `e` remains unchanged.
 
 ---
 
 ### 5. [MEDIUM] Unhandled JSON Array in `parse_llm_response`
-* **File:** [`src/python/marcut/model.py:190-230`](file:///Users/mhm/dev/Marcut-2/src/python/marcut/model.py#L190-L230), [`src/python/marcut/model.py:977`](file:///Users/mhm/dev/Marcut-2/src/python/marcut/model.py#L977), [`src/python/marcut/model_enhanced.py:1541`](file:///Users/mhm/dev/Marcut-2/src/python/marcut/model_enhanced.py#L1541)
+* **File:** [`src/python/marcut/model.py:190-230`](../../src/python/marcut/model.py#L190-L230), [`src/python/marcut/model.py:977`](../../src/python/marcut/model.py#L977), [`src/python/marcut/model_enhanced.py:1541`](../../src/python/marcut/model_enhanced.py#L1541)
 * **Root Cause:**
   `parse_llm_response` is annotated as `Dict[str, Any]`. If the LLM returns a markdown block containing a JSON array (e.g., ````json\n[{"text": "John Doe", "type": "NAME"}]\n````), `json.loads` returns a `list`.
   The calling code in `model.py:977` and `model_enhanced.py:1541` immediately calls `parsed.get("entities", [])`, which crashes with:
@@ -153,9 +153,9 @@ This deep bug sweep identified **10 concrete defects** across 4 functional areas
 ---
 
 ### 6. [MEDIUM] `ExcludedWordMatcher.swift` Missing Possessive Normalization
-* **File:** [`src/swift/MarcutApp/Sources/MarcutApp/ExcludedWordMatcher.swift:139-148`](file:///Users/mhm/dev/Marcut-2/src/swift/MarcutApp/Sources/MarcutApp/ExcludedWordMatcher.swift#L139-L148)
+* **File:** [`src/swift/MarcutApp/Sources/MarcutApp/ExcludedWordMatcher.swift:139-148`](../../src/swift/MarcutApp/Sources/MarcutApp/ExcludedWordMatcher.swift#L139-L148)
 * **Root Cause:**
-  The Python reference implementation in [`src/python/marcut/model.py:368`](file:///Users/mhm/dev/Marcut-2/src/python/marcut/model.py#L368) normalizes candidates by stripping trailing possessives via `_TRAILING_POSSESSIVE_RE.sub("", text)`. The Swift port in `ExcludedWordMatcher.normalizeForExclusion` strips determiners, punctuation, and whitespace, but omitted possessive stripping.
+  The Python reference implementation in [`src/python/marcut/model.py:368`](../../src/python/marcut/model.py#L368) normalizes candidates by stripping trailing possessives via `_TRAILING_POSSESSIVE_RE.sub("", text)`. The Swift port in `ExcludedWordMatcher.normalizeForExclusion` strips determiners, punctuation, and whitespace, but omitted possessive stripping.
 * **Impact:**
   The live preview sandbox in the Settings sheet reports "no match" when testing possessive forms (e.g., `"Company's"`, `"Borrower's"`), diverging from the production redaction engine.
 * **Fix:**
@@ -164,7 +164,7 @@ This deep bug sweep identified **10 concrete defects** across 4 functional areas
 ---
 
 ### 7. [MEDIUM] App Store Release Script Rejects Explicit `--skip-notarization`
-* **File:** [`scripts/sh/build_appstore_release.sh:1819-1832`](file:///Users/mhm/dev/Marcut-2/scripts/sh/build_appstore_release.sh#L1819-L1832)
+* **File:** [`scripts/sh/build_appstore_release.sh:1819-1832`](../../scripts/sh/build_appstore_release.sh#L1819-L1832)
 * **Root Cause:**
   In commit `018634c6`, `APPSTORE_IDENTITY_DETECTED=true` was placed inside `if [ "$SKIP_NOTARIZATION" = false ]; then`.
   If a caller passes `--skip-notarization` on the CLI (setting `SKIP_NOTARIZATION=true`), the block is skipped.
@@ -178,7 +178,7 @@ This deep bug sweep identified **10 concrete defects** across 4 functional areas
 ---
 
 ### 8. [LOW-MEDIUM] `make_chunks` Infinite Loop on `max_len <= 0`
-* **File:** [`src/python/marcut/chunker.py:41-49`](file:///Users/mhm/dev/Marcut-2/src/python/marcut/chunker.py#L41-L49)
+* **File:** [`src/python/marcut/chunker.py:41-49`](../../src/python/marcut/chunker.py#L41-L49)
 * **Root Cause:**
   If `max_len <= 0`, `overlap` is clamped to 0, `j = min(n, i + max_len) = i`, and `i = max(0, j - overlap) = i`. `i` never advances, causing an infinite `while i < n:` loop.
 * **Impact:**
@@ -189,14 +189,14 @@ This deep bug sweep identified **10 concrete defects** across 4 functional areas
 ---
 
 ### 9. [LOW] `FileAccessCoordinator.swift` Dead Branch
-* **File:** [`src/swift/MarcutApp/Sources/MarcutApp/FileAccessCoordinator.swift:59-66`](file:///Users/mhm/dev/Marcut-2/src/swift/MarcutApp/Sources/MarcutApp/FileAccessCoordinator.swift#L59-L66)
+* **File:** [`src/swift/MarcutApp/Sources/MarcutApp/FileAccessCoordinator.swift:59-66`](../../src/swift/MarcutApp/Sources/MarcutApp/FileAccessCoordinator.swift#L59-L66)
 * **Root Cause:**
   `currentSessionUUID` is generated as `UUID().uuidString` right before comparing to `storedSessionUUID`. It is guaranteed to never equal `storedSessionUUID`, rendering the `else` branch dead code.
 
 ---
 
 ### 10. [LOW-MAINTENANCE] `docs/release/python-sbom.json` Check Failure
-* **File:** [`docs/release/python-sbom.json`](file:///Users/mhm/dev/Marcut-2/docs/release/python-sbom.json)
+* **File:** [`docs/release/python-sbom.json`](../../docs/release/python-sbom.json)
 * **Root Cause:**
   The checked-in SBOM contains `charset-normalizer 3.4.7` and references a developer's old local path, whereas the staged `python_site` has `charset_normalizer-3.4.9`.
 * **Impact:**

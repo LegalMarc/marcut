@@ -127,8 +127,17 @@ struct SettingsView: View {
         return Self.matchesSearch(rule.displayName, query: searchQuery)
     }
 
-    init(viewModel: DocumentRedactionViewModel, defaults: UserDefaults = .standard) {
+    /// `overridesController` lets tests inject a `SettingsOverridesController` backed by an
+    /// isolated `UserOverridesManager` (see `UserOverridesManager.init(overridesDirectoryOverride:)`)
+    /// instead of the default `SettingsOverridesController()`, which resolves to `.shared` and its
+    /// real, shared Application Support directory. `nil` (the production default) is unchanged.
+    init(
+        viewModel: DocumentRedactionViewModel,
+        defaults: UserDefaults = .standard,
+        overridesController: SettingsOverridesController? = nil
+    ) {
         self.viewModel = viewModel
+        self._overridesController = StateObject(wrappedValue: overridesController ?? SettingsOverridesController())
         var initialSettings = viewModel.settings
         if viewModel.availableModels.count == 1, let onlyModel = viewModel.availableModels.first {
             initialSettings.model = onlyModel

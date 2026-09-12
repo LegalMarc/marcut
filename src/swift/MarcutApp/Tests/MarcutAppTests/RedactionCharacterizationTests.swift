@@ -14,6 +14,7 @@ import XCTest
 @MainActor
 final class RedactionCharacterizationTests: XCTestCase {
     override func setUpWithError() throws {
+        try RedactionCharacterizationHarness.skipIfFixturesMissing()
         RedactionCharacterizationHarness.unsetAllowlistedEnv()
     }
 

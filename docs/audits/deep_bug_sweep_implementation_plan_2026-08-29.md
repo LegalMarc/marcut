@@ -22,7 +22,7 @@ Fix the 8 concrete functional bugs identified during the August 29, 2026 deep bu
 
 ### Component 1: DOCX IO (`docx_io.py`)
 
-#### [MODIFY] [docx_io.py](file:///Users/mhm/dev/Marcut-2/src/python/marcut/docx_io.py)
+#### [MODIFY] [docx_io.py](../../src/python/marcut/docx_io.py)
 - In `_rewrite_docx_zip`: Remove the premature `zout.writestr(item, data)` and `continue` inside `if settings.clean_language_settings ...:` (lines 941-942 and 936).
 - Allow `data` to flow through `clean_form_defaults` and `clean_nonstandard_xml` / `clean_microsoft_extension_xml` / `clean_alternate_content` passes so all active cleaners execute on each `word/*.xml` part.
 - Write the final transformed `data` once at line 973.
@@ -31,7 +31,7 @@ Fix the 8 concrete functional bugs identified during the August 29, 2026 deep bu
 
 ### Component 2: Rules Engine (`rules.py`)
 
-#### [MODIFY] [rules.py](file:///Users/mhm/dev/Marcut-2/src/python/marcut/rules.py)
+#### [MODIFY] [rules.py](../../src/python/marcut/rules.py)
 - **Signature block exclusion check**: In the `SIGNATURE_LINE` loop (lines 1115-1134), add `if _is_excluded(potential_name) or _is_excluded(original_name): continue` before creating the `NAME` span.
 - **Defined-term rule gate & exclusions**: In the `_DEFINED_TERM_NAME` loop (lines 1058-1095):
   - Check `if not _rule_enabled("NAME", selected): continue`.
@@ -43,28 +43,28 @@ Fix the 8 concrete functional bugs identified during the August 29, 2026 deep bu
 
 ### Component 3: LLM Response Handling (`model.py`)
 
-#### [MODIFY] [model.py](file:///Users/mhm/dev/Marcut-2/src/python/marcut/model.py)
+#### [MODIFY] [model.py](../../src/python/marcut/model.py)
 - In `parse_llm_response`: When the parsed JSON object is a `list` (from an LLM that outputs a top-level array of entities), normalize and return `{"entities": loaded}` so callers can safely call `.get("entities", [])`.
 
 ---
 
 ### Component 4: Chunker (`chunker.py`)
 
-#### [MODIFY] [chunker.py](file:///Users/mhm/dev/Marcut-2/src/python/marcut/chunker.py)
+#### [MODIFY] [chunker.py](../../src/python/marcut/chunker.py)
 - In `make_chunks`: Add validation `if max_len <= 0: raise ValueError("max_len must be positive")` to prevent infinite loop.
 
 ---
 
 ### Component 5: Swift Settings Live Preview (`ExcludedWordMatcher.swift`)
 
-#### [MODIFY] [ExcludedWordMatcher.swift](file:///Users/mhm/dev/Marcut-2/src/swift/MarcutApp/Sources/MarcutApp/ExcludedWordMatcher.swift)
+#### [MODIFY] [ExcludedWordMatcher.swift](../../src/swift/MarcutApp/Sources/MarcutApp/ExcludedWordMatcher.swift)
 - Add trailing possessive regex stripping (`['’]s\s*$|['’]\s*$`) to `normalizeForExclusion` matching Python's `_TRAILING_POSSESSIVE_RE`.
 
 ---
 
 ### Component 6: Release Build Script (`build_appstore_release.sh`)
 
-#### [MODIFY] [build_appstore_release.sh](file:///Users/mhm/dev/Marcut-2/scripts/sh/build_appstore_release.sh)
+#### [MODIFY] [build_appstore_release.sh](../../scripts/sh/build_appstore_release.sh)
 - Set `APPSTORE_IDENTITY_DETECTED=true` whenever `DEVELOPER_ID` is not a Developer ID certificate, independent of whether `--skip-notarization` was passed on the CLI.
 
 ---

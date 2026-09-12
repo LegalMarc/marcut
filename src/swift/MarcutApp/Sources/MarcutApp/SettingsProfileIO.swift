@@ -16,8 +16,8 @@ final class SettingsProfileIO {
     var presentOpenPanel: @MainActor () -> URL?
 
     init(
-        presentSavePanel: @escaping @MainActor () -> URL? = SettingsProfileIO.defaultSavePanel,
-        presentOpenPanel: @escaping @MainActor () -> URL? = SettingsProfileIO.defaultOpenPanel
+        presentSavePanel: @escaping @MainActor () -> URL? = { SettingsProfileIO.defaultSavePanel() },
+        presentOpenPanel: @escaping @MainActor () -> URL? = { SettingsProfileIO.defaultOpenPanel() }
     ) {
         self.presentSavePanel = presentSavePanel
         self.presentOpenPanel = presentOpenPanel

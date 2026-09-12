@@ -120,6 +120,24 @@ enum RedactionCharacterizationHarness {
         return repoRoot.appendingPathComponent("sample-files").appendingPathComponent(name).path
     }
 
+    /// `sample-files/*.docx` are confidential and explicitly excluded from git (the hygiene CI
+    /// job's forbidden-artifact check enforces `^sample-files/` is never committed) -- they exist
+    /// only where a developer has placed them manually, never in a fresh clone, a `git worktree`,
+    /// or CI. Call from `setUpWithError()` so a missing fixture skips honestly instead of either
+    /// failing (misread as a product regression) or silently treating an absent/empty file as a
+    /// real corrupt-DOCX result.
+    static func skipIfFixturesMissing() throws {
+        let fileManager = FileManager.default
+        let missing = [Fixture.validDocx, Fixture.corruptDocx]
+            .map(fixturePath)
+            .filter { !fileManager.fileExists(atPath: $0) }
+        guard missing.isEmpty else {
+            throw XCTSkip(
+                "Confidential local-only fixture(s) not present, skipping: \(missing.joined(separator: ", "))"
+            )
+        }
+    }
+
     /// Builds a fresh, isolated `DocumentRedactionViewModel` for one scenario: a real
     /// (non-`.shared`) `PowerAssertionGuard` backed by no-op acquire/release so no real IOKit
     /// assertion is taken, and the caller-supplied `UserDefaults` suite.
@@ -250,8 +268,14 @@ enum Normalizer {
     static func normalize(_ text: String, tempDir: URL) -> String {
         var result = text
         result = result.replacingOccurrences(of: tempDir.path, with: "<TMP>")
-        result = result.replacingOccurrences(of: NSHomeDirectory(), with: "<HOME>")
+        // <REPO> must be substituted before <HOME>: the repo root is itself under the home
+        // directory on every checkout layout that matters here (a plain `~/dev/Marcut-2`
+        // clone, a `.claude/worktrees/...` worktree, or CI's `/Users/runner/work/...`), so
+        // substituting <HOME> first consumes that shared prefix and makes the <REPO> match
+        // below permanently unreachable -- silently baking whoever generated the golden's
+        // absolute repo path into it instead of the portable `<REPO>` placeholder.
         result = result.replacingOccurrences(of: RedactionCharacterizationHarness.repoRootPath, with: "<REPO>")
+        result = result.replacingOccurrences(of: NSHomeDirectory(), with: "<HOME>")
         let range = NSRange(result.startIndex ..< result.endIndex, in: result)
         result = timestampLabelRegex.stringByReplacingMatches(
             in: result,

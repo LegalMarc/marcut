@@ -29,6 +29,16 @@ final class AdvancedModeDefaultsMigrationTests: XCTestCase {
     /// filtered to `DefaultsKey` keys"). Values are cast to `AnyHashable` so the result is
     /// `Equatable` for a single `XCTAssertEqual` per matrix cell; every value either block
     /// writes (`Bool`, `Int`, `String`) bridges cleanly.
+    /// A `SettingsOverridesController` backed by a fresh, throwaway `UserOverridesManager`
+    /// instance pointed at a temp directory -- never `.shared` -- so constructing `SettingsView`
+    /// below never touches the real, shared `~/Library/Application Support/MarcutApp/Overrides`
+    /// directory or its synchronous `.write_test` probe write.
+    private func makeIsolatedOverridesController() -> SettingsOverridesController {
+        let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let overridesManager = UserOverridesManager(overridesDirectoryOverride: tempDir)
+        return SettingsOverridesController(overridesManager: overridesManager)
+    }
+
     private func filteredDefaultsDump(_ defaults: UserDefaults) -> [String: AnyHashable] {
         var dump: [String: AnyHashable] = [:]
         for (key, value) in defaults.dictionaryRepresentation() {
@@ -155,7 +165,11 @@ final class AdvancedModeDefaultsMigrationTests: XCTestCase {
         state.seed(viewModelDefaults)
         let viewModel = DocumentRedactionViewModel(defaults: viewModelDefaults)
 
-        let settingsView = SettingsView(viewModel: viewModel, defaults: defaults)
+        let settingsView = SettingsView(
+            viewModel: viewModel,
+            defaults: defaults,
+            overridesController: makeIsolatedOverridesController()
+        )
         let localSettings = settingsView.initialLocalSettingsForTesting
         return Cell(
             dump: filteredDefaultsDump(defaults),
@@ -171,7 +185,11 @@ final class AdvancedModeDefaultsMigrationTests: XCTestCase {
         let defaults = makeIsolatedDefaults()
         state.seed(defaults)
         let viewModel = DocumentRedactionViewModel(defaults: defaults)
-        let settingsView = SettingsView(viewModel: viewModel, defaults: defaults)
+        let settingsView = SettingsView(
+            viewModel: viewModel,
+            defaults: defaults,
+            overridesController: makeIsolatedOverridesController()
+        )
         let localSettings = settingsView.initialLocalSettingsForTesting
         return Cell(
             dump: filteredDefaultsDump(defaults),
